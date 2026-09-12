@@ -9,7 +9,7 @@ kernel; that is the constraint that keeps the project finishable.
       `#id`, `$`, `*`, enums, binaries, typed values, complex instances.
       Not line-oriented; must handle ~1 MB single lines.
 - [x] Parser into an untyped entity graph with forward and back indices.
-- [ ] Writer that reproduces unchanged entities verbatim and renumbers
+- [x] Writer that reproduces unchanged entities verbatim and renumbers
       densely. Must not touch `#` inside string literals.
 - [ ] EXPRESS schema reader, used only for attribute counts and aggregate
       bounds (AP203e2, AP214, AP242 ed1–ed4).

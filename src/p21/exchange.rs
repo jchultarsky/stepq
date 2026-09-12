@@ -5,6 +5,11 @@
 //! the range of tokens that make up its record or records. Nothing is
 //! decoded up front: [`Records`], [`Params`] and [`Literal`] are cheap
 //! views that walk the tokens on demand.
+//!
+//! This is the one parsed representation every command works from, so
+//! the views favour general questions — "which instances have this
+//! type", "what is attribute 3", "what does this refer to" — over
+//! anything specific to one command.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -17,11 +22,13 @@ use crate::error::Result;
 
 /// A parsed Part 21 file, borrowing its source bytes.
 ///
-/// Produced by [`parse`](super::parse).
+/// Produced by [`parse`](super::parse). It is `Send` and `Sync`, so
+/// commands may query it from several threads.
 pub struct Exchange<'a> {
     src: &'a [u8],
     tokens: Vec<Token>,
     header: Range<usize>,
+    header_text: Span,
     sections: Vec<DataSection>,
     instances: Vec<Instance>,
     index: HashMap<u64, usize>,
@@ -68,6 +75,7 @@ impl<'a> Exchange<'a> {
         src: &'a [u8],
         tokens: Vec<Token>,
         header: Range<usize>,
+        header_text: Span,
         sections: Vec<DataSection>,
         instances: Vec<Instance>,
         index: HashMap<u64, usize>,
@@ -76,6 +84,7 @@ impl<'a> Exchange<'a> {
             src,
             tokens,
             header,
+            header_text,
             sections,
             instances,
             index,
@@ -94,6 +103,11 @@ impl<'a> Exchange<'a> {
             src: self.src,
             tokens: self.tokens.get(self.header.clone()).unwrap_or_default(),
         }
+    }
+
+    /// The first header entity named `name`, ignoring ASCII case.
+    pub fn header_entity(&self, name: &str) -> Option<Record<'_>> {
+        self.header().find(|record| record.is(name))
     }
 
     /// The data sections, in file order. Edition 2 files have exactly one.
@@ -115,6 +129,17 @@ impl<'a> Exchange<'a> {
     /// All instances from all data sections, in file order.
     pub fn instances(&self) -> &[Instance] {
         &self.instances
+    }
+
+    /// Positions in [`instances`](Self::instances) of every instance with
+    /// a record named `name`, ignoring ASCII case, in file order. A complex
+    /// instance matches if any of its partial entities does.
+    pub fn instances_of<'e>(&'e self, name: &'e str) -> impl Iterator<Item = usize> {
+        self.instances
+            .iter()
+            .enumerate()
+            .filter(move |(_, instance)| self.records(instance).any(|record| record.is(name)))
+            .map(|(position, _)| position)
     }
 
     /// Looks up instance `#id`.
@@ -158,8 +183,26 @@ impl<'a> Exchange<'a> {
         }
     }
 
-    fn instance_tokens(&self, instance: &Instance) -> &[Token] {
+    pub(crate) fn instance_tokens(&self, instance: &Instance) -> &[Token] {
         self.tokens.get(instance.tokens.clone()).unwrap_or_default()
+    }
+
+    /// The source text between `HEADER;` and `ENDSEC;`, comments included.
+    pub(crate) fn header_text(&self) -> &'a [u8] {
+        self.header_text.slice(self.src)
+    }
+
+    /// For each data section: the source text of its `(...)` parameters
+    /// (empty for a plain `DATA;`) and its instance positions.
+    pub(crate) fn data_sections(&self) -> impl Iterator<Item = (&'a [u8], Range<usize>)> {
+        self.sections.iter().map(|section| {
+            let tokens = &self.tokens[section.params.clone()];
+            let params: &'a [u8] = match (tokens.first(), tokens.last()) {
+                (Some(first), Some(last)) => &self.src[first.span.start..last.span.end],
+                _ => &[],
+            };
+            (params, section.instances.clone())
+        })
     }
 }
 
@@ -240,6 +283,12 @@ impl<'e> Record<'e> {
             src: self.src,
             tokens: self.params,
         }
+    }
+
+    /// The parameter at `index`, counting from 0, or `None` if the record
+    /// has fewer parameters.
+    pub fn param(self, index: usize) -> Option<Param<'e>> {
+        self.params().nth(index)
     }
 }
 
@@ -339,6 +388,55 @@ pub enum Param<'e> {
     Typed(Record<'e>),
 }
 
+impl<'e> Param<'e> {
+    /// The referenced `#id`, if this is a [`Param::Reference`].
+    pub fn reference(&self) -> Option<u64> {
+        match self {
+            Self::Reference(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// The items, if this is a [`Param::List`].
+    pub fn list(&self) -> Option<Params<'e>> {
+        match self {
+            Self::List(items) => Some(items.clone()),
+            _ => None,
+        }
+    }
+
+    /// The typed value's record, if this is a [`Param::Typed`].
+    pub fn typed(&self) -> Option<Record<'e>> {
+        match self {
+            Self::Typed(record) => Some(*record),
+            _ => None,
+        }
+    }
+
+    /// The literal, for integers, reals, strings, enumerations, binaries
+    /// and edition 3 constant, value and resource references.
+    pub fn literal(&self) -> Option<Literal<'e>> {
+        match self {
+            Self::Integer(literal)
+            | Self::Real(literal)
+            | Self::String(literal)
+            | Self::Enumeration(literal)
+            | Self::Binary(literal)
+            | Self::ConstantReference(literal)
+            | Self::ValueReference(literal)
+            | Self::Resource(literal) => Some(*literal),
+            Self::Unset | Self::Derived | Self::Reference(_) | Self::List(_) | Self::Typed(_) => {
+                None
+            }
+        }
+    }
+
+    /// True for `$`.
+    pub fn is_unset(&self) -> bool {
+        matches!(self, Self::Unset)
+    }
+}
+
 /// A literal parameter value.
 #[derive(Debug, Clone, Copy)]
 pub struct Literal<'e> {
@@ -412,4 +510,48 @@ fn matching(tokens: &[Token]) -> usize {
         }
     }
     tokens.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::p21::parse;
+
+    #[test]
+    fn query_helpers() {
+        let src = b"ISO-10303-21;HEADER;FILE_NAME('part');FILE_SCHEMA(('AP242'));ENDSEC;DATA;\
+                    #1=PRODUCT('p1','bracket','',(#2));\
+                    #2=PRODUCT_CONTEXT('',$,'mechanical');\
+                    #3=(NAMED_UNIT(*)PRODUCT());\
+                    #4=product('p2','plate','',(#2));\
+                    ENDSEC;END-ISO-10303-21;";
+        let exchange = parse(src).unwrap();
+
+        assert_eq!(
+            exchange.instances_of("PRODUCT").collect::<Vec<_>>(),
+            [0, 2, 3]
+        );
+        assert_eq!(exchange.instances_of("NOTHING").count(), 0);
+
+        let schema = exchange.header_entity("file_schema").unwrap();
+        let schemas = schema.param(0).and_then(|p| p.list()).unwrap();
+        let names: Vec<String> = schemas
+            .filter_map(|p| p.literal()?.decode().ok().map(Cow::into_owned))
+            .collect();
+        assert_eq!(names, ["AP242"]);
+
+        let product = exchange.records(&exchange.instances()[0]).next().unwrap();
+        let name = product.param(1).and_then(|p| p.literal()).unwrap();
+        assert_eq!(name.decode().unwrap(), "bracket");
+        let contexts = product.param(3).and_then(|p| p.list()).unwrap();
+        assert_eq!(
+            contexts.filter_map(|p| p.reference()).collect::<Vec<_>>(),
+            [2]
+        );
+        assert!(product.param(4).is_none());
+
+        let context = exchange.records(&exchange.instances()[1]).next().unwrap();
+        assert!(context.param(1).unwrap().is_unset());
+        assert!(context.param(1).unwrap().literal().is_none());
+    }
 }

@@ -22,8 +22,15 @@ Until 1.0, minor versions may contain breaking changes.
   parameters) into an `Exchange` of untyped instances, keeping each
   instance's original text span. Views (`Record`, `Params`, `Param`,
   `Literal`) walk parameters on demand.
-- `model::Graph`: forward and back reference indices over an `Exchange`;
-  dangling references are an error.
+- `model::Graph`: forward and back reference indices over an `Exchange`.
+  `Graph::new` rejects dangling references; `Graph::build` records them in
+  `unresolved()` for reporting.
+- Query helpers shared by all commands: `Exchange::instances_of`,
+  `Exchange::header_entity`, `Record::param`, and `Param::reference`,
+  `list`, `typed`, `literal` and `is_unset`.
+- `p21::Writer`: writes all instances or a reference-closed selection.
+  Instances are copied byte for byte from source; `Numbering::Dense`
+  rewrites only `#id` tokens, never text inside strings or comments.
 
 ### Changed
 
