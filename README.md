@@ -15,13 +15,14 @@ That constraint is the point: every entity that describes your geometry
 comes out exactly as it went in, byte for byte, with its original names,
 colours, layers, properties and PMI attached.
 
-> **Status: pre-alpha.** The project skeleton is in place; the parser is
-> not. Nothing works yet. See [ROADMAP.md](ROADMAP.md).
+> **Status: pre-alpha.** The Part 21 parser, reference graph and writer
+> are in place, and `stepq info` works. Everything else below is still
+> ahead; see [ROADMAP.md](ROADMAP.md).
 
-## What it will do
+## What it does, and will do
 
 ```console
-$ stepq info  assembly.stp          # header, schema, units, entity histogram
+$ stepq info  assembly.stp          # header, schema, units, entity histogram (works today)
 $ stepq tree  assembly.stp          # assembly hierarchy with transforms
 $ stepq bom   assembly.stp --format csv
 $ stepq split assembly.stp --out parts/   # one file per sub-assembly and part
