@@ -17,6 +17,13 @@ Until 1.0, minor versions may contain breaking changes.
   column in syntax errors.
 - `p21::decode_string`: decodes `''`, `\\`, `\X\`, `\X2\`, `\X4\`, `\S\`,
   `\P?\`, `\N\` and `\T\` in string literals.
+- `p21::parse`: validates the whole exchange structure (header, one or more
+  data sections, simple and complex instances, nested and typed
+  parameters) into an `Exchange` of untyped instances, keeping each
+  instance's original text span. Views (`Record`, `Params`, `Param`,
+  `Literal`) walk parameters on demand.
+- `model::Graph`: forward and back reference indices over an `Exchange`;
+  dangling references are an error.
 
 ### Changed
 

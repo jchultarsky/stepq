@@ -8,7 +8,7 @@ kernel; that is the constraint that keeps the project finishable.
 - [x] Part 21 lexer: strings (`''`, `\X2\`, `\S\`), `/* */` comments,
       `#id`, `$`, `*`, enums, binaries, typed values, complex instances.
       Not line-oriented; must handle ~1 MB single lines.
-- [ ] Parser into an untyped entity graph with forward and back indices.
+- [x] Parser into an untyped entity graph with forward and back indices.
 - [ ] Writer that reproduces unchanged entities verbatim and renumbers
       densely. Must not touch `#` inside string literals.
 - [ ] EXPRESS schema reader, used only for attribute counts and aggregate
