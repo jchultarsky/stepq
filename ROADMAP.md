@@ -5,7 +5,7 @@ kernel; that is the constraint that keeps the project finishable.
 
 ## 0.1 — the parser
 
-- [ ] Part 21 lexer: strings (`''`, `\X2\`, `\S\`), `/* */` comments,
+- [x] Part 21 lexer: strings (`''`, `\X2\`, `\S\`), `/* */` comments,
       `#id`, `$`, `*`, enums, binaries, typed values, complex instances.
       Not line-oriented; must handle ~1 MB single lines.
 - [ ] Parser into an untyped entity graph with forward and back indices.

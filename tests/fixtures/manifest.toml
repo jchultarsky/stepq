@@ -1,36 +1,119 @@
 # Known fixtures and what they exercise. Kept in git; the files are not.
+#
+# kind: "part", "assembly" (flat: one level of components) or
+# "nested-assembly" (some component is itself an assembly). Counts are
+# PRODUCT and NEXT_ASSEMBLY_USAGE_OCCURRENCE instances in the file.
 
 [[fixture]]
 path = "steptools/as1-ac-214.stp"
+kind = "nested-assembly"
 ap = "AP214"
+products = 9
+nauos = 13
 exporter = "AutoCAD 2000 (AutoCAD STEP 2000)"
-notes = "9 products, 13 NAUOs, 22 complex instances; MDGPR and layer assignments span 5 parts"
+notes = "22 complex instances; MDGPR and layer assignments span 5 parts"
 
 [[fixture]]
 path = "steptools/as1-tc-214.stp"
+kind = "nested-assembly"
 ap = "AP214"
+products = 9
+nauos = 13
 exporter = "CADDS 4X/5 via Theorem Solutions AP214 DIS preprocessor 4.0"
 notes = "Geometric validation properties; contains '#602' inside a string literal"
 
 [[fixture]]
 path = "steptools/as1-ec-214.stp"
+kind = "nested-assembly"
 ap = "AP214"
+products = 9
+nauos = 13
 exporter = "Euclid / Matra Datavision CAS.CADE STEP processor 2.1"
 notes = "Irregular whitespace in the header; the only AS1 dialect with SURFACE_CURVE/PCURVE (126/252) — parameter-space curves present"
 
 [[fixture]]
 path = "steptools/as1-md-214.stp"
+kind = "nested-assembly"
 ap = "AP214"
+products = 9
+nauos = 13
 exporter = "MicroStation/J 07.01 via ST-Developer 1.6"
 
 [[fixture]]
 path = "steptools/as1-ug-214.stp"
+kind = "nested-assembly"
 ap = "AP214"
+products = 9
+nauos = 13
 exporter = "Unigraphics 16.0 via ST-Developer 7"
 notes = "Header attributes carry inline /* */ comments"
 
 [[fixture]]
 path = "nist/NIST-PMI-STEP-Files/"
+kind = "part"
 ap = "AP203, AP242 ed1/ed2/ed3"
+nauos = 0
 exporter = "anonymised"
-notes = "Single parts with semantic + tessellated PMI; 71–130 entity types per file; lines up to ~850 KB"
+notes = """
+33 files, 0.01–6.1 MB. Top level: AP242 e1/e2/e3 with semantic + tessellated
+PMI (CTC 01–05, FTC 06–11, STC 06–10). 'AP203 with PMI/' and 'AP203 geometry
+only/' hold AP203 variants; ftc_07, ftc_10 and ftc_11 geometry-only use the
+older CONFIG_CONTROL_DESIGN schema name. ctc_05, ftc_07, ftc_09, ftc_10 and
+stc_07 contain 2–5 PRODUCT instances but no NAUO: extra products that are not
+assembly components. CTC 02 and 04 fit together but are separate files."""
+
+[[fixture]]
+path = "nist-edm/as1_pe.stp"
+kind = "nested-assembly"
+ap = "AP203"
+products = 7
+nauos = 9
+exporter = "Pro/ENGINEER via STEPnet"
+notes = "Same AS1 model as the STEP Tools set, public domain; fewer products (7 vs 9) than the AP214 exports"
+
+[[fixture]]
+path = "nist-edm/moon_buggy_asm.stp"
+kind = "nested-assembly"
+ap = "AP203"
+products = 20
+nauos = 23
+exporter = "STEPnet"
+
+[[fixture]]
+path = "nist-edm/vaccase_asm_solid.stp"
+kind = "assembly"
+ap = "AP203"
+products = 9
+nauos = 14
+exporter = "Pro/ENGINEER"
+notes = "Flat; some components are instanced more than once"
+
+[[fixture]]
+path = "nist-edm/weldment_asm_solid.stp"
+kind = "assembly"
+ap = "AP203"
+products = 34
+nauos = 108
+exporter = "Pro/ENGINEER"
+notes = "Flat with heavy instancing; largest single EDM file (1.7 MB)"
+
+[[fixture]]
+path = "nist-edm/clevis21.stp"
+kind = "part"
+ap = "AP203"
+products = 1
+exporter = "ST-ACIS"
+
+[[fixture]]
+path = "nist-edm/valve.stp"
+kind = "part"
+ap = "AP203"
+products = 1
+exporter = "ST-ACIS"
+
+[[fixture]]
+path = "nist-edm/gear.stp"
+kind = "part"
+ap = "AP203"
+products = 1
+exporter = "ST-ACIS"

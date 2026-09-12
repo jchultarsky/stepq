@@ -12,8 +12,10 @@ pub enum Error {
     Syntax {
         /// 1-based line of the offending token.
         line: usize,
-        /// 1-based column of the offending token.
+        /// 1-based column of the offending token, counted in bytes.
         column: usize,
+        /// 0-based byte offset of the offending token in the input.
+        offset: usize,
         /// What went wrong.
         message: String,
     },
@@ -34,4 +36,25 @@ pub enum Error {
     /// An I/O failure while reading or writing a file.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+impl Error {
+    /// Builds an [`Error::Syntax`] located at byte `offset` of `src`.
+    ///
+    /// Line and column are computed here, on the error path only, so the
+    /// lexer does not track them for every byte.
+    pub(crate) fn syntax(src: &[u8], offset: usize, message: impl Into<String>) -> Self {
+        let offset = offset.min(src.len());
+        let before = &src[..offset];
+        let line_start = before
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |i| i + 1);
+        Self::Syntax {
+            line: before.split(|&b| b == b'\n').count(),
+            column: offset - line_start + 1,
+            offset,
+            message: message.into(),
+        }
+    }
 }
