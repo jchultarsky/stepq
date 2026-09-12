@@ -19,6 +19,7 @@ pub struct Graph<'a> {
     exchange: Exchange<'a>,
     forward: Adjacency,
     backward: Adjacency,
+    unresolved: Vec<(usize, u64)>,
 }
 
 /// Compressed adjacency lists: node `n`'s neighbours are
@@ -29,28 +30,47 @@ struct Adjacency {
 }
 
 impl<'a> Graph<'a> {
-    /// Builds both reference indices.
+    /// Builds both reference indices, failing on a dangling reference.
+    ///
+    /// Use this for anything that transforms or extracts: a dangling
+    /// reference means the file is already missing data, and every graph
+    /// operation on it would silently produce a wrong answer.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::UnresolvedReference`] for the first reference to an
-    /// instance that is not defined. A dangling reference means the file
-    /// is already missing data, and every graph operation on it would
-    /// silently produce a wrong answer.
+    /// Returns [`Error::UnresolvedReference`] for the first reference, in
+    /// file order, to an instance that is not defined.
     pub fn new(exchange: Exchange<'a>) -> Result<Self> {
+        let graph = Self::build(exchange);
+        match graph.unresolved.first() {
+            Some(&(node, to)) => Err(Error::UnresolvedReference {
+                from: graph.instance(node).id,
+                to,
+            }),
+            None => Ok(graph),
+        }
+    }
+
+    /// Builds both reference indices, recording dangling references
+    /// instead of failing.
+    ///
+    /// Use this where a partial answer is still useful, such as reporting
+    /// every problem in a file. Dangling references are left out of both
+    /// indices and listed by [`unresolved`](Self::unresolved).
+    pub fn build(exchange: Exchange<'a>) -> Self {
         let instances = exchange.instances();
         let mut offsets = Vec::with_capacity(instances.len() + 1);
         offsets.push(0);
         let mut targets = Vec::new();
+        let mut unresolved = Vec::new();
         let mut neighbours = Vec::new();
-        for instance in instances {
+        for (node, instance) in instances.iter().enumerate() {
             neighbours.clear();
             for id in exchange.references(instance) {
-                let target = exchange.position(id).ok_or(Error::UnresolvedReference {
-                    from: instance.id,
-                    to: id,
-                })?;
-                neighbours.push(target);
+                match exchange.position(id) {
+                    Some(target) => neighbours.push(target),
+                    None => unresolved.push((node, id)),
+                }
             }
             neighbours.sort_unstable();
             neighbours.dedup();
@@ -59,11 +79,12 @@ impl<'a> Graph<'a> {
         }
         let forward = Adjacency { offsets, targets };
         let backward = forward.reversed();
-        Ok(Self {
+        Self {
             exchange,
             forward,
             backward,
-        })
+            unresolved,
+        }
     }
 
     /// The parsed file this graph indexes.
@@ -112,6 +133,12 @@ impl<'a> Graph<'a> {
     pub fn referenced_by(&self, node: usize) -> &[usize] {
         self.backward.neighbours(node)
     }
+
+    /// References to undefined instances, as `(node, missing #id)` in file
+    /// order. Always empty for a graph from [`new`](Self::new).
+    pub fn unresolved(&self) -> &[(usize, u64)] {
+        &self.unresolved
+    }
 }
 
 impl fmt::Debug for Graph<'_> {
@@ -119,6 +146,7 @@ impl fmt::Debug for Graph<'_> {
         f.debug_struct("Graph")
             .field("nodes", &self.len())
             .field("edges", &self.forward.targets.len())
+            .field("unresolved", &self.unresolved.len())
             .finish_non_exhaustive()
     }
 }
@@ -177,6 +205,7 @@ mod tests {
         assert_eq!(graph.referenced_by(0), [3]);
         assert_eq!(graph.referenced_by(2), [0, 1, 3]);
         assert!(graph.referenced_by(3).is_empty());
+        assert!(graph.unresolved().is_empty());
     }
 
     #[test]
@@ -191,10 +220,16 @@ mod tests {
     }
 
     #[test]
-    fn dangling_references_are_rejected() {
-        let src = file_with("#1=A(#2);#2=B((#9));");
+    fn dangling_references() {
+        let src = file_with("#1=A(#2,#8);#2=B((#9));");
+
         let err = Graph::new(parse(src.as_bytes()).unwrap()).unwrap_err();
-        assert!(matches!(err, Error::UnresolvedReference { from: 2, to: 9 }));
+        assert!(matches!(err, Error::UnresolvedReference { from: 1, to: 8 }));
+
+        let graph = Graph::build(parse(src.as_bytes()).unwrap());
+        assert_eq!(graph.unresolved(), [(0, 8), (1, 9)]);
+        assert_eq!(graph.references(0), [1]);
+        assert!(graph.references(1).is_empty());
     }
 
     #[test]

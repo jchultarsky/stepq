@@ -80,19 +80,26 @@ impl<'a> Parser<'a> {
         self.expect_keyword("ISO-10303-21")?;
         self.expect(TokenKind::Semicolon, "';'")?;
         self.expect_keyword("HEADER")?;
-        self.expect(TokenKind::Semicolon, "';'")?;
+        let header_open = self.expect(TokenKind::Semicolon, "';'")?;
 
         let header_start = self.tokens.len();
-        while !self.eat_keyword("ENDSEC")? {
+        let header_end = loop {
+            if let Some(endsec) = self.eat_keyword("ENDSEC")? {
+                break endsec.span.start;
+            }
             let token = self.next("a header entity or ENDSEC")?;
             if !matches!(token.kind, TokenKind::Keyword | TokenKind::UserKeyword) {
                 return Err(self.unexpected(token, "a header entity or ENDSEC"));
             }
             self.record(token)?;
             self.expect(TokenKind::Semicolon, "';'")?;
-        }
+        };
         self.expect(TokenKind::Semicolon, "';'")?;
         let header = header_start..self.tokens.len();
+        let header_text = Span {
+            start: header_open.span.end,
+            end: header_end,
+        };
 
         let mut sections = Vec::new();
         let mut instances = Vec::new();
@@ -119,6 +126,7 @@ impl<'a> Parser<'a> {
             self.src,
             self.tokens,
             header,
+            header_text,
             sections,
             instances,
             index,
@@ -305,7 +313,7 @@ impl<'a> Parser<'a> {
     }
 
     fn skip_section(&mut self) -> Result<()> {
-        while !self.eat_keyword("ENDSEC")? {
+        while self.eat_keyword("ENDSEC")?.is_none() {
             self.next("ENDSEC")?;
         }
         self.expect(TokenKind::Semicolon, "';'")?;
@@ -354,13 +362,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn eat_keyword(&mut self, keyword: &str) -> Result<bool> {
+    /// Consumes and returns the next token if it is `keyword`.
+    fn eat_keyword(&mut self, keyword: &str) -> Result<Option<Token>> {
         match self.peek()? {
             Some(token) if self.is_keyword(token, keyword) => {
                 self.peeked = None;
-                Ok(true)
+                Ok(Some(token))
             }
-            _ => Ok(false),
+            _ => Ok(None),
         }
     }
 

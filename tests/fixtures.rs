@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use stepq::model::Graph;
-use stepq::p21::{Lexer, Param, TokenKind, decode_string, parse};
+use stepq::p21::{Exchange, Lexer, Numbering, TokenKind, Writer, decode_string, parse};
 
 #[test]
 fn every_fixture_lexes() {
@@ -43,6 +43,62 @@ fn every_fixture_parses_into_a_graph() {
 }
 
 #[test]
+fn every_fixture_round_trips_through_the_writer() {
+    for_each_fixture(|src| {
+        let source = parse(src).map_err(|e| e.to_string())?;
+        let count = source.instances().len();
+
+        // Preserved names: every instance is written back byte for byte.
+        let preserved = write(&source, Numbering::Preserve)?;
+        let reparsed = parse(&preserved).map_err(|e| format!("preserved output: {e}"))?;
+        if reparsed.instances().len() != count {
+            return Err("preserved output has a different instance count".to_owned());
+        }
+        for (a, b) in source.instances().iter().zip(reparsed.instances()) {
+            if source.text(a) != reparsed.text(b) {
+                return Err(format!("#{} is not written verbatim", a.id));
+            }
+        }
+
+        // Dense names: only instance names change, references follow them,
+        // and writing the result again changes nothing.
+        let dense = write(&source, Numbering::Dense)?;
+        let renumbered = parse(&dense).map_err(|e| format!("dense output: {e}"))?;
+        if renumbered.instances().len() != count {
+            return Err("dense output has a different instance count".to_owned());
+        }
+        let new_name = |position: usize| u64::try_from(position + 1).unwrap();
+        for (position, (a, b)) in source
+            .instances()
+            .iter()
+            .zip(renumbered.instances())
+            .enumerate()
+        {
+            if b.id != new_name(position) {
+                return Err(format!("#{} became #{}", a.id, b.id));
+            }
+            let expected: Vec<u64> = source
+                .references(a)
+                .map(|id| source.position(id).map_or(0, new_name))
+                .collect();
+            if renumbered.references(b).collect::<Vec<_>>() != expected {
+                return Err(format!(
+                    "references of #{} were not renumbered consistently",
+                    a.id
+                ));
+            }
+            if non_name_tokens(source.text(a)) != non_name_tokens(renumbered.text(b)) {
+                return Err(format!("#{} changed beyond its instance names", a.id));
+            }
+        }
+        if write(&renumbered, Numbering::Preserve)? != dense {
+            return Err("rewriting the dense output changed it".to_owned());
+        }
+        Ok(())
+    });
+}
+
+#[test]
 fn as1_assembly_links_resolve_both_ways() {
     let Some(src) = read_fixture("steptools/as1-ug-214.stp") else {
         return;
@@ -51,21 +107,14 @@ fn as1_assembly_links_resolve_both_ways() {
     let exchange = graph.exchange();
     let is = |node: usize, name: &str| exchange.records(graph.instance(node)).any(|r| r.is(name));
 
-    let nauos: Vec<usize> = (0..graph.len())
-        .filter(|&node| is(node, "NEXT_ASSEMBLY_USAGE_OCCURRENCE"))
+    let nauos: Vec<usize> = exchange
+        .instances_of("NEXT_ASSEMBLY_USAGE_OCCURRENCE")
         .collect();
     assert_eq!(nauos.len(), 13);
     for &nauo in &nauos {
         let record = exchange.records(graph.instance(nauo)).next().unwrap();
-        let ends: Vec<u64> = record
-            .params()
-            .filter_map(|param| match param {
-                Param::Reference(id) => Some(id),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(ends.len(), 2, "relating and related product definitions");
-        for id in ends {
+        // Attributes 3 and 4: relating and related product definitions.
+        for id in [3, 4].map(|index| record.param(index).and_then(|p| p.reference()).unwrap()) {
             let end = graph.node(id).unwrap();
             assert!(is(end, "PRODUCT_DEFINITION"), "#{id}");
             assert!(graph.referenced_by(end).contains(&nauo));
@@ -92,10 +141,7 @@ fn forward_closure_from_a_part_reaches_no_geometry() {
                     !is(user, "NEXT_ASSEMBLY_USAGE_OCCURRENCE") || {
                         // Only ever the related (child) end, never the relating one.
                         let record = exchange.records(graph.instance(user)).next().unwrap();
-                        let relating = record.params().find_map(|p| match p {
-                            Param::Reference(id) => Some(id),
-                            _ => None,
-                        });
+                        let relating = record.param(3).and_then(|p| p.reference());
                         relating != Some(graph.instance(node).id)
                     }
                 })
@@ -136,6 +182,24 @@ fn forward_closure_from_a_part_reaches_no_geometry() {
             .any(|&user| is(user, "PRODUCT_DEFINITION_SHAPE")),
         "the shape points back at the part"
     );
+}
+
+fn write(exchange: &Exchange<'_>, numbering: Numbering) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    Writer::new(exchange)
+        .numbering(numbering)
+        .write_all(&mut out)
+        .map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// The text of every token in `text` except instance names.
+fn non_name_tokens(text: &[u8]) -> Vec<&[u8]> {
+    Lexer::new(text)
+        .map(|token| token.expect("instance text lexes"))
+        .filter(|token| !matches!(token.kind, TokenKind::InstanceName(_)))
+        .map(|token| token.span.slice(text))
+        .collect()
 }
 
 fn fixtures_root() -> PathBuf {
