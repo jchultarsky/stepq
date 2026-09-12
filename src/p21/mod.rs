@@ -16,11 +16,17 @@
 //! * The writer must reproduce the original attribute text verbatim
 //!   for unchanged entities — no reformatting of numbers or strings.
 //!
-//! Implementation status: the [`Lexer`] and [`decode_string`] are done;
-//! the parser and writer are not started. See `ROADMAP.md`.
+//! Implementation status: the [`Lexer`], [`decode_string`] and [`parse`]
+//! are done; the writer is not started. See `ROADMAP.md`.
 
+mod exchange;
 mod lexer;
+mod parser;
 mod string;
 
+pub use exchange::{
+    Exchange, Instance, Literal, Param, Params, Record, Records, References, Section,
+};
 pub use lexer::{Lexer, Span, Token, TokenKind};
+pub use parser::parse;
 pub use string::decode_string;
