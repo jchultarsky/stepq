@@ -64,6 +64,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod error;
+pub mod info;
 pub mod model;
 pub mod p21;
 

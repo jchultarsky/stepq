@@ -31,6 +31,10 @@ Until 1.0, minor versions may contain breaking changes.
 - `p21::Writer`: writes all instances or a reference-closed selection.
   Instances are copied byte for byte from source; `Numbering::Dense`
   rewrites only `#id` tokens, never text inside strings or comments.
+- `stepq info`: header fields, schema, declared units, instance, product
+  and assembly-usage counts, dangling references and an entity-type
+  histogram, as a table (`--top N`), JSON or CSV. `-` reads standard
+  input. The summary is also available as the library type `info::Info`.
 
 ### Changed
 

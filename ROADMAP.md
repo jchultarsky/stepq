@@ -13,7 +13,7 @@ kernel; that is the constraint that keeps the project finishable.
       densely. Must not touch `#` inside string literals.
 - [ ] EXPRESS schema reader, used only for attribute counts and aggregate
       bounds (AP203e2, AP214, AP242 ed1–ed4).
-- [ ] `stepq info`
+- [x] `stepq info`
 - [ ] Fuzz targets for the lexer and parser.
 
 ## 0.2 — structure
