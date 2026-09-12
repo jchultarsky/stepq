@@ -12,6 +12,11 @@ Until 1.0, minor versions may contain breaking changes.
 
 - Project skeleton: library crate with feature-gated `stepq` CLI, CI,
   lint and license configuration.
+- `p21::Lexer`: zero-copy, non-line-oriented Part 21 tokeniser covering
+  edition 2 plus edition 3 names and resource references, with line and
+  column in syntax errors.
+- `p21::decode_string`: decodes `''`, `\\`, `\X\`, `\X2\`, `\X4\`, `\S\`,
+  `\P?\`, `\N\` and `\T\` in string literals.
 
 ### Changed
 
