@@ -1,0 +1,46 @@
+name: Bug report
+description: Something produced wrong output, crashed, or hung.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: stepq version
+      description: Output of `stepq --version`, or the commit hash.
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      placeholder: stepq split assembly.stp --out parts/
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Paste the full output, including any error message.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: STEP file
+      description: >
+        Attach the file, or the smallest file that reproduces the problem.
+        If it is confidential, say which CAD system wrote it and paste the
+        HEADER section — most bugs are dialect-specific and the header
+        identifies the dialect.
+  - type: dropdown
+    id: ap
+    attributes:
+      label: Application protocol
+      options: [AP203, AP214, AP242, "Don't know"]

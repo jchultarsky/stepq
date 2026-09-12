@@ -1,0 +1,10 @@
+/target
+# Test fixtures are fetched by tools/fetch-fixtures.sh, not vendored
+/tests/fixtures/*
+!/tests/fixtures/README.md
+!/tests/fixtures/manifest.toml
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

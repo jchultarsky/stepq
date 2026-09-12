@@ -1,0 +1,36 @@
+# Known fixtures and what they exercise. Kept in git; the files are not.
+
+[[fixture]]
+path = "steptools/as1-ac-214.stp"
+ap = "AP214"
+exporter = "AutoCAD 2000 (AutoCAD STEP 2000)"
+notes = "9 products, 13 NAUOs, 22 complex instances; MDGPR and layer assignments span 5 parts"
+
+[[fixture]]
+path = "steptools/as1-tc-214.stp"
+ap = "AP214"
+exporter = "CADDS 4X/5 via Theorem Solutions AP214 DIS preprocessor 4.0"
+notes = "Geometric validation properties; contains '#602' inside a string literal"
+
+[[fixture]]
+path = "steptools/as1-ec-214.stp"
+ap = "AP214"
+exporter = "Euclid / Matra Datavision CAS.CADE STEP processor 2.1"
+notes = "Irregular whitespace in the header; the only AS1 dialect with SURFACE_CURVE/PCURVE (126/252) — parameter-space curves present"
+
+[[fixture]]
+path = "steptools/as1-md-214.stp"
+ap = "AP214"
+exporter = "MicroStation/J 07.01 via ST-Developer 1.6"
+
+[[fixture]]
+path = "steptools/as1-ug-214.stp"
+ap = "AP214"
+exporter = "Unigraphics 16.0 via ST-Developer 7"
+notes = "Header attributes carry inline /* */ comments"
+
+[[fixture]]
+path = "nist/NIST-PMI-STEP-Files/"
+ap = "AP203, AP242 ed1/ed2/ed3"
+exporter = "anonymised"
+notes = "Single parts with semantic + tessellated PMI; 71–130 entity types per file; lines up to ~850 KB"

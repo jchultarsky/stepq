@@ -1,0 +1,22 @@
+name: Feature request
+description: Propose something stepq should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The task, not the feature. "I need to hand a supplier one part out of a 400-part assembly" beats "add --extract".
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This does not require evaluating geometry (tessellation, volume, bounding box, healing, unit conversion). See ROADMAP.md "Not planned".
+          required: true

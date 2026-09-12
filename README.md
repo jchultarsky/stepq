@@ -1,0 +1,109 @@
+# stepq
+
+[![CI](https://github.com/jchultarsky/stepq/actions/workflows/ci.yml/badge.svg)](https://github.com/jchultarsky/stepq/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/stepq.svg)](https://crates.io/crates/stepq)
+[![docs.rs](https://docs.rs/stepq/badge.svg)](https://docs.rs/stepq)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
+Query, inspect, split and reshape STEP (ISO 10303-21) files — a Rust library
+and a command-line tool.
+
+`stepq` works on the **entity graph** of a STEP file, not on its geometry.
+It never tessellates, never computes a volume, never "heals" anything.
+That constraint is the point: every entity that describes your geometry
+comes out exactly as it went in, byte for byte, with its original names,
+colours, layers, properties and PMI attached.
+
+> **Status: pre-alpha.** The project skeleton is in place; the parser is
+> not. Nothing works yet. See [ROADMAP.md](ROADMAP.md).
+
+## What it will do
+
+```console
+$ stepq info  assembly.stp          # header, schema, units, entity histogram
+$ stepq tree  assembly.stp          # assembly hierarchy with transforms
+$ stepq bom   assembly.stp --format csv
+$ stepq split assembly.stp --out parts/   # one file per sub-assembly and part
+$ stepq lint  assembly.stp          # structural problems, no kernel needed
+```
+
+The headline feature is `split`: explode an assembly into self-contained
+STEP files for every sub-assembly and part, preserving nested structure,
+instance placement, colours and names — without a CAD seat and without
+regenerating a single surface. As far as we can tell nothing open-source
+does this today; the usual answer is "open it in SolidWorks and Save As".
+
+Planned beyond that: `query` and `refs` (jq-style entity search and
+back-reference lookup), structural `diff` of two files, `props` and `pmi`
+extraction to JSON, `strip`/`anonymize`, and `assemble` (the inverse of
+`split`). See [ROADMAP.md](ROADMAP.md) for the tiers.
+
+## What it will not do
+
+Anything geometric. No tessellation, no mass properties, no bounding boxes,
+no unit *conversion*, no shape healing, no format conversion. If you need
+those, you need a geometry kernel; [Open CASCADE](https://dev.opencascade.org/)
+is the open-source one. `stepq` is designed to sit next to a kernel, not
+replace it.
+
+## Install
+
+Once published:
+
+```console
+$ cargo install stepq
+```
+
+As a library, without the CLI dependencies:
+
+```toml
+[dependencies]
+stepq = { version = "0.1", default-features = false }
+```
+
+## Supported input
+
+ISO 10303-21 editions 1 and 2 (`implementation_level '2;1'`), which is what
+every mainstream CAD system writes. Application protocols AP203, AP214 and
+AP242 (all editions). Part 21 edition 3 features (anchors, references,
+multiple data sections) are parsed leniently but not interpreted.
+
+## Design
+
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before contributing. The
+short version:
+
+* **Back-references first.** In STEP, a product's shape, colours, PMI and
+  placement all point *at* the product. A forward closure from a
+  `product_definition` reaches six entities and no geometry.
+* **Untyped entities, schema-checked.** AP242 has ~2,400 entity types; real
+  files use ~230. We keep instances as name + attribute tokens and validate
+  attribute counts against the EXPRESS schema rather than generating a
+  struct per type.
+* **Verbatim output.** Unchanged entities are written back from their
+  original text. Only `#id`s are renumbered.
+* **Silent failure is the enemy.** A dropped reverse reference produces a
+  file every tool reads happily with zero solids and no warning. The test
+  suite reads every output back through Open CASCADE and asserts volume
+  and solid-count invariants.
+
+## Contributing
+
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
+for how the project is organised and how to get the test fixtures.
+
+## License
+
+Licensed under either of
+
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <http://www.apache.org/licenses/LICENSE-2.0>)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in the work by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.

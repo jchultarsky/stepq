@@ -1,0 +1,37 @@
+//! Error types shared by the whole crate.
+
+/// A convenient alias for results produced by this crate.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Every failure `stepq` can report.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum Error {
+    /// The input is not well-formed ISO 10303-21.
+    #[error("syntax error at line {line}, column {column}: {message}")]
+    Syntax {
+        /// 1-based line of the offending token.
+        line: usize,
+        /// 1-based column of the offending token.
+        column: usize,
+        /// What went wrong.
+        message: String,
+    },
+
+    /// An entity instance references an `#id` that does not exist.
+    #[error("entity #{from} references undefined instance #{to}")]
+    UnresolvedReference {
+        /// The referencing instance.
+        from: u64,
+        /// The missing instance.
+        to: u64,
+    },
+
+    /// The same `#id` is declared more than once.
+    #[error("entity #{0} is defined more than once")]
+    DuplicateId(u64),
+
+    /// An I/O failure while reading or writing a file.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
