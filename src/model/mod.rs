@@ -14,4 +14,10 @@
 //! checked against the EXPRESS schema at the attribute-count level.
 //! There is no generated struct per entity type.
 //!
-//! Implementation status: not started. See `ROADMAP.md`.
+//! Implementation status: [`Graph`] builds both reference indices over a
+//! parsed [`Exchange`](crate::p21::Exchange); schema checking is not
+//! started. See `ROADMAP.md`.
+
+mod graph;
+
+pub use graph::Graph;
