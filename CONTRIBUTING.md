@@ -3,6 +3,8 @@
 Thanks for your interest. This document explains how the repository is
 organised and what a good contribution looks like.
 
+By participating you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Ground rules
 
 * **No geometry.** Anything that needs to evaluate a curve or surface is
@@ -13,6 +15,10 @@ organised and what a good contribution looks like.
   learned the hard way.
 
 ## Getting set up
+
+You need Rust 1.85 or newer (the MSRV, checked in CI) and, for the
+dependency audit, [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny)
+(`cargo install cargo-deny`).
 
 ```console
 $ git clone https://github.com/jchultarsky/stepq
@@ -35,9 +41,14 @@ $ cargo fmt --all -- --check
 $ cargo clippy --all-targets --all-features -- -D warnings
 $ cargo clippy --no-default-features -- -D warnings
 $ cargo test --all-features
-$ cargo doc --no-deps --all-features   # with RUSTDOCFLAGS="-D warnings"
+$ cargo test --no-default-features --lib
+$ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 $ cargo deny check
 ```
+
+Changes to closure or extraction logic must also keep the OCCT volume
+invariant (`tools/verify-occt.py`, see `docs/ARCHITECTURE.md`) green on the
+AS1 and NIST fixtures.
 
 Pedantic clippy is on. If a lint is wrong for a specific line, `allow` it
 there with a comment; do not disable it crate-wide without discussion.
@@ -63,7 +74,7 @@ src/
   model/          entity graph, forward + back indices (semantics)
   bin/stepq.rs    the CLI, behind the `cli` feature
 tests/            integration tests; fixtures fetched into tests/fixtures/
-tools/            developer scripts (fixture fetching, OCCT verification)
+tools/            developer scripts (fixture fetching; OCCT verification planned)
 docs/             ARCHITECTURE.md and design notes
 ```
 
@@ -73,3 +84,15 @@ Use the issue template. A bug report about a specific file is only
 actionable if you can attach the file, or a minimal file that reproduces
 it. If the file is confidential, `stepq strip --anonymize` (once it
 exists) is meant for exactly this.
+
+Panics, unbounded memory use or hangs on crafted input are security
+issues: report them privately as described in [SECURITY.md](SECURITY.md),
+not in a public issue.
+
+## Licensing
+
+`stepq` is licensed under the [MIT License](LICENSE). By submitting a pull
+request you agree that your contribution is licensed under the same terms,
+and you confirm that you have the right to license it that way. Do not add
+code copied from projects under incompatible licenses, and do not commit
+STEP files — fetch them in `tools/fetch-fixtures.sh` instead.

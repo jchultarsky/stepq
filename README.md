@@ -3,7 +3,8 @@
 [![CI](https://github.com/jchultarsky/stepq/actions/workflows/ci.yml/badge.svg)](https://github.com/jchultarsky/stepq/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/stepq.svg)](https://crates.io/crates/stepq)
 [![docs.rs](https://docs.rs/stepq/badge.svg)](https://docs.rs/stepq)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.85-orange.svg)](Cargo.toml)
 
 Query, inspect, split and reshape STEP (ISO 10303-21) files — a Rust library
 and a command-line tool.
@@ -54,6 +55,12 @@ Once published:
 $ cargo install stepq
 ```
 
+Until then, from the repository (requires Rust 1.85 or newer):
+
+```console
+$ cargo install --git https://github.com/jchultarsky/stepq
+```
+
 As a library, without the CLI dependencies:
 
 ```toml
@@ -84,26 +91,24 @@ short version:
   original text. Only `#id`s are renumbered.
 * **Silent failure is the enemy.** A dropped reverse reference produces a
   file every tool reads happily with zero solids and no warning. The test
-  suite reads every output back through Open CASCADE and asserts volume
-  and solid-count invariants.
+  oracle is therefore geometric: every output is read back through Open
+  CASCADE and checked against volume and solid-count invariants of the
+  input (`tools/verify-occt.py`, landing with `split` in 0.3).
 
 ## Contributing
 
 Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
-for how the project is organised and how to get the test fixtures.
+for how the project is organised, how to get the test fixtures, and what CI
+checks. Everyone taking part is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+Found a crash or hang on a crafted file? Please report it privately — see
+[SECURITY.md](SECURITY.md).
 
 ## License
 
-Licensed under either of
+`stepq` is released under the [MIT License](LICENSE).
 
-* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
-  <http://www.apache.org/licenses/LICENSE-2.0>)
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or
-  <http://opensource.org/licenses/MIT>)
-
-at your option.
-
-Unless you explicitly state otherwise, any contribution intentionally
-submitted for inclusion in the work by you, as defined in the Apache-2.0
-license, shall be dual licensed as above, without any additional terms or
-conditions.
+Unless you explicitly state otherwise, any contribution you intentionally
+submit for inclusion in this project is licensed under the MIT License,
+without any additional terms or conditions.

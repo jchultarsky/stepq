@@ -13,4 +13,8 @@ Until 1.0, minor versions may contain breaking changes.
 - Project skeleton: library crate with feature-gated `stepq` CLI, CI,
   lint and license configuration.
 
+### Changed
+
+- License is now MIT only (previously MIT OR Apache-2.0).
+
 [Unreleased]: https://github.com/jchultarsky/stepq/compare/main...HEAD
