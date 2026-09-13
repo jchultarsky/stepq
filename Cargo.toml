@@ -12,7 +12,7 @@ documentation = "https://docs.rs/stepq"
 readme = "README.md"
 keywords = ["step", "iso-10303", "cad", "bom", "parser"]
 categories = ["parser-implementations", "command-line-utilities", "science"]
-exclude = ["/.github", "/docs", "/fuzz", "/tests/fixtures", "/tools", "/CLAUDE.md"]
+exclude = ["/.github", "/docs", "/fuzz", "/tests/fixtures", "/tools", "/CLAUDE.md", "/dist-workspace.toml"]
 
 [lib]
 name = "stepq"
@@ -61,6 +61,10 @@ missing_errors_doc = "allow"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# The profile that dist builds release binaries with.
+[profile.dist]
+inherits = "release"
 
 [package.metadata.docs.rs]
 all-features = true

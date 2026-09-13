@@ -8,8 +8,15 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-13
+
+First release.
+
 ### Added
 
+- Prebuilt binaries for macOS (arm64, x86-64), Linux (arm64, x86-64 glibc
+  and musl) and Windows (x86-64), with shell and PowerShell installers and
+  `stepq-update`, built by dist.
 - Project skeleton: library crate with feature-gated `stepq` CLI, CI,
   lint and license configuration.
 - `p21::Lexer`: zero-copy, non-line-oriented Part 21 tokeniser covering
@@ -87,4 +94,5 @@ Until 1.0, minor versions may contain breaking changes.
 
 - License is now MIT only (previously MIT OR Apache-2.0).
 
-[Unreleased]: https://github.com/jchultarsky/stepq/compare/main...HEAD
+[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/jchultarsky/stepq/releases/tag/v0.1.0

@@ -46,12 +46,12 @@ fn version_matches_cargo() {
 }
 
 #[test]
-fn unimplemented_command_fails_cleanly() {
+fn unknown_command_fails_cleanly() {
     stepq()
-        .args(["lint", "assembly.stp"])
+        .args(["frobnicate", "assembly.stp"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not implemented"));
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
 #[test]

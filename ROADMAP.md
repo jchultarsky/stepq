@@ -3,7 +3,10 @@
 Ordered by leverage per line of code. Nothing here needs a geometry
 kernel; that is the constraint that keeps the project finishable.
 
-## 0.1 — the parser
+The first release, 0.1.0, contains the parser, structure and split
+milestones below; the open items in them carry over.
+
+## Parser
 
 - [x] Part 21 lexer: strings (`''`, `\X2\`, `\S\`), `/* */` comments,
       `#id`, `$`, `*`, enums, binaries, typed values, complex instances.
@@ -19,7 +22,7 @@ kernel; that is the constraint that keeps the project finishable.
 - [x] `stepq info`
 - [x] Fuzz targets for the lexer and parser.
 
-## 0.2 — structure
+## Structure
 
 - [x] Product tree: `product` → `product_definition_formation` →
       `product_definition`, NAUO, CDSR / RRWT / IDT.
@@ -27,9 +30,10 @@ kernel; that is the constraint that keeps the project finishable.
       `representation_map`.
 - [x] Trust the NAUO over the SRR direction (real files reverse it).
 - [x] `stepq tree`, `stepq bom` (quantities via NAUO count and
-      `quantified_assembly_component_usage`).
+      `quantified_assembly_component_usage`; multi-level tree, indented
+      CSV, nested JSON, `--flat`).
 
-## 0.3 — split
+## Split
 
 - [x] Back-reference closure with the empirically grown rule table
       (`model::RULES`: shapes, placements, styles, PMI, assembly usages),
@@ -47,7 +51,7 @@ kernel; that is the constraint that keeps the project finishable.
       equal solid counts, no lost names or colours. Already run in CI on
       every fixture rewritten by stepq (`tools/verify-rewrite.sh`).
 
-## 0.4 — inspect
+## Next: inspect (0.2)
 
 - [ ] `stepq lint`: dangling refs, duplicate ids, attribute counts,
       empty `SET[1:?]`, shared contexts across an RRWT, missing

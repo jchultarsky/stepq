@@ -105,12 +105,32 @@ src/
   lib.rs          crate root, re-exports
   error.rs        the single Error enum
   p21/            ISO 10303-21 lexer, parser, writer   (syntax only)
-  model/          entity graph, forward + back indices (semantics)
+  express/        EXPRESS schema reader and attribute-count checks
+  model/          entity graph, product structure, extraction (semantics)
+  info.rs         the summary behind `stepq info`
   bin/stepq.rs    the CLI, behind the `cli` feature
+examples/         `rewrite`, used by tools/verify-rewrite.sh
+fuzz/             cargo-fuzz targets
 tests/            integration tests; fixtures fetched into tests/fixtures/
-tools/            developer scripts (fixture fetching; OCCT verification planned)
+tools/            fixture and schema fetching, OCCT verification
 docs/             ARCHITECTURE.md and design notes
 ```
+
+## Releasing
+
+Releases are cut by [dist](https://opensource.axo.dev/cargo-dist/)
+(`dist-workspace.toml`, `.github/workflows/release.yml`). Pushing a tag
+`vX.Y.Z` builds binaries for macOS, Linux and Windows, shell and
+PowerShell installers and an updater, and publishes a GitHub release
+whose notes are the matching `CHANGELOG.md` section.
+
+1. On a branch: bump `version` in `Cargo.toml`, move **Unreleased** in
+   `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`, run `dist plan`, merge.
+2. `cargo publish` from the merged `main`.
+3. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+After changing `dist-workspace.toml` or upgrading dist, run
+`dist generate` and commit the regenerated workflow; CI fails otherwise.
 
 ## Reporting bugs
 
