@@ -2,6 +2,7 @@
 
 #![cfg(feature = "cli")]
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use assert_cmd::Command;
@@ -463,6 +464,173 @@ fn bom_json_is_nested() {
     assert_eq!(bolt["kind"], "part");
     assert_eq!(bolt["components"], serde_json::json!([]));
     assert!(bolt.get("truncated").is_none());
+}
+
+#[test]
+fn lint_warnings_alone_exit_zero() {
+    stepq()
+        .args(["lint", "-"])
+        .write_stdin(SAMPLE)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "<stdin>: schema checks skipped (pass --schema)\n\
+             \n\
+             SEVERITY  CHECK                           INSTANCE  MESSAGE\n\
+             warning   missing-application-protocol              no APPLICATION_PROTOCOL_DEFINITION; readers cannot tell which protocol the file conforms to\n\
+             warning   uncategorized-product                 #1  PRODUCT is in no PRODUCT_RELATED_PRODUCT_CATEGORY\n\
+             \n\
+             0 errors, 2 warnings\n",
+        ));
+}
+
+/// Two representations placed by a transformation but sharing one context,
+/// and a reference to an instance that does not exist.
+const LINT_ERRORS: &str = "ISO-10303-21;HEADER;FILE_SCHEMA(('DEMO'));ENDSEC;DATA;
+#1=APPLICATION_PROTOCOL_DEFINITION('','demo',2026,#2);
+#2=APPLICATION_CONTEXT('');
+#10=GEOMETRIC_REPRESENTATION_CONTEXT(3);
+#20=SHAPE_REPRESENTATION('',(),#10);
+#21=SHAPE_REPRESENTATION('',(),#10);
+#30=REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION('','',#20,#21,#40);
+#40=ITEM_DEFINED_TRANSFORMATION('','',#99,#99);
+ENDSEC;END-ISO-10303-21;";
+
+#[test]
+fn lint_errors_exit_one() {
+    stepq()
+        .args(["lint", "-"])
+        .write_stdin(LINT_ERRORS)
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(
+            "error     shared-context                       #30  representations #20 and #21 share context #10",
+        ))
+        .stdout(predicate::str::contains(
+            "error     dangling-reference                   #40  references undefined instance #99",
+        ))
+        .stdout(predicate::str::ends_with("3 errors, 0 warnings\n"));
+    stepq()
+        .args(["lint", "-"])
+        .write_stdin("ISO-10303-21;HEADER;ENDSEC;DATA;#1=A(;")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("syntax"));
+}
+
+#[test]
+fn lint_csv_and_json() {
+    stepq()
+        .args(["lint", "-", "--format", "csv"])
+        .write_stdin(LINT_ERRORS)
+        .assert()
+        .code(1)
+        .stdout(predicate::str::diff(
+            "severity,check,instance,message\n\
+             error,shared-context,#30,representations #20 and #21 share context #10; a transformation needs two distinct contexts\n\
+             error,dangling-reference,#40,references undefined instance #99\n\
+             error,dangling-reference,#40,references undefined instance #99\n",
+        ));
+
+    let output = stepq()
+        .args(["--format", "json", "lint", "-"])
+        .write_stdin(LINT_ERRORS)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["file"], "<stdin>");
+    assert_eq!(json["errors"], 3);
+    assert_eq!(json["warnings"], 0);
+    assert_eq!(json["file_schemas"], serde_json::json!(["DEMO"]));
+    assert_eq!(json["checked_schema"], serde_json::Value::Null);
+    assert_eq!(json["findings"][0]["check"], "shared-context");
+    assert_eq!(json["findings"][0]["severity"], "error");
+    assert_eq!(json["findings"][0]["instance"], 30);
+}
+
+#[test]
+fn lint_reads_schemas_from_a_directory() {
+    let dir = std::env::temp_dir().join(format!("stepq-lint-schemas-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("demo.exp"),
+        "SCHEMA demo;
+ENTITY application_context; application : STRING; END_ENTITY;
+ENTITY application_protocol_definition;
+  status : STRING; name : STRING; year : INTEGER; application : application_context;
+END_ENTITY;
+ENTITY point; name : STRING; END_ENTITY;
+END_SCHEMA;",
+    )
+    .unwrap();
+    let src = "ISO-10303-21;HEADER;FILE_SCHEMA(('DEMO'));ENDSEC;DATA;
+#1=APPLICATION_PROTOCOL_DEFINITION('','demo',2026,#2);
+#2=APPLICATION_CONTEXT('');
+#3=POINT('p',1.);
+ENDSEC;END-ISO-10303-21;";
+    let assert = stepq()
+        .args(["lint", "-", "--schema"])
+        .arg(&dir)
+        .write_stdin(src)
+        .assert();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert
+        .code(1)
+        .stdout(predicate::str::starts_with(
+            "<stdin>: checked against DEMO\n",
+        ))
+        .stdout(predicate::str::contains("error     attribute-count "))
+        .stdout(predicate::str::contains(
+            " #3  POINT: expected 1 attribute, found 2\n",
+        ));
+
+    stepq()
+        .args(["lint", "-", "--schema", "no/such/schema.exp"])
+        .write_stdin(src)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("reading no/such/schema.exp"));
+}
+
+#[test]
+fn lint_table_lists_ten_findings_per_check_unless_all() {
+    let products = (1..=12).fold(String::new(), |mut products, id| {
+        writeln!(products, "#{id}=PRODUCT('p{id}','p{id}','',());").unwrap();
+        products
+    });
+    let src = format!(
+        "ISO-10303-21;HEADER;FILE_SCHEMA(('DEMO'));ENDSEC;DATA;
+#100=APPLICATION_PROTOCOL_DEFINITION('','demo',2026,#101);
+#101=APPLICATION_CONTEXT('');
+{products}ENDSEC;END-ISO-10303-21;"
+    );
+    let limited = stepq()
+        .args(["lint", "-"])
+        .write_stdin(src.clone())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(limited.get_output().stdout.clone()).unwrap();
+    assert_eq!(
+        stdout.matches("uncategorized-product ").count(),
+        11,
+        "{stdout}"
+    );
+    assert!(stdout.contains("… 2 more (--all lists them)"), "{stdout}");
+    assert!(stdout.ends_with("0 errors, 12 warnings\n"), "{stdout}");
+
+    let all = stepq()
+        .args(["lint", "-", "--all"])
+        .write_stdin(src)
+        .assert()
+        .success();
+    let stdout = String::from_utf8(all.get_output().stdout.clone()).unwrap();
+    assert_eq!(
+        stdout.matches("uncategorized-product ").count(),
+        12,
+        "{stdout}"
+    );
+    assert!(!stdout.contains("more (--all"), "{stdout}");
 }
 
 #[test]
