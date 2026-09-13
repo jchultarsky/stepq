@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REL_TOL = 1e-9
+VOLUME_EPS = 1e-9
 
 
 @dataclass
@@ -40,6 +41,11 @@ class Summary:
     volume: float = 0.0
     names: set[str] = field(default_factory=set)
     colours: set[tuple[float, float, float]] = field(default_factory=set)
+    # Names of the top-level (free) shapes: the file's root products.
+    top_names: set[str] = field(default_factory=set)
+    # (solids, volume) of every part shape — each shape that is not an
+    # assembly — measured unplaced, once per shape however often it is used.
+    prototypes: list[tuple[int, float]] = field(default_factory=list)
 
     def line(self) -> str:
         return (
@@ -87,17 +93,41 @@ def read(path: Path) -> Summary:
                     (round(colour.Red(), 4), round(colour.Green(), 4), round(colour.Blue(), 4))
                 )
 
-    for label in labels(shapes.GetShapes):
+    def name_of(label) -> str | None:
         # FindAttribute on a label without a name segfaults in cadquery-ocp
         # 8.0.1 (seen on moon_buggy_asm and nist_ctc_02_asme1_ap242-e2), so
         # ask first.
-        if label.IsAttribute(TDataStd_Name.GetID_s()):
-            name = TDataStd_Name()
-            label.FindAttribute(TDataStd_Name.GetID_s(), name)
-            summary.names.add(name.Get().ToExtString())
-        colour_of(shapes.GetShape_s(label))
+        if not label.IsAttribute(TDataStd_Name.GetID_s()):
+            return None
+        name = TDataStd_Name()
+        label.FindAttribute(TDataStd_Name.GetID_s(), name)
+        return name.Get().ToExtString()
+
+    def volume_of(shape) -> float:
+        # Adaptive integration with an error bound: the default quadrature
+        # differs by up to ~1e-6 relative between runs of the same geometry.
+        properties = GProp_GProps()
+        BRepGProp.VolumeProperties_s(shape, properties, VOLUME_EPS)
+        return properties.Mass()
+
+    def solids_of(shape) -> int:
+        count, explorer = 0, TopExp_Explorer(shape, TopAbs_SOLID)
+        while explorer.More():
+            count += 1
+            explorer.Next()
+        return count
+
+    for label in labels(shapes.GetShapes):
+        if (name := name_of(label)) is not None:
+            summary.names.add(name)
+        shape = shapes.GetShape_s(label)
+        colour_of(shape)
+        if not shapes.IsAssembly_s(label) and (count := solids_of(shape)):
+            summary.prototypes.append((count, volume_of(shape)))
 
     for label in labels(shapes.GetFreeShapes):
+        if (name := name_of(label)) is not None:
+            summary.top_names.add(name)
         shape = shapes.GetShape_s(label)
         explorer = TopExp_Explorer(shape, TopAbs_SOLID)
         while explorer.More():
@@ -108,14 +138,18 @@ def read(path: Path) -> Summary:
         while explorer.More():
             colour_of(explorer.Current())
             explorer.Next()
-        properties = GProp_GProps()
-        BRepGProp.VolumeProperties_s(shape, properties)
-        summary.volume += properties.Mass()
+        summary.volume += volume_of(shape)
     return summary
 
 
-def compare(source: Summary, outputs: list[Summary]) -> list[str]:
-    """The ways `outputs` together fail to account for `source`."""
+def compare(
+    source: Summary, outputs: list[Summary], ignore_names: frozenset[str] = frozenset()
+) -> list[str]:
+    """The ways `outputs` together fail to account for `source`.
+
+    `ignore_names` lists names allowed to be missing, such as an assembly's
+    own name when its components are compared against it.
+    """
     problems = []
     solids = sum(o.solids for o in outputs)
     volume = sum(o.volume for o in outputs)
@@ -128,7 +162,7 @@ def compare(source: Summary, outputs: list[Summary]) -> list[str]:
             f"(relative difference {abs(volume - source.volume) / scale:.3e})"
         )
     names = set().union(*(o.names for o in outputs))
-    if missing := sorted(source.names - names):
+    if missing := sorted(source.names - names - ignore_names):
         problems.append(f"names missing from outputs: {missing}")
     colours = set().union(*(o.colours for o in outputs))
     if missing := sorted(source.colours - colours):

@@ -40,6 +40,19 @@ Until 1.0, minor versions may contain breaking changes.
   total volume (relative 1e-9), names and colours. `tools/verify-rewrite.sh`
   and a CI job apply it to every fixture rewritten by the new `rewrite`
   example.
+- `model::extract` and `model::RULES`: extracts a product definition with
+  everything that belongs to it — a fixpoint over forward references and a
+  rule table of back references (shapes, placements, styles, PMI, child
+  usages). Shared aggregates (layers, categories, approvals, …) are kept
+  with their lists filtered. `model::orphans` reports what no extraction
+  takes.
+- `p21::Writer::write_pruned`: writes a selection in which shared
+  aggregates drop list items that are not selected.
+- `stepq split`: writes one self-contained file per product definition,
+  renumbered, with `--report-orphans` and `--force`.
+- `tools/verify-split.py`: splits every fixture and checks through Open
+  CASCADE that top-level outputs reproduce the input and that each
+  assembly equals its components.
 - Fuzz targets `lex` and `parse` (cargo-fuzz, with a Part 21 dictionary),
   run for 60 seconds each in CI.
 - `express::Schema`: reads long-form EXPRESS schemas at run time

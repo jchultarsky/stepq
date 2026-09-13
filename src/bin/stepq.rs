@@ -64,13 +64,24 @@ enum Command {
         /// STEP file to inspect, or `-` for standard input.
         file: PathBuf,
     },
-    /// Explode an assembly into one file per sub-assembly and part.
+    /// Write one self-contained STEP file per product definition: every
+    /// assembly and every part, each with everything that belongs to it.
+    ///
+    /// Instances are copied byte for byte and renumbered from #1. Aggregates
+    /// shared by several products (layers, categories, approvals) keep only
+    /// the items of each output. The input must have no dangling references.
     Split {
-        /// STEP file to split.
+        /// STEP file to split, or `-` for standard input.
         file: PathBuf,
-        /// Directory to write the output files into.
+        /// Directory to write the output files into; created if missing.
         #[arg(short, long, default_value = ".")]
         out: PathBuf,
+        /// Overwrite output files that already exist.
+        #[arg(long)]
+        force: bool,
+        /// Also list the entity types that no output contains.
+        #[arg(long)]
+        report_orphans: bool,
     },
     /// Check a file for structural problems.
     Lint {
@@ -97,7 +108,12 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Info { file, top } => info(file, cli.format, *top),
         Command::Tree { file, usages } => tree(file, cli.format, *usages),
         Command::Bom { file } => bom(file, cli.format),
-        Command::Split { .. } => not_implemented("split"),
+        Command::Split {
+            file,
+            out,
+            force,
+            report_orphans,
+        } => split(file, out, cli.format, *force, *report_orphans),
         Command::Lint { .. } => not_implemented("lint"),
     }
 }
@@ -273,6 +289,217 @@ fn write_info_table(out: &mut impl Write, name: &str, info: &Info, top: usize) -
         writeln!(out, "{:>10}  … {hidden} more (--top 0 lists all)", "")?;
     }
     Ok(())
+}
+
+/// One file written by `stepq split`.
+#[derive(serde::Serialize)]
+struct SplitFile<'a> {
+    file: String,
+    kind: &'static str,
+    definition: &'a Definition,
+    instances: usize,
+    pruned: usize,
+}
+
+fn split(
+    path: &Path,
+    dir: &Path,
+    format: Format,
+    force: bool,
+    report_orphans: bool,
+) -> anyhow::Result<()> {
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let exchange = parse(&src).with_context(|| format!("parsing {name}"))?;
+    let graph = Graph::new(exchange).with_context(|| {
+        format!("{name} has a dangling reference, so no output of it could be complete")
+    })?;
+    let structure = ProductStructure::new(&graph);
+    let definitions = structure.definitions();
+    if definitions.is_empty() {
+        bail!("{name} has no product definitions to split");
+    }
+
+    let mut used = std::collections::HashSet::new();
+    let mut plans = Vec::with_capacity(definitions.len());
+    for (index, definition) in definitions.iter().enumerate() {
+        let node = graph
+            .node(definition.instance)
+            .context("product definition missing from the graph")?;
+        let file = output_name(definition, &mut used);
+        let target = dir.join(&file);
+        if target.exists() && !force {
+            bail!(
+                "{} already exists; use --force to overwrite",
+                target.display()
+            );
+        }
+        plans.push((index, node, file, target));
+    }
+
+    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let mut extractions = Vec::with_capacity(plans.len());
+    let mut written = Vec::with_capacity(plans.len());
+    for (index, node, file, target) in plans {
+        let extraction = stepq::model::extract(&graph, &[node]);
+        let output =
+            fs::File::create(&target).with_context(|| format!("creating {}", target.display()))?;
+        stepq::p21::Writer::new(graph.exchange())
+            .numbering(stepq::p21::Numbering::Dense)
+            .write_pruned(
+                extraction.nodes().iter().copied(),
+                extraction.pruned().iter().copied(),
+                output,
+            )
+            .with_context(|| format!("writing {}", target.display()))?;
+        written.push(SplitFile {
+            file,
+            kind: kind(structure.children(index).len() > 0),
+            definition: &definitions[index],
+            instances: extraction.nodes().len(),
+            pruned: extraction.pruned().len(),
+        });
+        extractions.push(extraction);
+    }
+
+    let orphans: Vec<(String, usize)> = if report_orphans {
+        orphan_types(&graph, &stepq::model::orphans(&graph, &extractions))
+    } else {
+        Vec::new()
+    };
+
+    write_split_report(
+        dir,
+        format,
+        &written,
+        report_orphans.then_some(orphans.as_slice()),
+    )
+}
+
+/// Prints what `stepq split` wrote, and the orphans when asked for.
+fn write_split_report(
+    dir: &Path,
+    format: Format,
+    written: &[SplitFile<'_>],
+    orphans: Option<&[(String, usize)]>,
+) -> anyhow::Result<()> {
+    let mut out = BufWriter::new(io::stdout().lock());
+    match format {
+        Format::Table => {
+            writeln!(
+                out,
+                "{:>10}  {:>6}  {:<8}  FILE",
+                "INSTANCES", "PRUNED", "TYPE"
+            )?;
+            for entry in written {
+                writeln!(
+                    out,
+                    "{:>10}  {:>6}  {:<8}  {}",
+                    grouped(entry.instances),
+                    entry.pruned,
+                    entry.kind,
+                    entry.file
+                )?;
+            }
+            writeln!(out)?;
+            writeln!(out, "wrote {} files to {}", written.len(), dir.display())?;
+            if let Some(orphans) = orphans {
+                let total: usize = orphans.iter().map(|(_, count)| count).sum();
+                writeln!(out, "{} instances are in no output", grouped(total))?;
+                for (entity, count) in orphans {
+                    writeln!(out, "{:>10}  {entity}", grouped(*count))?;
+                }
+            }
+        }
+        Format::Json => {
+            #[derive(serde::Serialize)]
+            struct Report<'a> {
+                directory: String,
+                files: &'a [SplitFile<'a>],
+                #[serde(skip_serializing_if = "Option::is_none")]
+                orphans: Option<&'a [(String, usize)]>,
+            }
+            serde_json::to_writer_pretty(
+                &mut out,
+                &Report {
+                    directory: dir.display().to_string(),
+                    files: written,
+                    orphans,
+                },
+            )?;
+            writeln!(out)?;
+        }
+        Format::Csv => {
+            writeln!(
+                out,
+                "file,type,definition,product_id,product_name,instances,pruned"
+            )?;
+            for entry in written {
+                let product = entry.definition.product.as_ref();
+                writeln!(
+                    out,
+                    "{},{},{},{},{},{},{}",
+                    csv_field(&entry.file),
+                    entry.kind,
+                    entry.definition.instance,
+                    csv_field(product.and_then(|p| p.id.as_deref()).unwrap_or_default()),
+                    csv_field(product.and_then(|p| p.name.as_deref()).unwrap_or_default()),
+                    entry.instances,
+                    entry.pruned
+                )?;
+            }
+        }
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// A file name for `definition`'s output: its product id (or name, or
+/// definition id) with anything but letters, digits, `.`, `_` and `-`
+/// replaced, made unique within `used`.
+fn output_name(definition: &Definition, used: &mut std::collections::HashSet<String>) -> String {
+    let product = definition.product.as_ref();
+    let label = product
+        .and_then(|p| p.id.as_deref())
+        .or(product.and_then(|p| p.name.as_deref()))
+        .or(definition.id.as_deref())
+        .unwrap_or_default();
+    let mut stem: String = label
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if stem.trim_matches(['_', '.']).is_empty() {
+        stem = format!("definition-{}", definition.instance);
+    }
+    let mut file = format!("{stem}.stp");
+    if !used.insert(file.to_ascii_lowercase()) {
+        file = format!("{stem}-{}.stp", definition.instance);
+        used.insert(file.to_ascii_lowercase());
+    }
+    file
+}
+
+/// Entity types of `nodes`, with counts, most frequent first.
+fn orphan_types(graph: &Graph<'_>, nodes: &[usize]) -> Vec<(String, usize)> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for &node in nodes {
+        let names: Vec<String> = graph
+            .exchange()
+            .records(graph.instance(node))
+            .map(|r| String::from_utf8_lossy(r.name()).to_ascii_uppercase())
+            .collect();
+        *counts.entry(names.join("+")).or_default() += 1;
+    }
+    let mut counts: Vec<(String, usize)> = counts.into_iter().collect();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    counts
 }
 
 /// Reads and parses `path` into its product structure.

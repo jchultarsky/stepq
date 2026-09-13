@@ -48,7 +48,7 @@ fn version_matches_cargo() {
 #[test]
 fn unimplemented_command_fails_cleanly() {
     stepq()
-        .args(["split", "assembly.stp"])
+        .args(["lint", "assembly.stp"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("not implemented"));

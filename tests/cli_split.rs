@@ -1,0 +1,128 @@
+//! Tests for `stepq split`.
+
+#![cfg(feature = "cli")]
+
+use std::fs;
+use std::path::PathBuf;
+
+use assert_cmd::Command;
+use predicates::prelude::*;
+
+/// Assembly A uses part C twice; a category lists both products.
+const ASSEMBLY: &str = "ISO-10303-21;HEADER;FILE_SCHEMA(('AP214'));ENDSEC;DATA;
+#1=APPLICATION_CONTEXT('design');
+#2=APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2001,#1);
+#3=PRODUCT_CONTEXT('',#1,'mechanical');
+#4=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');
+#11=PRODUCT('A','assembly','',(#3));
+#12=PRODUCT_DEFINITION_FORMATION('1','',#11);
+#10=PRODUCT_DEFINITION('a','',#12,#4);
+#31=PRODUCT('C/1','bolt','',(#3));
+#32=PRODUCT_DEFINITION_FORMATION('1','',#31);
+#30=PRODUCT_DEFINITION('c','',#32,#4);
+#40=PRODUCT_RELATED_PRODUCT_CATEGORY('part','',(#11,#31));
+#100=NEXT_ASSEMBLY_USAGE_OCCURRENCE('u1','C1','',#10,#30,$);
+#101=NEXT_ASSEMBLY_USAGE_OCCURRENCE('u2','C2','',#10,#30,$);
+ENDSEC;END-ISO-10303-21;";
+
+/// A fresh, empty directory for one test.
+fn scratch(test: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("stepq-{test}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    dir
+}
+
+fn stepq() -> Command {
+    Command::cargo_bin("stepq").unwrap()
+}
+
+#[test]
+fn split_writes_one_self_contained_file_per_definition() {
+    let dir = scratch("split-files");
+    stepq()
+        .args(["split", "-", "--format", "csv", "--out"])
+        .arg(&dir)
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "file,type,definition,product_id,product_name,instances,pruned\n\
+             A.stp,assembly,10,A,assembly,13,1\n\
+             C_1.stp,part,30,C/1,bolt,8,1\n",
+        ));
+
+    let assembly = fs::read_to_string(dir.join("A.stp")).unwrap();
+    assert!(assembly.contains("PRODUCT('A'"));
+    assert!(assembly.contains("PRODUCT('C/1'"));
+    assert_eq!(
+        assembly.matches("NEXT_ASSEMBLY_USAGE_OCCURRENCE").count(),
+        2
+    );
+
+    let part = fs::read_to_string(dir.join("C_1.stp")).unwrap();
+    assert!(part.contains("PRODUCT('C/1'"));
+    assert!(!part.contains("PRODUCT('A'"), "the parent is not copied");
+    assert!(!part.contains("NEXT_ASSEMBLY_USAGE_OCCURRENCE"));
+    assert!(
+        part.contains("PRODUCT_RELATED_PRODUCT_CATEGORY('part','',(#"),
+        "the shared category is kept, filtered"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn split_refuses_to_overwrite_without_force() {
+    let dir = scratch("split-force");
+    stepq()
+        .args(["split", "-", "--out"])
+        .arg(&dir)
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote 2 files to"));
+    stepq()
+        .args(["split", "-", "--out"])
+        .arg(&dir)
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists; use --force"));
+    stepq()
+        .args(["split", "-", "--force", "--out"])
+        .arg(&dir)
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success();
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn split_reports_orphans() {
+    let dir = scratch("split-orphans");
+    let with_orphan = ASSEMBLY.replace(
+        "ENDSEC;END",
+        "#900=DRAUGHTING_PRE_DEFINED_COLOUR('red');\nENDSEC;END",
+    );
+    stepq()
+        .args(["split", "-", "--report-orphans", "--out"])
+        .arg(&dir)
+        .write_stdin(with_orphan)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 instances are in no output"))
+        .stdout(predicate::str::contains("DRAUGHTING_PRE_DEFINED_COLOUR"));
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn split_refuses_dangling_references() {
+    let dir = scratch("split-dangling");
+    stepq()
+        .args(["split", "-", "--out"])
+        .arg(&dir)
+        .write_stdin(ASSEMBLY.replace("(#11,#31)", "(#11,#99)"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("dangling reference"));
+    assert!(!dir.exists(), "nothing is written");
+}

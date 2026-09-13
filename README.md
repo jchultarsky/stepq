@@ -16,8 +16,9 @@ comes out exactly as it went in, byte for byte, with its original names,
 colours, layers, properties and PMI attached.
 
 > **Status: pre-alpha.** The Part 21 parser, reference graph, writer and
-> EXPRESS schema reader are in place, and `stepq info`, `tree` and `bom`
-> work. Everything else below is still ahead; see [ROADMAP.md](ROADMAP.md).
+> EXPRESS schema reader are in place, and `stepq info`, `tree`, `bom` and
+> `split` work. Everything else below is still ahead; see
+> [ROADMAP.md](ROADMAP.md).
 
 ## What it does, and will do
 
@@ -25,7 +26,7 @@ colours, layers, properties and PMI attached.
 $ stepq info  assembly.stp          # header, schema, units, entity histogram (works today)
 $ stepq tree  assembly.stp          # assembly hierarchy and placements (works today)
 $ stepq bom   assembly.stp --format csv   # rolled-up quantities (works today)
-$ stepq split assembly.stp --out parts/   # one file per sub-assembly and part
+$ stepq split assembly.stp --out parts/   # one file per sub-assembly and part (works today)
 $ stepq lint  assembly.stp          # structural problems, no kernel needed
 ```
 

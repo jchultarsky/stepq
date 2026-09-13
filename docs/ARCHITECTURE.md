@@ -56,6 +56,22 @@ equal solid counts and equal name/colour sets. `tools/verify-occt.py`
 implements this. It is a dev-time tool; OCCT is never a runtime
 dependency.
 
+Two measured caveats, both about OCCT rather than stepq
+(`tools/verify-split.py` encodes them):
+
+* A volume integrated at a different placement is not bit-identical.
+  Summing placed component volumes of the NIST weldment differs from the
+  assembly by 2e-7 relative, while every one of its 33 component shapes
+  matches its own file exactly and placement determinants are 1 to
+  2e-16. So components are compared unplaced at 1e-9, solid counts
+  exactly, and only the placed volume sum at 1e-6.
+* OCCT's default volume quadrature is not stable to 1e-9 on curved
+  geometry (6.9e-7 on moon_buggy); use the adaptive integration with an
+  error bound. And in a file with several top-level product definitions
+  and no assembly structure, OCCT does not transfer every definition's
+  shape (NIST FTC-09), so outputs there are bounded by the input rather
+  than summed.
+
 ## Entities stay untyped
 
 AP242 ed4 declares 2,407 entity types, 248 of them with multiple

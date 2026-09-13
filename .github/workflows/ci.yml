@@ -123,6 +123,9 @@ jobs:
       # Rewrites every fixture with renumbered instances and checks through
       # Open CASCADE that solids, volume, names and colours are unchanged.
       - run: tools/verify-rewrite.sh
+      # Splits every fixture and checks that top-level outputs reproduce the
+      # input and that each assembly equals its components.
+      - run: tools/verify-split.py
 
   deny:
     name: cargo-deny

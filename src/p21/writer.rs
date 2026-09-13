@@ -114,10 +114,43 @@ impl<'e, 'a> Writer<'e, 'a> {
         positions: impl IntoIterator<Item = usize>,
         out: W,
     ) -> Result<()> {
+        self.write_pruned(positions, [], out)
+    }
+
+    /// Like [`write_selection`](Self::write_selection), except that the
+    /// instances at `pruned` positions may list instances that are not
+    /// selected: those list items are removed, with their separating commas,
+    /// and everything else in the instance is copied as usual.
+    ///
+    /// This is how an aggregate shared by many products — a layer
+    /// assignment, a category — is written into a file holding only some of
+    /// them. Only items of a list are removed; a pruned instance's other
+    /// references must still be selected. A list can become empty, which the
+    /// caller must avoid where the schema forbids it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnresolvedReference`] for a reference to an
+    /// unselected instance that is not a list item of a pruned instance,
+    /// before anything is written; [`Error::Io`] if writing fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a position is out of range.
+    pub fn write_pruned<W: Write>(
+        &self,
+        positions: impl IntoIterator<Item = usize>,
+        pruned: impl IntoIterator<Item = usize>,
+        out: W,
+    ) -> Result<()> {
         let names = self.assign_names(positions);
-        self.check_closed(&names)?;
+        let mut is_pruned = vec![false; names.len()];
+        for position in pruned {
+            is_pruned[position] = true;
+        }
+        let plans = self.check_closed(&names, &is_pruned)?;
         let mut out = BufWriter::new(out);
-        self.write_file(&mut out, &names)?;
+        self.write_file(&mut out, &names, &plans)?;
         out.flush()?;
         Ok(())
     }
@@ -140,20 +173,107 @@ impl<'e, 'a> Writer<'e, 'a> {
         names
     }
 
-    fn check_closed(&self, names: &[Option<u64>]) -> Result<()> {
+    /// Checks that every selected instance's references resolve, and plans
+    /// the list items to remove from pruned instances. Returns, by position,
+    /// which of a pruned instance's tokens to drop.
+    fn check_closed(
+        &self,
+        names: &[Option<u64>],
+        pruned: &[bool],
+    ) -> Result<Vec<Option<Vec<bool>>>> {
         let exchange = self.exchange;
-        for (instance, name) in exchange.instances().iter().zip(names) {
+        let mut plans = vec![None; names.len()];
+        for (position, (instance, name)) in exchange.instances().iter().zip(names).enumerate() {
             if name.is_none() {
                 continue;
             }
-            for id in exchange.references(instance) {
-                target_name(exchange, names, instance, id)?;
+            if pruned[position] {
+                plans[position] = Some(self.removal_plan(instance, names)?);
+            } else {
+                for id in exchange.references(instance) {
+                    target_name(exchange, names, instance, id)?;
+                }
             }
         }
-        Ok(())
+        Ok(plans)
     }
 
-    fn write_file(&self, out: &mut impl Write, names: &[Option<u64>]) -> Result<()> {
+    /// Which tokens of `instance` to drop so that no list item refers to an
+    /// unselected instance, keeping exactly one comma between the items left.
+    fn removal_plan(&self, instance: &Instance, names: &[Option<u64>]) -> Result<Vec<bool>> {
+        let exchange = self.exchange;
+        let tokens = exchange.instance_tokens(instance);
+
+        // The `(` enclosing each token; a `(` right after a name opens a
+        // record or typed value, not a list.
+        let mut enclosing = vec![None; tokens.len()];
+        let mut open = Vec::new();
+        for (i, token) in tokens.iter().enumerate() {
+            enclosing[i] = open.last().copied();
+            match token.kind {
+                TokenKind::LeftParen => open.push(i),
+                TokenKind::RightParen => {
+                    open.pop();
+                }
+                _ => {}
+            }
+        }
+        let in_list = |i: usize| {
+            enclosing[i].is_some_and(|paren: usize| {
+                paren > 0
+                    && !matches!(
+                        tokens[paren - 1].kind,
+                        TokenKind::Keyword | TokenKind::UserKeyword
+                    )
+            })
+        };
+
+        let mut removed = vec![false; tokens.len()];
+        for (i, token) in tokens.iter().enumerate() {
+            let TokenKind::InstanceName(id) = token.kind else {
+                continue;
+            };
+            if target_name(exchange, names, instance, id).is_ok() {
+                continue;
+            }
+            let before = i.checked_sub(1).map(|j| tokens[j].kind);
+            let after = tokens.get(i + 1).map(|t| t.kind);
+            let is_item = in_list(i)
+                && matches!(before, Some(TokenKind::LeftParen | TokenKind::Comma))
+                && matches!(after, Some(TokenKind::Comma | TokenKind::RightParen));
+            if !is_item {
+                return Err(Error::UnresolvedReference {
+                    from: instance.id,
+                    to: id,
+                });
+            }
+            removed[i] = true;
+            if after == Some(TokenKind::Comma) {
+                removed[i + 1] = true;
+            } else {
+                // The last item: drop the nearest comma before it still kept.
+                let mut j = i;
+                while j > 0 {
+                    j -= 1;
+                    if removed[j] {
+                        continue;
+                    }
+                    if tokens[j].kind == TokenKind::Comma {
+                        removed[j] = true;
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(removed)
+    }
+
+    fn write_file(
+        &self,
+        out: &mut impl Write,
+        names: &[Option<u64>],
+        plans: &[Option<Vec<bool>>],
+    ) -> Result<()> {
         let exchange = self.exchange;
         out.write_all(b"ISO-10303-21;\nHEADER;")?;
         out.write_all(self.header.unwrap_or_else(|| exchange.header_text()))?;
@@ -164,7 +284,13 @@ impl<'e, 'a> Writer<'e, 'a> {
             out.write_all(b";\n")?;
             for position in positions {
                 if let Some(name) = names[position] {
-                    self.write_instance(out, &exchange.instances()[position], name, names)?;
+                    self.write_instance(
+                        out,
+                        &exchange.instances()[position],
+                        name,
+                        names,
+                        plans[position].as_deref(),
+                    )?;
                     out.write_all(b"\n")?;
                 }
             }
@@ -174,31 +300,41 @@ impl<'e, 'a> Writer<'e, 'a> {
         Ok(())
     }
 
+    /// Writes one instance from its source text, renaming instance names
+    /// when renumbering and dropping the tokens `removed` marks.
     fn write_instance(
         &self,
         out: &mut impl Write,
         instance: &Instance,
         name: u64,
         names: &[Option<u64>],
+        removed: Option<&[bool]>,
     ) -> Result<()> {
         let exchange = self.exchange;
         let text = exchange.text(instance);
-        if self.numbering == Numbering::Preserve {
+        let dense = self.numbering == Numbering::Dense;
+        if !dense && removed.is_none() {
             out.write_all(text)?;
             return Ok(());
         }
 
         let src = exchange.source();
-        let digits = text
-            .get(1..)
-            .unwrap_or_default()
-            .iter()
-            .take_while(|b| b.is_ascii_digit())
-            .count();
-        write!(out, "#{name}")?;
-        let mut cursor = instance.span.start + 1 + digits;
-        for token in exchange.instance_tokens(instance) {
-            if let TokenKind::InstanceName(id) = token.kind {
+        let mut cursor = instance.span.start;
+        if dense {
+            let digits = text
+                .get(1..)
+                .unwrap_or_default()
+                .iter()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+            write!(out, "#{name}")?;
+            cursor += 1 + digits;
+        }
+        for (i, token) in exchange.instance_tokens(instance).iter().enumerate() {
+            if removed.is_some_and(|removed| removed[i]) {
+                out.write_all(&src[cursor..token.span.start])?;
+                cursor = token.span.end;
+            } else if let (true, TokenKind::InstanceName(id)) = (dense, token.kind) {
                 let target = target_name(exchange, names, instance, id)?;
                 out.write_all(&src[cursor..token.span.start])?;
                 write!(out, "#{target}")?;
@@ -344,6 +480,87 @@ mod tests {
         assert!(matches!(
             Writer::new(&exchange).write_all(Full),
             Err(Error::Io(_))
+        ));
+    }
+
+    /// Positions 0–2 are #1–#3; 3–7 are the lists. #2 is left out.
+    const LISTS: &str = "#1=A();\n#2=B();\n#3=C();\n\
+         #10=L('middle',(#1, #2 ,#3));\n\
+         #11=L('only',(#2));\n\
+         #12=L('last and repeated',(#1,#2,#3,#2));\n\
+         #13=L('nested',((#2,#1),#3));\n\
+         #14=L('all',(#2,#2));\n";
+
+    fn write_pruned(numbering: Numbering) -> String {
+        let src = file_with(LISTS);
+        let exchange = parse(src.as_bytes()).unwrap();
+        let mut out = Vec::new();
+        Writer::new(&exchange)
+            .numbering(numbering)
+            .write_pruned([0, 2, 3, 4, 5, 6, 7], [3, 4, 5, 6, 7], &mut out)
+            .unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn pruning_removes_list_items_and_their_commas() {
+        assert_eq!(
+            write_pruned(Numbering::Preserve),
+            file_with(
+                "#1=A();\n#3=C();\n\
+                 #10=L('middle',(#1,  #3));\n\
+                 #11=L('only',());\n\
+                 #12=L('last and repeated',(#1,#3));\n\
+                 #13=L('nested',((#1),#3));\n\
+                 #14=L('all',());\n"
+            )
+        );
+        assert_eq!(
+            write_pruned(Numbering::Dense),
+            file_with(
+                "#1=A();\n#2=C();\n\
+                 #3=L('middle',(#1,  #2));\n\
+                 #4=L('only',());\n\
+                 #5=L('last and repeated',(#1,#2));\n\
+                 #6=L('nested',((#1),#2));\n\
+                 #7=L('all',());\n"
+            )
+        );
+    }
+
+    #[test]
+    fn pruning_never_removes_attributes_that_are_not_list_items() {
+        for data in [
+            "#1=A();\n#2=R(#1);\n",
+            "#1=A();\n#2=R('x',#1);\n",
+            "#1=A();\n#2=R(T(#1));\n",
+            "#1=A();\n#2=(P(#1)Q());\n",
+        ] {
+            let src = file_with(data);
+            let exchange = parse(src.as_bytes()).unwrap();
+            let mut out = Vec::new();
+            let err = Writer::new(&exchange)
+                .write_pruned([1], [1], &mut out)
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::UnresolvedReference { from: 2, to: 1 }),
+                "{data}"
+            );
+            assert!(out.is_empty(), "{data}");
+        }
+    }
+
+    #[test]
+    fn unpruned_instances_still_reject_open_selections() {
+        let src = file_with(LISTS);
+        let exchange = parse(src.as_bytes()).unwrap();
+        let mut out = Vec::new();
+        let err = Writer::new(&exchange)
+            .write_pruned([0, 2, 3], [], &mut out)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::UnresolvedReference { from: 10, to: 2 }
         ));
     }
 }
