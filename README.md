@@ -15,9 +15,10 @@ That constraint is the point: every entity that describes your geometry
 comes out exactly as it went in, byte for byte, with its original names,
 colours, layers, properties and PMI attached.
 
-> **Status: 0.2, early.** The Part 21 parser, reference graph, writer and
+> **Status: 0.3, early.** The Part 21 parser, reference graph, writer and
 > EXPRESS schema reader are in place, and `stepq info`, `tree`, `bom`,
-> `split`, `lint`, `refs`, `query`, `props`, `diff` and `strip` work. The
+> `split` (with `--bodies` and `--master`), `assemble`, `lint`, `refs`,
+> `query`, `props`, `diff`, `strip` and `pmi` work. The
 > library API and the CLI output will still change before 1.0; see
 > [ROADMAP.md](ROADMAP.md).
 
@@ -88,6 +89,12 @@ macOS and Linux:
 $ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/jchultarsky/stepq/releases/latest/download/stepq-installer.sh | sh
 ```
 
+Homebrew (macOS and Linux, from 0.3.0):
+
+```console
+$ brew install jchultarsky/tap/stepq
+```
+
 Windows (PowerShell):
 
 ```console
@@ -105,7 +112,7 @@ As a library, without the CLI dependencies:
 
 ```toml
 [dependencies]
-stepq = { version = "0.2", default-features = false }
+stepq = { version = "0.3", default-features = false }
 ```
 
 ## Supported input

@@ -4,7 +4,8 @@ Ordered by leverage per line of code. Nothing here needs a geometry
 kernel; that is the constraint that keeps the project finishable.
 
 0.1.0 contains the parser, structure and split milestones below; 0.2.0
-adds the inspect milestone. Open items carry over.
+adds the inspect milestone and 0.3.0 the reshape milestone. Open items
+carry over.
 
 ## Parser
 
@@ -72,7 +73,7 @@ adds the inspect milestone. Open items carry over.
       persistent IDs.
 - [x] `stepq diff`: structural diff of two files.
 
-## Later
+## Reshape (0.3.0)
 
 - [x] `stepq pmi`: semantic GD&T to JSON.
 - [x] `stepq strip` / `--anonymize`.
