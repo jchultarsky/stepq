@@ -29,6 +29,8 @@ $ stepq bom   assembly.stp                # multi-level bill of materials as a t
 $ stepq bom   assembly.stp --format csv   # the same as an indented CSV
 $ stepq split assembly.stp --out parts/   # one file per sub-assembly and part
 $ stepq lint  assembly.stp --schema schemas/   # structural problems; exit 1 on errors
+$ stepq refs  assembly.stp 1234 --depth 2      # what #1234 refers to, and what refers to it
+$ stepq query assembly.stp --type product      # instances by entity type or text
 ```
 
 Every command reads `-` as standard input and prints a table, JSON
@@ -56,8 +58,7 @@ instance placement, colours and names — without a CAD seat and without
 regenerating a single surface. As far as we can tell nothing open-source
 does this today; the usual answer is "open it in SolidWorks and Save As".
 
-Planned beyond that: `query` and `refs` (jq-style entity search and
-back-reference lookup), structural `diff` of two files, `props` and `pmi`
+Planned beyond that: structural `diff` of two files, `props` and `pmi`
 extraction to JSON, `strip`/`anonymize`, and `assemble` (the inverse of
 `split`). See [ROADMAP.md](ROADMAP.md) for the tiers.
 

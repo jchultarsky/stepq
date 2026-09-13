@@ -10,6 +10,13 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- `stepq refs FILE ID...`: what instances refer to and what refers to
+  them, `--direction both|out|in`, `--depth` up to 64 with repeats marked
+  `(*)`, as a table, nested JSON or CSV.
+- `stepq query FILE`: instances by `--type` (repeatable; complex instances
+  match on any partial entity) and `--contains`, with `--limit`, `--count`
+  and `--full`, as a table, JSON or CSV.
+
 - `stepq lint`: syntax errors, duplicate ids, dangling references,
   transformations whose representations share a context, a missing
   application protocol definition and products with no category; with
