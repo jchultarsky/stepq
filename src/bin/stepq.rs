@@ -16,6 +16,7 @@ use stepq::model::{
     BomNode, BomTreeOptions, Definition, Graph, Placement, ProductStructure, Usage,
 };
 use stepq::p21::{Exchange, Instance, parse};
+use stepq::pmi::{Dimension, DimensionKind, Pmi, Tolerance};
 use stepq::props::{Identifier, Property, PropertyKind, Subject, Value};
 
 /// Query, inspect, split and reshape STEP (ISO 10303-21) files.
@@ -261,6 +262,17 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// List semantic PMI: geometric tolerances, dimensions and datums.
+    ///
+    /// Reads the machine-readable GD&T of AP242 files, not the annotation
+    /// graphics, grouped under the product definition it belongs to. Values
+    /// are printed as written in the file. With --format json, one document
+    /// with datums, tolerances and dimensions; with --format csv, one row per
+    /// item.
+    Pmi {
+        /// STEP file to inspect, or `-` for standard input.
+        file: PathBuf,
+    },
 }
 
 /// The sections `stepq diff --section` selects.
@@ -414,6 +426,7 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             anonymize,
             force,
         } => strip(file, out, *anonymize, *force, cli.format),
+        Command::Pmi { file } => pmi(file, cli.format),
     };
     done.map(|()| ExitCode::SUCCESS)
 }
@@ -485,6 +498,262 @@ fn info(path: &Path, format: Format, top: usize) -> anyhow::Result<()> {
         }
     }
     out.flush()?;
+    Ok(())
+}
+
+fn pmi(path: &Path, format: Format) -> anyhow::Result<()> {
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let exchange = parse(&src).with_context(|| format!("parsing {name}"))?;
+    let graph = Graph::build(exchange);
+    let structure = ProductStructure::new(&graph);
+    let found = stepq::pmi::pmi(&graph, &structure);
+
+    let mut out = BufWriter::new(io::stdout().lock());
+    match format {
+        Format::Table | Format::Tree => write_pmi_table(&mut out, &structure, &found)?,
+        Format::Json => {
+            #[derive(serde::Serialize)]
+            struct Document<'a> {
+                file: &'a str,
+                #[serde(flatten)]
+                pmi: &'a Pmi,
+            }
+            serde_json::to_writer_pretty(
+                &mut out,
+                &Document {
+                    file: &name,
+                    pmi: &found,
+                },
+            )?;
+            writeln!(out)?;
+        }
+        Format::Csv => write_pmi_csv(&mut out, &structure, &found)?,
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// `position 0.75 (modifier) | A | B (modifier)  name`.
+fn tolerance_text(tolerance: &Tolerance) -> String {
+    let mut text = tolerance.kind.clone();
+    if let Some(magnitude) = &tolerance.magnitude {
+        let _ = write!(text, " {}", magnitude.value);
+    }
+    if !tolerance.modifiers.is_empty() {
+        let _ = write!(text, " ({})", tolerance.modifiers.join(", "));
+    }
+    for datum in &tolerance.datums {
+        let _ = write!(text, " | {}", datum.label);
+        if !datum.modifiers.is_empty() {
+            let _ = write!(text, " ({})", datum.modifiers.join(", "));
+        }
+    }
+    if let Some(name) = tolerance.name.as_deref().filter(|name| !name.is_empty()) {
+        let _ = write!(text, "  {name}");
+    }
+    text
+}
+
+/// `diameter 35. (-0.2 .. 0.)`.
+fn dimension_text(dimension: &Dimension) -> String {
+    let kind = match dimension.kind {
+        DimensionKind::Size => "size",
+        _ => "location",
+    };
+    let mut text = dimension
+        .name
+        .clone()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| kind.to_owned());
+    for value in &dimension.values {
+        match value.name.as_deref() {
+            Some(name) if !name.is_empty() && name != "nominal value" => {
+                let _ = write!(text, " {name} {}", value.value);
+            }
+            _ => {
+                let _ = write!(text, " {}", value.value);
+            }
+        }
+    }
+    if let Some(bounds) = &dimension.tolerance {
+        let bound = |value: Option<&Value>| value.map_or("?", |v| v.value.as_str()).to_owned();
+        let _ = write!(
+            text,
+            " ({} .. {})",
+            bound(bounds.lower.as_ref()),
+            bound(bounds.upper.as_ref())
+        );
+    }
+    text
+}
+
+fn write_pmi_table(
+    out: &mut impl Write,
+    structure: &ProductStructure,
+    found: &Pmi,
+) -> io::Result<()> {
+    if found.is_empty() {
+        return writeln!(out, "no semantic PMI");
+    }
+    let on = |subject: &Subject| format!("[on {} #{}]", subject.entity, subject.instance);
+    // (group, instance, line), printed in group then file order.
+    let mut rows: Vec<(usize, u64, String)> = Vec::new();
+    for datum in &found.datums {
+        rows.push((
+            props_group(structure, datum.subject.product_definition),
+            datum.instance,
+            format!("  {:<10}  {}", "datum", datum.label),
+        ));
+    }
+    for tolerance in &found.tolerances {
+        rows.push((
+            props_group(structure, tolerance.target.product_definition),
+            tolerance.instance,
+            format!(
+                "  {:<10}  {}  {}",
+                "tolerance",
+                tolerance_text(tolerance),
+                on(&tolerance.target)
+            ),
+        ));
+    }
+    for dimension in &found.dimensions {
+        let target = &dimension.target;
+        let features = match &dimension.related {
+            Some(related) => format!(
+                "[from {} #{} to {} #{}]",
+                target.entity, target.instance, related.entity, related.instance
+            ),
+            None => on(target),
+        };
+        rows.push((
+            props_group(structure, target.product_definition),
+            dimension.instance,
+            format!(
+                "  {:<10}  {}  {features}",
+                "dimension",
+                dimension_text(dimension)
+            ),
+        ));
+    }
+    rows.sort_by_key(|(group, instance, _)| (*group, *instance));
+
+    let mut current = None;
+    for (group, _, line) in &rows {
+        if current != Some(*group) {
+            if current.is_some() {
+                writeln!(out)?;
+            }
+            match structure.definitions().get(*group) {
+                Some(definition) => writeln!(
+                    out,
+                    "{}  #{}",
+                    definition_label(definition),
+                    definition.instance
+                )?,
+                None => writeln!(out, "(not attached to a product definition)")?,
+            }
+            current = Some(*group);
+        }
+        writeln!(out, "{line}")?;
+    }
+    writeln!(out)?;
+    let plural =
+        |n: usize, word: &str| format!("{} {word}{}", grouped(n), if n == 1 { "" } else { "s" });
+    writeln!(
+        out,
+        "{}, {}, {}",
+        plural(found.datums.len(), "datum"),
+        plural(found.tolerances.len(), "tolerance"),
+        plural(found.dimensions.len(), "dimension")
+    )
+}
+
+fn write_pmi_csv(
+    out: &mut impl Write,
+    structure: &ProductStructure,
+    found: &Pmi,
+) -> io::Result<()> {
+    let product = |definition: Option<u64>| {
+        definition
+            .and_then(|id| structure.definitions().iter().find(|d| d.instance == id))
+            .map(definition_label)
+            .unwrap_or_default()
+    };
+    let id = |instance: Option<u64>| instance.map(|id| format!("#{id}")).unwrap_or_default();
+    writeln!(
+        out,
+        "category,product_definition,product,instance,type,name,value,lower,upper,datums,modifiers,target,target_type"
+    )?;
+    for datum in &found.datums {
+        let subject = &datum.subject;
+        writeln!(
+            out,
+            "datum,{},{},#{},,{},,,,,,#{},{}",
+            id(subject.product_definition),
+            csv_field(&product(subject.product_definition)),
+            datum.instance,
+            csv_field(&datum.label),
+            subject.instance,
+            csv_field(&subject.entity)
+        )?;
+    }
+    for tolerance in &found.tolerances {
+        let target = &tolerance.target;
+        let datums: Vec<String> = tolerance
+            .datums
+            .iter()
+            .map(|datum| {
+                if datum.modifiers.is_empty() {
+                    datum.label.clone()
+                } else {
+                    format!("{}({})", datum.label, datum.modifiers.join(" "))
+                }
+            })
+            .collect();
+        writeln!(
+            out,
+            "tolerance,{},{},#{},{},{},{},,,{},{},#{},{}",
+            id(target.product_definition),
+            csv_field(&product(target.product_definition)),
+            tolerance.instance,
+            csv_field(&tolerance.kind),
+            csv_field(tolerance.name.as_deref().unwrap_or_default()),
+            csv_field(
+                tolerance
+                    .magnitude
+                    .as_ref()
+                    .map_or("", |m| m.value.as_str())
+            ),
+            csv_field(&datums.join("|")),
+            csv_field(&tolerance.modifiers.join(" ")),
+            target.instance,
+            csv_field(&target.entity)
+        )?;
+    }
+    for dimension in &found.dimensions {
+        let target = &dimension.target;
+        let bound = |value: Option<&Value>| value.map_or(String::new(), |v| csv_field(&v.value));
+        let nominal: Vec<&str> = dimension.values.iter().map(|v| v.value.as_str()).collect();
+        writeln!(
+            out,
+            "dimension,{},{},#{},{},{},{},{},{},,,#{},{}",
+            id(target.product_definition),
+            csv_field(&product(target.product_definition)),
+            dimension.instance,
+            match dimension.kind {
+                DimensionKind::Size => "size",
+                _ => "location",
+            },
+            csv_field(dimension.name.as_deref().unwrap_or_default()),
+            csv_field(&nominal.join(" ")),
+            bound(dimension.tolerance.as_ref().and_then(|b| b.lower.as_ref())),
+            bound(dimension.tolerance.as_ref().and_then(|b| b.upper.as_ref())),
+            target.instance,
+            csv_field(&target.entity)
+        )?;
+    }
     Ok(())
 }
 
