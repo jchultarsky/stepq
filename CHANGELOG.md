@@ -8,6 +8,12 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-13
+
+Reshaping and PMI: `split --bodies`, `split --master` and its inverse
+`assemble`, semantic GD&T with `pmi`, Part 21 edition 3, and a Homebrew
+formula.
+
 ### Added
 
 - `stepq assemble MASTER -o OUT`: the inverse of `split --master`. Every
@@ -189,6 +195,7 @@ First release.
 
 - License is now MIT only (previously MIT OR Apache-2.0).
 
-[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jchultarsky/stepq/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jchultarsky/stepq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jchultarsky/stepq/releases/tag/v0.1.0
