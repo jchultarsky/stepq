@@ -131,6 +131,50 @@ wholesale they dangle; dropped they lose colours or categories. The
 list is rewritten to the retained subset, and the entity is dropped only
 if the subset is empty.
 
+A filtered list is not followed, with one exception. A `draughting_model`
+lists the presentation of many PMI elements, but its saved views
+(`camera_model_d3` and relatives), the shapes shown in them (`mapped_item`)
+and its notes exist only as its items; nothing else refers to them. So the
+rule for `draughting_model` follows items of those types, except an
+`annotation_plane` whose elements semantic PMI is associated with
+(`draughting_model_item_association` and relatives): that plane belongs to
+the PMI's product and comes with it. Following every plane copied the
+callouts of three top-level definitions into each other's files in NIST
+FTC-09.
+
+## What the rule table covers
+
+`split --report-orphans` reports what no output holds. The table was grown
+from those reports on every fixture, the CAx-IF recommended practices (PMI
+Representation and Presentation, PMI Polyline Presentation, External
+References, Tessellated Geometry) and the schemas, and no rule was added
+without checking its position in AP242 ed. 4, AP214 and AP203 ed. 2.
+
+On the 48 fixtures under 16 MB, instances in no output went from 43,534 to
+1,559; on all 55 fixtures, including the Open Compute assemblies up to
+207 MB, 2,969 remain, and no entity type grew along the way. What the
+growth brought in, by family: PMI presentation (annotation planes, draughting
+relationships, per-annotation validation properties, callout
+relationships, display formats), saved views (AP242 cameras, Creo
+presentation sets, areas and views), supplemental geometry, notes and
+polyline or tessellated annotation reached through draughting models,
+tolerance zones, composite tolerances, referenced standards documents,
+addresses, and two subtypes the table had missed
+(`directed_dimensional_location`, `default_model_geometric_view`, whose
+`of_shape` is its seventh attribute). The 45 core fixtures still split to
+Open CASCADE's solid counts and volumes.
+
+None of what remains is left behind: all 2,969 instances are data nothing
+refers to, directly or through other such data (`model::unreachable`) —
+1,827 colours no style uses, 639 unused `dimensional_exponents`, 69
+pre-defined colours, 40 product categories, dates, and the saved views of
+the NIST FTC-09 draughting model no product reaches. No product can own
+those, so the report lists them apart from what is left behind. Not handled on purpose: a plain
+`representation_relationship` between AP203 draughting models (a rule on it
+would also match other relationships), and the Creo saved views' mapped
+items as back references, which would pull a parent's placements into a
+child placed through `mapped_item` (the NIST moon buggy).
+
 ## Things that must not be merged
 
 `representation_relationship_with_transformation` has a WHERE rule:

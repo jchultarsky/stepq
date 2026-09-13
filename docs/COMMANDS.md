@@ -289,7 +289,7 @@ stepq split [-o DIR] [--force] [--report-orphans] [--bodies] [--master] FILE
 | `FILE` | STEP file to split, or `-` for standard input. |
 | `-o`, `--out DIR` | Directory to write the output files into; created if missing. Default `.`. |
 | `--force` | Overwrite output files that already exist. Without it, `split` stops before writing anything if a file it would write exists, `--bodies` files included. |
-| `--report-orphans` | Also list the entity types, with counts, of the instances that no output contains. |
+| `--report-orphans` | Also list the entity types, with counts, of the instances that no output contains, in two groups: *left behind* (something outside them still refers to them, for example a layer whose list kept only extracted items) and *referenced by nothing* (such as colours no style uses). With `--format json`, `orphans` lists all of them and `unreferenced` the second group. |
 | `--bodies` | Also write one file per solid of every part with several, `<part>.body-<n>.stp`: the part with its other solids, and everything only they bring (faces, colours), left out. |
 | `--master` | Write assemblies as master files that refer to their components' files instead of copying their geometry. Parts are written as usual. |
 
@@ -320,6 +320,7 @@ $ stepq split assembly.stp --out parts --report-orphans
 
 wrote 9 files to parts
 1 instance is in no output
+  referenced by nothing: 1
          1  PRODUCT_CATEGORY
 ```
 

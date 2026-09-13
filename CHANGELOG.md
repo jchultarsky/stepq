@@ -8,6 +8,23 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- `split` and `model::extract` keep much more of what belongs to a
+  product: PMI presentation (annotation planes, draughting model
+  relationships, per-annotation validation properties, callout
+  relationships, display formats of PMI values), saved views (AP242
+  cameras and Creo presentation sets, areas and views), supplemental
+  geometry, notes and polyline or tessellated annotation in a draughting
+  model, tolerance zones, composite tolerances, referenced standards
+  documents and addresses; `directed_dimensional_location` and
+  `default_model_geometric_view` now match. On the fixtures under 16 MB,
+  instances in no output went from 43,534 to 1,559. Shared rules can follow
+  list items of given types (`model::Rule::follow`).
+- `split --report-orphans` lists orphans left behind apart from those
+  nothing refers to; JSON adds `unreferenced`. Library:
+  `model::unreachable`.
+
 ### Changed
 
 - `props --format json` writes the property kind as `user`, the name
