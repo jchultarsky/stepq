@@ -8,6 +8,11 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-13
+
+Inspection commands: `lint`, `refs`, `query`, `props`, `diff` and
+`strip`, plus the multi-level `bom`.
+
 ### Added
 
 - `stepq strip FILE -o OUT`: blanks the header's author, organization and
@@ -146,5 +151,6 @@ First release.
 
 - License is now MIT only (previously MIT OR Apache-2.0).
 
-[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jchultarsky/stepq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jchultarsky/stepq/releases/tag/v0.1.0
