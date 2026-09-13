@@ -35,6 +35,11 @@ Until 1.0, minor versions may contain breaking changes.
   and assembly-usage counts, dangling references and an entity-type
   histogram, as a table (`--top N`), JSON or CSV. `-` reads standard
   input. The summary is also available as the library type `info::Info`.
+- `tools/verify-occt.py`: reads STEP files through Open CASCADE (via uv
+  and `cadquery-ocp`) and checks that outputs keep the input's solid count,
+  total volume (relative 1e-9), names and colours. `tools/verify-rewrite.sh`
+  and a CI job apply it to every fixture rewritten by the new `rewrite`
+  example.
 - Fuzz targets `lex` and `parse` (cargo-fuzz, with a Part 21 dictionary),
   run for 60 seconds each in CI.
 - `express::Schema`: reads long-form EXPRESS schemas at run time

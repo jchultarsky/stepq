@@ -55,7 +55,15 @@ $ cargo deny check
 
 Changes to closure or extraction logic must also keep the OCCT volume
 invariant (`tools/verify-occt.py`, see `docs/ARCHITECTURE.md`) green on the
-AS1 and NIST fixtures.
+AS1 and NIST fixtures. The script runs through
+[uv](https://docs.astral.sh/uv/), which installs Open CASCADE's Python
+bindings (`cadquery-ocp`) on first use:
+
+```console
+$ tools/verify-occt.py summary tests/fixtures/steptools/as1-ug-214.stp
+$ tools/verify-occt.py compare INPUT OUTPUT...
+$ tools/verify-rewrite.sh      # rewrite every fixture and compare, as CI does
+```
 
 ### Fuzzing
 

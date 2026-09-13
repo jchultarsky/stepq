@@ -94,7 +94,8 @@ short version:
   file every tool reads happily with zero solids and no warning. The test
   oracle is therefore geometric: every output is read back through Open
   CASCADE and checked against volume and solid-count invariants of the
-  input (`tools/verify-occt.py`, landing with `split` in 0.3).
+  input (`tools/verify-occt.py`). CI already uses it to check that
+  rewriting every sample file through stepq changes no geometry.
 
 ## Contributing
 
