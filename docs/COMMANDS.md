@@ -66,7 +66,7 @@ Library: [`stepq::info::Info::new`](https://docs.rs/stepq/latest/stepq/info/stru
 
 ```console
 $ stepq info assembly.stp --top 5
-File                  assembly.stp (83,422 bytes)
+File                  assembly.stp (83,418 bytes)
 Schema                AUTOMOTIVE_DESIGN { 1 2 10303 214 0 1 1 1 }
 Name                  assembly.stp
 Time stamp            1999-09-09T14:22:00
@@ -91,7 +91,7 @@ Entity types (64)
 $ stepq info assembly.stp --format json
 {
   "file": "assembly.stp",
-  "bytes": 83422,
+  "bytes": 83418,
   "header": {
     "description": [],
     "implementation_level": "2;1",
@@ -150,7 +150,7 @@ Library: [`stepq::model::ProductStructure`](https://docs.rs/stepq/latest/stepq/m
 
 ```console
 $ stepq tree assembly.stp
-AS1-AC-214
+ASSEMBLY
 ├── PLATE
 ├── L-BRACKET ASSEMBLY  ×2
 │   ├── L-BRACKET
@@ -166,7 +166,7 @@ AS1-AC-214
 
 ```console
 $ stepq tree assembly.stp --usages
-AS1-AC-214
+ASSEMBLY
 ├── PLATE  #691 'PLATE_1'  placed by #693 → #690 (#686)
 ├── L-BRACKET ASSEMBLY  #1764 'L-BRACKET ASSEMBLY_1'  placed by #1766 → #1763 (#1759)
 │   ├── L-BRACKET  #1247 'L-BRACKET_1'  placed by #1249 → #1246 (#1242)
@@ -178,7 +178,7 @@ AS1-AC-214
 ```console
 $ stepq tree assembly.stp --format csv
 usage,usage_id,parent,parent_product,child,child_product,quantity,reference_designator,placement_kind,placement,transformation,reversed
-691,NAUO1,52,AS1-AC-214,72,PLATE,1,,shape_relationship,690,686,false
+691,NAUO1,52,ASSEMBLY,72,PLATE,1,,shape_relationship,690,686,false
 1247,NAUO2,701,L-BRACKET ASSEMBLY,712,L-BRACKET,1,,shape_relationship,1246,1242,false
 1459,NAUO3,1257,NUT-BOLT ASSEMBLY,1268,BOLT,1,,shape_relationship,1458,1454,false
 …
@@ -214,7 +214,7 @@ Library: [`ProductStructure::bom_tree`](https://docs.rs/stepq/latest/stepq/model
 
 ```console
 $ stepq bom assembly.stp
-AS1-AC-214
+ASSEMBLY
 ├── PLATE
 ├── L-BRACKET ASSEMBLY  ×2
 │   ├── L-BRACKET  (2 total)
@@ -231,7 +231,7 @@ AS1-AC-214
 ```console
 $ stepq bom assembly.stp --format csv
 level,item,definition,product_id,product_name,type,quantity,total_quantity
-0,,52,AS1-AC-214,AS1-AC-214,assembly,1,1
+0,,52,ASSEMBLY,ASSEMBLY,assembly,1,1
 1,1,72,PLATE,PLATE,part,1,1
 1,2,701,L-BRACKET ASSEMBLY,L-BRACKET ASSEMBLY,assembly,2,2
 2,2.1,712,L-BRACKET,L-BRACKET,part,1,2
@@ -245,7 +245,7 @@ level,item,definition,product_id,product_name,type,quantity,total_quantity
 
 ```console
 $ stepq bom assembly.stp --flat
-AS1-AC-214
+ASSEMBLY
   QUANTITY  TYPE      PRODUCT
          1  part      PLATE
          2  assembly  L-BRACKET ASSEMBLY
@@ -259,7 +259,7 @@ AS1-AC-214
 
 ```console
 $ stepq bom assembly.stp --depth 1 --charset ascii --prefix depth
-0 AS1-AC-214
+0 ASSEMBLY
 1 PLATE
 1 L-BRACKET ASSEMBLY  x2
 1 ROD-ASSEMBLY
@@ -308,7 +308,7 @@ Master files are written by the CLI.
 ```console
 $ stepq split assembly.stp --out parts --report-orphans
  INSTANCES  PRUNED  TYPE      FILE
-     1,854       7  assembly  AS1-AC-214.stp
+     1,854       7  assembly  ASSEMBLY.stp
        650       7  part      PLATE.stp
      1,062       7  assembly  L-BRACKET_ASSEMBLY.stp
        568       7  part      L-BRACKET.stp
@@ -355,7 +355,7 @@ inverse.
 ```console
 $ stepq split assembly.stp --master --out masters
  INSTANCES  PRUNED  TYPE      FILE
-       161       9  master    AS1-AC-214.stp
+       161       9  master    ASSEMBLY.stp
        650       7  part      PLATE.stp
        123       9  master    L-BRACKET_ASSEMBLY.stp
        568       7  part      L-BRACKET.stp
@@ -366,7 +366,7 @@ $ stepq split assembly.stp --master --out masters
        144       7  part      ROD.stp
 
 wrote 9 files to masters
-$ grep 'PLATE.stp' masters/AS1-AC-214.stp
+$ grep 'PLATE.stp' masters/ASSEMBLY.stp
 #1948=DOCUMENT_FILE('PLATE.stp','',$,#1947,'',$);
 #1952=APPLIED_EXTERNAL_IDENTIFICATION_ASSIGNMENT('PLATE.stp',#1950,#1951,(#1948));
 ```
@@ -398,7 +398,7 @@ Library: [`stepq::assemble::assemble`](https://docs.rs/stepq/latest/stepq/assemb
 which takes a loader closure for the referenced files.
 
 ```console
-$ stepq assemble masters/AS1-AC-214.stp -o whole.stp
+$ stepq assemble masters/ASSEMBLY.stp -o whole.stp
 whole.stp: merged 8 files
   PLATE.stp
   L-BRACKET_ASSEMBLY.stp
@@ -599,7 +599,7 @@ finds instances by type.
 
 ```console
 $ stepq query assembly.stp --type product --limit 3
-#32=PRODUCT('AS1-AC-214','AS1-AC-214','',(#31));
+#32=PRODUCT('ASSEMBLY','ASSEMBLY','',(#31));
 #70=PRODUCT('PLATE','PLATE','',(#31));
 #699=PRODUCT('L-BRACKET ASSEMBLY','L-BRACKET ASSEMBLY','',(#31));
 … 6 more (--limit)
@@ -644,7 +644,7 @@ Library: [`stepq::props::properties`](https://docs.rs/stepq/latest/stepq/props/f
 
 ```console
 $ stepq props pmi-part.stp --kind user --kind validation
-NIST Complex Test Case 1 [NIST Test Case 1]  #4368
+BRACKET  #4368
   user        Modeled By = Engineer
   user        CAGE Code = 64JW1
   user        Company = ACME
@@ -653,9 +653,9 @@ NIST Complex Test Case 1 [NIST Test Case 1]  #4368
   validation  attribute validation property / integer user attributes = 0.
   validation  attribute validation property / real user attributes = 0.
   validation  attribute validation property / boolean user attributes = 0.
-  validation  volume of NIST Complex Test Case 1 / volume measure = 14644822.6361138 (VOLUME_MEASURE, unit #639)  [on PRODUCT_DEFINITION_SHAPE #4269]
-  validation  volume of NIST Complex Test Case 1 / wetted area measure = 807080.802199914 (AREA_MEASURE, unit #640)  [on PRODUCT_DEFINITION_SHAPE #4269]
-  validation  volume of NIST Complex Test Case 1 / centre point = #3942=CARTESIAN_POINT('centre point',(-2.29264395139875,-1.36345168588643,-32.2974419857648));  [on PRODUCT_DEFINITION_SHAPE #4269]
+  validation  volume of BRACKET / volume measure = 14644822.6361138 (VOLUME_MEASURE, unit #639)  [on PRODUCT_DEFINITION_SHAPE #4269]
+  validation  volume of BRACKET / wetted area measure = 807080.802199914 (AREA_MEASURE, unit #640)  [on PRODUCT_DEFINITION_SHAPE #4269]
+  validation  volume of BRACKET / centre point = #3942=CARTESIAN_POINT('centre point',(-2.29264395139875,-1.36345168588643,-32.2974419857648));  [on PRODUCT_DEFINITION_SHAPE #4269]
   user         = B  [on SHAPE_ASPECT #316]
   user         = A  [on SHAPE_ASPECT #317]
 
@@ -665,11 +665,11 @@ NIST Complex Test Case 1 [NIST Test Case 1]  #4368
 ```console
 $ stepq props pmi-part.stp --kind user --format csv
 product_definition,product,kind,instance,name,description,subject,subject_type,value_instance,value_name,measure,value,unit
-#4368,NIST Complex Test Case 1 [NIST Test Case 1],user,#4331,Modeled By,,#4368,PRODUCT_DEFINITION,#4346,,,Engineer,
-#4368,NIST Complex Test Case 1 [NIST Test Case 1],user,#4332,CAGE Code,,#4368,PRODUCT_DEFINITION,#4347,,,64JW1,
-#4368,NIST Complex Test Case 1 [NIST Test Case 1],user,#4333,Company,,#4368,PRODUCT_DEFINITION,#4348,,,ACME,
-#4368,NIST Complex Test Case 1 [NIST Test Case 1],user,#4340,,,#316,SHAPE_ASPECT,#4349,,,B,
-#4368,NIST Complex Test Case 1 [NIST Test Case 1],user,#4341,,,#317,SHAPE_ASPECT,#4350,,,A,
+#4368,BRACKET,user,#4331,Modeled By,,#4368,PRODUCT_DEFINITION,#4346,,,Engineer,
+#4368,BRACKET,user,#4332,CAGE Code,,#4368,PRODUCT_DEFINITION,#4347,,,64JW1,
+#4368,BRACKET,user,#4333,Company,,#4368,PRODUCT_DEFINITION,#4348,,,ACME,
+#4368,BRACKET,user,#4340,,,#316,SHAPE_ASPECT,#4349,,,B,
+#4368,BRACKET,user,#4341,,,#317,SHAPE_ASPECT,#4350,,,A,
 ```
 
 ## diff
@@ -706,14 +706,14 @@ Header
   authorization: , ,  → (none)
   name: assembly.stp → (none)
 Products
-  - AS1-AC-214
+  - ASSEMBLY
   - BOLT
 …
   + product-8
   + product-9
 Components
-  AS1-AC-214 → L-BRACKET ASSEMBLY: 2 → 0
-  AS1-AC-214 → PLATE: 1 → 0
+  ASSEMBLY → L-BRACKET ASSEMBLY: 2 → 0
+  ASSEMBLY → PLATE: 1 → 0
 …
   product-8 → product-7: 0 → 2
   product-8 → product-9: 0 → 1
@@ -728,7 +728,7 @@ $ stepq diff old.stp new.stp --section header --section products --format csv
 section,change,subject,field,old,new
 header,changed,,authorization,", , ",
 header,changed,,name,assembly.stp,
-products,removed,AS1-AC-214,,,
+products,removed,ASSEMBLY,,,
 products,removed,BOLT,,,
 …
 products,added,product-8,,,
@@ -827,7 +827,7 @@ Library: [`stepq::pmi::pmi`](https://docs.rs/stepq/latest/stepq/pmi/fn.pmi.html)
 
 ```console
 $ stepq pmi pmi-part.stp
-NIST Complex Test Case 1 [NIST Test Case 1]  #4368
+BRACKET  #4368
   tolerance   position 0.75 | A | B | C  Position.1  [on COMPOSITE_SHAPE_ASPECT #235]
   tolerance   position 0.75 | A | B | C  Position.2  [on COMPOSITE_SHAPE_ASPECT #236]
   dimension   linear distance  [from SHAPE_ASPECT #324 to SHAPE_ASPECT #325]
@@ -850,11 +850,11 @@ NIST Complex Test Case 1 [NIST Test Case 1]  #4368
 ```console
 $ stepq pmi pmi-part.stp --format csv
 category,product_definition,product,instance,type,name,value,lower,upper,datums,modifiers,target,target_type
-datum,#4368,NIST Complex Test Case 1 [NIST Test Case 1],#37,,A,,,,,,#37,DATUM
-datum,#4368,NIST Complex Test Case 1 [NIST Test Case 1],#38,,B,,,,,,#38,DATUM
-datum,#4368,NIST Complex Test Case 1 [NIST Test Case 1],#39,,C,,,,,,#39,DATUM
-tolerance,#4368,NIST Complex Test Case 1 [NIST Test Case 1],#21,position,Position.1,0.75,,,A|B|C,,#235,COMPOSITE_SHAPE_ASPECT
-tolerance,#4368,NIST Complex Test Case 1 [NIST Test Case 1],#22,position,Position.2,0.75,,,A|B|C,,#236,COMPOSITE_SHAPE_ASPECT
+datum,#4368,BRACKET,#37,,A,,,,,,#37,DATUM
+datum,#4368,BRACKET,#38,,B,,,,,,#38,DATUM
+datum,#4368,BRACKET,#39,,C,,,,,,#39,DATUM
+tolerance,#4368,BRACKET,#21,position,Position.1,0.75,,,A|B|C,,#235,COMPOSITE_SHAPE_ASPECT
+tolerance,#4368,BRACKET,#22,position,Position.2,0.75,,,A|B|C,,#236,COMPOSITE_SHAPE_ASPECT
 …
 ```
 

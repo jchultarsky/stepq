@@ -49,7 +49,7 @@ and option, with real example output and the library function behind each.
 
 ```console
 $ stepq bom assembly.stp
-AS1-AC-214
+ASSEMBLY
 ├── PLATE
 ├── L-BRACKET ASSEMBLY  ×2
 │   ├── L-BRACKET  (2 total)
