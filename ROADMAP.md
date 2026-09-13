@@ -58,7 +58,7 @@ milestones below; the open items in them carry over.
       empty `SET[1:?]`, shared contexts across an RRWT, missing
       `application_protocol_definition` / `product_related_product_category`.
 - [x] `stepq query` / `stepq refs`: entity search and reverse lookup.
-- [ ] `stepq props`: user-defined attributes, validation properties,
+- [x] `stepq props`: user-defined attributes, validation properties,
       persistent IDs.
 - [ ] `stepq diff`: structural diff of two files.
 

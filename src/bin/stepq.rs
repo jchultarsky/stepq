@@ -15,6 +15,7 @@ use stepq::model::{
     BomNode, BomTreeOptions, Definition, Graph, Placement, ProductStructure, Usage,
 };
 use stepq::p21::{Exchange, Instance, parse};
+use stepq::props::{Identifier, Property, PropertyKind, Subject, Value};
 
 /// Query, inspect, split and reshape STEP (ISO 10303-21) files.
 #[derive(Debug, Parser)]
@@ -201,6 +202,51 @@ enum Command {
         #[arg(long)]
         full: bool,
     },
+    /// List product properties: user-defined attributes, validation
+    /// properties and persistent identifiers.
+    ///
+    /// Properties are grouped under the product definition they belong to,
+    /// found by following shapes and shape aspects. Values are printed as
+    /// written in the file. With --format csv, one row per value.
+    Props {
+        /// STEP file to inspect, or `-` for standard input.
+        file: PathBuf,
+        /// Only list this kind. Repeatable.
+        #[arg(long = "kind", value_enum)]
+        kinds: Vec<PropsKind>,
+    },
+}
+
+/// The kinds `stepq props --kind` selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum PropsKind {
+    /// Geometric validation properties.
+    Validation,
+    /// User-defined attributes.
+    User,
+    /// Other properties.
+    Other,
+    /// Persistent identifiers (`id_attribute`).
+    Id,
+}
+
+impl PropsKind {
+    fn of(property: &Property) -> Self {
+        match property.kind {
+            PropertyKind::Validation => Self::Validation,
+            PropertyKind::UserDefined => Self::User,
+            _ => Self::Other,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Validation => "validation",
+            Self::User => "user",
+            Self::Other => "other",
+            Self::Id => "id",
+        }
+    }
 }
 
 /// Which references `stepq refs` follows.
@@ -296,6 +342,7 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             },
             cli.format,
         ),
+        Command::Props { file, kinds } => props(file, kinds, cli.format),
     };
     done.map(|()| ExitCode::SUCCESS)
 }
@@ -367,6 +414,243 @@ fn info(path: &Path, format: Format, top: usize) -> anyhow::Result<()> {
         }
     }
     out.flush()?;
+    Ok(())
+}
+
+fn props(path: &Path, kinds: &[PropsKind], format: Format) -> anyhow::Result<()> {
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let exchange = parse(&src).with_context(|| format!("parsing {name}"))?;
+    let graph = Graph::build(exchange);
+    let structure = ProductStructure::new(&graph);
+    let found = stepq::props::properties(&graph, &structure);
+
+    let wants = |kind: PropsKind| kinds.is_empty() || kinds.contains(&kind);
+    let properties: Vec<&Property> = found
+        .properties
+        .iter()
+        .filter(|property| wants(PropsKind::of(property)))
+        .collect();
+    let identifiers: Vec<&Identifier> = if wants(PropsKind::Id) {
+        found.identifiers.iter().collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut out = BufWriter::new(io::stdout().lock());
+    match format {
+        Format::Table | Format::Tree => {
+            write_props_table(&mut out, &structure, &properties, &identifiers)?;
+        }
+        Format::Json => {
+            #[derive(serde::Serialize)]
+            struct Document<'a> {
+                file: &'a str,
+                definitions: &'a [Definition],
+                properties: &'a [&'a Property],
+                identifiers: &'a [&'a Identifier],
+            }
+            serde_json::to_writer_pretty(
+                &mut out,
+                &Document {
+                    file: &name,
+                    definitions: structure.definitions(),
+                    properties: &properties,
+                    identifiers: &identifiers,
+                },
+            )?;
+            writeln!(out)?;
+        }
+        Format::Csv => write_props_csv(&mut out, &structure, &properties, &identifiers)?,
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// Where a property or identifier is listed: its product definition's
+/// position, or after all of them.
+fn props_group(structure: &ProductStructure, definition: Option<u64>) -> usize {
+    definition
+        .and_then(|id| {
+            structure
+                .definitions()
+                .iter()
+                .position(|definition| definition.instance == id)
+        })
+        .unwrap_or(usize::MAX)
+}
+
+/// `name = value (MEASURE, unit #id)`, leaving out what is missing or
+/// repeats the property's label.
+fn value_text(label: &str, value: &Value) -> String {
+    let mut text = String::new();
+    if let Some(name) = value
+        .name
+        .as_deref()
+        .filter(|n| !n.is_empty() && *n != label)
+    {
+        let _ = write!(text, " / {name}");
+    }
+    let _ = write!(text, " = {}", value.value);
+    let suffix = match (&value.measure, value.unit) {
+        _ if value.value.starts_with('#') => None,
+        (Some(measure), Some(unit)) => Some(format!("{measure}, unit #{unit}")),
+        (Some(measure), None) => Some(measure.clone()),
+        (None, Some(unit)) => Some(format!("unit #{unit}")),
+        (None, None) => None,
+    };
+    if let Some(suffix) = suffix {
+        let _ = write!(text, " ({suffix})");
+    }
+    text
+}
+
+fn write_props_table(
+    out: &mut impl Write,
+    structure: &ProductStructure,
+    properties: &[&Property],
+    identifiers: &[&Identifier],
+) -> io::Result<()> {
+    // (group, instance, line), printed in group then file order.
+    let mut rows: Vec<(usize, u64, String)> = Vec::new();
+    let on = |subject: &Subject| {
+        if Some(subject.instance) == subject.product_definition {
+            String::new()
+        } else {
+            format!("  [on {} #{}]", subject.entity, subject.instance)
+        }
+    };
+    let mut value_count = 0;
+    for property in properties {
+        let group = props_group(structure, property.subject.product_definition);
+        let label = property.label();
+        let kind = PropsKind::of(property).name();
+        if property.values.is_empty() {
+            rows.push((
+                group,
+                property.instance,
+                format!("  {kind:<10}  {label}{}", on(&property.subject)),
+            ));
+        }
+        for value in &property.values {
+            value_count += 1;
+            rows.push((
+                group,
+                property.instance,
+                format!(
+                    "  {kind:<10}  {label}{}{}",
+                    value_text(label, value),
+                    on(&property.subject)
+                ),
+            ));
+        }
+    }
+    for identifier in identifiers {
+        rows.push((
+            props_group(structure, identifier.subject.product_definition),
+            identifier.instance,
+            format!(
+                "  {:<10}  {}{}",
+                "id",
+                identifier.id,
+                on(&identifier.subject)
+            ),
+        ));
+    }
+    rows.sort_by_key(|(group, instance, _)| (*group, *instance));
+
+    let mut current = None;
+    for (group, _, line) in &rows {
+        if current != Some(*group) {
+            if current.is_some() {
+                writeln!(out)?;
+            }
+            match structure.definitions().get(*group) {
+                Some(definition) => writeln!(
+                    out,
+                    "{}  #{}",
+                    definition_label(definition),
+                    definition.instance
+                )?,
+                None => writeln!(out, "(not attached to a product definition)")?,
+            }
+            current = Some(*group);
+        }
+        writeln!(out, "{line}")?;
+    }
+    if !rows.is_empty() {
+        writeln!(out)?;
+    }
+    let plural = |n: usize, one: &str, many: &str| {
+        format!("{} {}", grouped(n), if n == 1 { one } else { many })
+    };
+    writeln!(
+        out,
+        "{}, {}, {}",
+        plural(properties.len(), "property", "properties"),
+        plural(value_count, "value", "values"),
+        plural(identifiers.len(), "identifier", "identifiers")
+    )
+}
+
+fn write_props_csv(
+    out: &mut impl Write,
+    structure: &ProductStructure,
+    properties: &[&Property],
+    identifiers: &[&Identifier],
+) -> io::Result<()> {
+    let product = |definition: Option<u64>| {
+        definition
+            .and_then(|id| structure.definitions().iter().find(|d| d.instance == id))
+            .map(definition_label)
+            .unwrap_or_default()
+    };
+    let id = |instance: Option<u64>| instance.map(|id| format!("#{id}")).unwrap_or_default();
+    writeln!(
+        out,
+        "product_definition,product,kind,instance,name,description,subject,subject_type,value_instance,value_name,measure,value,unit"
+    )?;
+    for property in properties {
+        let subject = &property.subject;
+        let prefix = format!(
+            "{},{},{},#{},{},{},#{},{}",
+            id(subject.product_definition),
+            csv_field(&product(subject.product_definition)),
+            PropsKind::of(property).name(),
+            property.instance,
+            csv_field(property.name.as_deref().unwrap_or_default()),
+            csv_field(property.description.as_deref().unwrap_or_default()),
+            subject.instance,
+            csv_field(&subject.entity),
+        );
+        if property.values.is_empty() {
+            writeln!(out, "{prefix},,,,,")?;
+        }
+        for value in &property.values {
+            writeln!(
+                out,
+                "{prefix},#{},{},{},{},{}",
+                value.instance,
+                csv_field(value.name.as_deref().unwrap_or_default()),
+                csv_field(value.measure.as_deref().unwrap_or_default()),
+                csv_field(&value.value),
+                id(value.unit)
+            )?;
+        }
+    }
+    for identifier in identifiers {
+        let subject = &identifier.subject;
+        writeln!(
+            out,
+            "{},{},id,#{},{},,#{},{},,,,,",
+            id(subject.product_definition),
+            csv_field(&product(subject.product_definition)),
+            identifier.instance,
+            csv_field(&identifier.id),
+            subject.instance,
+            csv_field(&subject.entity),
+        )?;
+    }
     Ok(())
 }
 
