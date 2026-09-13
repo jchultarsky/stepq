@@ -14,7 +14,7 @@ kernel; that is the constraint that keeps the project finishable.
 - [ ] EXPRESS schema reader, used only for attribute counts and aggregate
       bounds (AP203e2, AP214, AP242 ed1–ed4).
 - [x] `stepq info`
-- [ ] Fuzz targets for the lexer and parser.
+- [x] Fuzz targets for the lexer and parser.
 
 ## 0.2 — structure
 

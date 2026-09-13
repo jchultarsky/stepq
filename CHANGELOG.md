@@ -35,6 +35,8 @@ Until 1.0, minor versions may contain breaking changes.
   and assembly-usage counts, dangling references and an entity-type
   histogram, as a table (`--top N`), JSON or CSV. `-` reads standard
   input. The summary is also available as the library type `info::Info`.
+- Fuzz targets `lex` and `parse` (cargo-fuzz, with a Part 21 dictionary),
+  run for 60 seconds each in CI.
 
 ### Changed
 

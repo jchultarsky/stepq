@@ -78,6 +78,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps --all-features
 
+  fuzz:
+    name: fuzz (60 s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # rust-toolchain.toml pins stable; `+nightly` overrides it for cargo-fuzz.
+      # The prebuilt cargo-fuzz defaults to the musl target it was built for,
+      # and AddressSanitizer cannot link against static musl, so name the
+      # glibc target explicitly.
+      - name: Fuzz the lexer
+        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu lex -- -max_total_time=60 -dict=${{ github.workspace }}/fuzz/p21.dict
+      - name: Fuzz the parser
+        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse -- -max_total_time=60 -dict=${{ github.workspace }}/fuzz/p21.dict
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest

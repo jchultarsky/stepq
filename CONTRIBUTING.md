@@ -50,6 +50,24 @@ Changes to closure or extraction logic must also keep the OCCT volume
 invariant (`tools/verify-occt.py`, see `docs/ARCHITECTURE.md`) green on the
 AS1 and NIST fixtures.
 
+### Fuzzing
+
+The lexer and parser are fuzzed with
+[cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz), which needs a nightly
+toolchain. CI runs each target for 60 seconds; to fuzz for longer locally:
+
+```console
+$ rustup toolchain install nightly
+$ cargo install cargo-fuzz
+$ cargo +nightly fuzz run parse -- -dict=fuzz/p21.dict
+```
+
+There are two targets. `lex` checks that tokens stay in order and in
+bounds and that string decoding never panics. `parse` checks that parsing,
+the graph, the query views and `info::Info` never panic, and that writer
+output parses back with the same number of instances. A crash found by
+fuzzing is a security issue; see [SECURITY.md](SECURITY.md).
+
 Pedantic clippy is on. If a lint is wrong for a specific line, `allow` it
 there with a comment; do not disable it crate-wide without discussion.
 

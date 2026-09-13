@@ -12,7 +12,7 @@ documentation = "https://docs.rs/stepq"
 readme = "README.md"
 keywords = ["step", "iso-10303", "cad", "bom", "parser"]
 categories = ["parser-implementations", "command-line-utilities", "science"]
-exclude = ["/.github", "/docs", "/tests/fixtures", "/tools", "/CLAUDE.md"]
+exclude = ["/.github", "/docs", "/fuzz", "/tests/fixtures", "/tools", "/CLAUDE.md"]
 
 [lib]
 name = "stepq"
