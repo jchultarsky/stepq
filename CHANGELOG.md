@@ -10,6 +10,13 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- Part 21 edition 3 anchors and references: `Exchange::anchors`,
+  `Exchange::external_references` and `Exchange::is_external`. Instance
+  names a `REFERENCE` section defines no longer count as dangling. The
+  writer keeps `ANCHOR`, `REFERENCE` and `SIGNATURE` sections verbatim
+  when the output is unchanged; when renumbering or selecting, it renames
+  anchor and reference entries, drops those that no longer apply, and
+  drops the signature.
 - `stepq pmi`: semantic GD&T of AP242 files — datums, geometric
   tolerances (characteristic, magnitude, datum reference frame with
   modifiers, tolerance modifiers, unit size, toleranced feature) and size
