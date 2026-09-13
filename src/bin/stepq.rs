@@ -123,6 +123,10 @@ enum Command {
     /// Instances are copied byte for byte and renumbered from #1. Aggregates
     /// shared by several products (layers, categories, approvals) keep only
     /// the items of each output. The input must have no dangling references.
+    ///
+    /// With --bodies, a part whose shape holds several solids also gets one
+    /// file per solid, `<part>.body-<n>.stp`: the part with its other solids
+    /// left out.
     Split {
         /// STEP file to split, or `-` for standard input.
         file: PathBuf,
@@ -135,6 +139,9 @@ enum Command {
         /// Also list the entity types that no output contains.
         #[arg(long)]
         report_orphans: bool,
+        /// Also write one file per solid of every part with several.
+        #[arg(long)]
+        bodies: bool,
     },
     /// Check a file for structural problems, without a geometry kernel.
     ///
@@ -360,7 +367,8 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             out,
             force,
             report_orphans,
-        } => split(file, out, cli.format, *force, *report_orphans),
+            bodies,
+        } => split(file, out, cli.format, *force, *report_orphans, *bodies),
         Command::Lint { file, schemas, all } => return lint(file, schemas, cli.format, *all),
         Command::Refs {
             file,
@@ -1699,6 +1707,7 @@ fn split(
     format: Format,
     force: bool,
     report_orphans: bool,
+    bodies: bool,
 ) -> anyhow::Result<()> {
     let src = read_input(path)?;
     let name = display_name(path);
@@ -1744,13 +1753,37 @@ fn split(
                 output,
             )
             .with_context(|| format!("writing {}", target.display()))?;
+        let is_assembly = structure.children(index).len() > 0;
+        let stem = file.trim_end_matches(".stp").to_owned();
         written.push(SplitFile {
             file,
-            kind: kind(structure.children(index).len() > 0),
+            kind: kind(is_assembly),
             definition: &definitions[index],
             instances: extraction.nodes().len(),
             pruned: extraction.pruned().len(),
         });
+
+        let solids: Vec<usize> = if bodies && !is_assembly {
+            extraction
+                .nodes()
+                .iter()
+                .copied()
+                .filter(|&node| is_solid(&graph, node))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if solids.len() > 1 {
+            written.extend(write_bodies(
+                &graph,
+                node,
+                &solids,
+                &stem,
+                dir,
+                force,
+                &definitions[index],
+            )?);
+        }
         extractions.push(extraction);
     }
 
@@ -1876,6 +1909,65 @@ fn output_name(definition: &Definition, used: &mut std::collections::HashSet<Str
         used.insert(file.to_ascii_lowercase());
     }
     file
+}
+
+/// Writes `<stem>.body-<n>.stp` into `dir` for each of a part's `solids`:
+/// the part definition at `node`, extracted with its other solids left out.
+fn write_bodies<'d>(
+    graph: &Graph<'_>,
+    node: usize,
+    solids: &[usize],
+    stem: &str,
+    dir: &Path,
+    force: bool,
+    definition: &'d Definition,
+) -> anyhow::Result<Vec<SplitFile<'d>>> {
+    let mut written = Vec::with_capacity(solids.len());
+    for (number, &solid) in solids.iter().enumerate() {
+        let others: Vec<usize> = solids.iter().copied().filter(|&s| s != solid).collect();
+        let body = stepq::model::extract_excluding(graph, &[node], &others);
+        let file = format!("{stem}.body-{}.stp", number + 1);
+        let target = dir.join(&file);
+        if target.exists() && !force {
+            bail!(
+                "{} already exists; use --force to overwrite",
+                target.display()
+            );
+        }
+        let output =
+            fs::File::create(&target).with_context(|| format!("creating {}", target.display()))?;
+        stepq::p21::Writer::new(graph.exchange())
+            .numbering(stepq::p21::Numbering::Dense)
+            .write_pruned(
+                body.nodes().iter().copied(),
+                body.pruned().iter().copied(),
+                output,
+            )
+            .with_context(|| {
+                format!(
+                    "writing {}: solid #{} cannot be separated from the others",
+                    target.display(),
+                    graph.instance(solid).id
+                )
+            })?;
+        written.push(SplitFile {
+            file,
+            kind: "body",
+            definition,
+            instances: body.nodes().len(),
+            pruned: body.pruned().len(),
+        });
+    }
+    Ok(written)
+}
+
+/// True if `node` is a solid body: a `manifold_solid_brep`, including a
+/// `brep_with_voids`.
+fn is_solid(graph: &Graph<'_>, node: usize) -> bool {
+    graph
+        .exchange()
+        .records(graph.instance(node))
+        .any(|record| record.is("MANIFOLD_SOLID_BREP") || record.is("BREP_WITH_VOIDS"))
 }
 
 /// Entity types of `nodes`, with counts, most frequent first.

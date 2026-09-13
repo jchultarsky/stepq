@@ -139,16 +139,22 @@ conformance checker fails it. Never deduplicate contexts.
 
 ## Multi-body split
 
-A product whose shape representation holds several `manifold_solid_brep`
-items is split by synthesising, per body: `product`,
-`product_definition_formation`, `product_definition`,
-`product_definition_shape`, an `advanced_brep_shape_representation`
-holding one placement and the existing solid, and a
-`shape_definition_representation`. Fourteen entities, zero changes to
-geometry. Disconnected lumps inside a single (schema-illegal) shell are
-found by union-find over shared `edge_curve` references — connectivity
-only, no coordinates. A malformed `brep_with_voids` whose outer shell is
-disconnected needs point-in-solid to assign voids; refuse it.
+A part whose shape holds several `manifold_solid_brep` items (Creo writes
+7 and 22 into one representation in the Open Rack fixtures) is split by
+`split --bodies` into one file per solid without synthesising anything:
+the part is extracted with its other solids excluded
+(`model::extract_excluding`). Their faces, edges and styles are never
+reached, and every extracted instance that listed an excluded solid —
+both shape representations that Creo writes, a layer — is pruned, so its
+list keeps only the remaining solid. A reference to an excluded solid
+that is not a list item cannot be pruned; the write then fails instead of
+producing a dangling file. Each body file keeps the part's product, so
+it reads as the same part with one body.
+
+Not handled, and refused rather than guessed: disconnected lumps inside a
+single (schema-illegal) shell, which would need union-find over shared
+`edge_curve` references, and a `brep_with_voids` whose outer shell is
+disconnected, which needs point-in-solid to assign its voids.
 
 ## Validation properties
 
