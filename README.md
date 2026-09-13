@@ -110,8 +110,10 @@ stepq = { version = "0.2", default-features = false }
 
 ISO 10303-21 editions 1 and 2 (`implementation_level '2;1'`), which is what
 every mainstream CAD system writes. Application protocols AP203, AP214 and
-AP242 (all editions). Part 21 edition 3 features (anchors, references,
-multiple data sections) are parsed leniently but not interpreted.
+AP242 (all editions). Part 21 edition 3 files are read too: multiple data
+sections, anchors and external references (a name another file defines is
+not a dangling reference), all kept when a file is rewritten. Scope
+structures (`&SCOPE`) are rejected.
 
 ## Design
 

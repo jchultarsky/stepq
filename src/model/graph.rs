@@ -69,6 +69,8 @@ impl<'a> Graph<'a> {
             for id in exchange.references(instance) {
                 match exchange.position(id) {
                     Some(target) => neighbours.push(target),
+                    // Defined by another file, in an edition 3 REFERENCE section.
+                    None if exchange.is_external(id) => {}
                     None => unresolved.push((node, id)),
                 }
             }
