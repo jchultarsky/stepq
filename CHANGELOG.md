@@ -8,6 +8,13 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- Open Compute Project test fixtures: ten Open Rack V3 and Project Olympus
+  assemblies (Creo, AP214 and AP203), up to 207 MB and 3.5 million
+  instances. `tools/fetch-fixtures.sh` takes the sets to fetch (`core`,
+  `ocp`, `all`) and checks every download against a pinned SHA-256.
+
 ## [0.1.0] - 2026-09-13
 
 First release.

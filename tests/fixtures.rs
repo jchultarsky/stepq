@@ -1,11 +1,14 @@
 //! End-to-end checks against the fetched STEP fixtures.
 //!
 //! Fixtures are downloaded by `tools/fetch-fixtures.sh` and are not in git,
-//! so on a fresh clone these tests find nothing and pass.
+//! so on a fresh clone these tests find nothing and pass. Files over 16 MB
+//! are skipped unless `STEPQ_LARGE_FIXTURES=1` is set.
+
+mod common;
 
 use std::fs;
-use std::path::{Path, PathBuf};
 
+use common::fixtures_root;
 use stepq::model::Graph;
 use stepq::p21::{Exchange, Lexer, Numbering, TokenKind, Writer, decode_string, parse};
 
@@ -202,10 +205,6 @@ fn non_name_tokens(text: &[u8]) -> Vec<&[u8]> {
         .collect()
 }
 
-fn fixtures_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-}
-
 fn read_fixture(relative: &str) -> Option<Vec<u8>> {
     let path = fixtures_root().join(relative);
     let src = fs::read(&path).ok();
@@ -220,17 +219,14 @@ fn read_fixture(relative: &str) -> Option<Vec<u8>> {
 
 /// Runs `check` on every fixture and fails listing every file that failed.
 fn for_each_fixture(check: impl Fn(&[u8]) -> Result<(), String>) {
-    let root = fixtures_root();
-    let mut files = Vec::new();
-    collect_step_files(&root, &mut files);
+    let files = common::step_files();
     if files.is_empty() {
         eprintln!(
             "skipping: no STEP files under {} (run tools/fetch-fixtures.sh)",
-            root.display()
+            fixtures_root().display()
         );
         return;
     }
-    files.sort();
 
     let failures: Vec<String> = files
         .iter()
@@ -248,22 +244,4 @@ fn for_each_fixture(check: impl Fn(&[u8]) -> Result<(), String>) {
         files.len(),
         failures.join("\n")
     );
-}
-
-fn collect_step_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_step_files(&path, out);
-        } else if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("stp") || ext.eq_ignore_ascii_case("step"))
-        {
-            out.push(path);
-        }
-    }
 }

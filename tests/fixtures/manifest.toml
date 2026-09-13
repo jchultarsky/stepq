@@ -117,3 +117,96 @@ kind = "part"
 ap = "AP203"
 products = 1
 exporter = "ST-ACIS"
+
+# Open Compute Project (tools/fetch-fixtures.sh ocp). Creo exports at real
+# product scale; instance counts are from `stepq info`.
+
+[[fixture]]
+path = "ocp/OCP_v3_Enclosure_6OU_Section_c30001_ARP_2022.stp"
+kind = "nested-assembly"
+ap = "AP214"
+products = 567
+nauos = 612
+exporter = "Creo Parametric 2020281"
+notes = "Open Rack V3 6OU rack section; 578,205 instances, 40 MB; 129 sub-assemblies; units inch, foot and millimetre declared; 126 COLOUR_RGB and 8 DRAUGHTING_PRE_DEFINED_COLOUR referenced by nothing"
+
+[[fixture]]
+path = "ocp/ORv3_BBU_Mechanical/Mechanical/BATTERY BACK UP UNIT, V3 LITHIUM ION BBU, 48V, 3KW.stp"
+kind = "nested-assembly"
+ap = "AP214"
+products = 35
+nauos = 74
+exporter = "Creo Parametric 2020454"
+notes = "Open Rack V3 battery backup unit; 202,408 instances; file name contains spaces and commas"
+
+[[fixture]]
+path = "ocp/ORv3_BBU_Mechanical/Mechanical/BBU SHELF, V3, 48V, 15KW_030422.stp"
+kind = "nested-assembly"
+ap = "AP214"
+products = 53
+nauos = 377
+exporter = "Creo Parametric 2020454"
+notes = "Open Rack V3 battery shelf; 754,776 instances; heavy instancing (445 parts in total from 40 distinct)"
+
+[[fixture]]
+path = "ocp/ORv3_PSU_Mechanical/Mechanical/POWER MODULE INTERFACE, PMI MODULE, V3.stp"
+kind = "nested-assembly"
+ap = "AP214"
+products = 45
+nauos = 65
+exporter = "Creo Parametric 2020454"
+notes = "Open Rack V3 power module interface; 135,221 instances; smallest OCP file (7 MB)"
+
+[[fixture]]
+path = "ocp/ORv3_PSU_Mechanical/Mechanical/POWER SHELF, V3, IEC, SINGLE INPUT, 200-277V IN 346-480V IN, 48-50V OUT, 18KW.stp"
+kind = "nested-assembly"
+ap = "AP214"
+products = 65
+nauos = 256
+exporter = "Creo Parametric 2020454"
+notes = "Open Rack V3 power shelf, IEC single input; 883,232 instances"
+
+[[fixture]]
+path = "ocp/ORv3_PSU_Mechanical/Mechanical/POWER SHELF, V3, NEMA, DUAL INPUT, 200-277V IN 346-480V IN, 48-50V OUT, 18KW.stp"
+kind = "nested-assembly"
+ap = "AP214"
+products = 70
+nauos = 263
+exporter = "Creo Parametric 2020454"
+notes = "Open Rack V3 power shelf, NEMA dual input; 1,008,265 instances; a near-variant of the IEC shelf"
+
+[[fixture]]
+path = "ocp/ORv3_PSU_Mechanical/Mechanical/PSU, V3, 200-277V IN, 48-50V OUT, 3KW.stp"
+kind = "nested-assembly"
+ap = "AP214"
+products = 39
+nauos = 72
+exporter = "Creo Parametric 2020454"
+notes = "Open Rack V3 power supply; 183,523 instances; sub-assemblies nested four deep"
+
+[[fixture]]
+path = "ocp/ProjectOlympusChassis20170410/001-e2000_assy_master_asm.stp"
+kind = "nested-assembly"
+ap = "AP203"
+products = 230
+nauos = 903
+exporter = "Creo Parametric 2016130"
+notes = "Project Olympus chassis; 3,026,030 instances, 176 MB; schema CONFIG_CONTROL_DESIGN plus GEOMETRIC_VALIDATION_PROPERTIES_MIM"
+
+[[fixture]]
+path = "ocp/ProjectOlympusComputeServer20170410/00_olympus_1u_asm.stp"
+kind = "nested-assembly"
+ap = "AP203"
+products = 321
+nauos = 487
+exporter = "Creo Parametric 2016050"
+notes = "Project Olympus 1U server; 3,534,295 instances, 207 MB, the largest fixture; the top assembly wraps a near-identical copy of itself; 321 DIMENSIONAL_EXPONENTS referenced by nothing"
+
+[[fixture]]
+path = "ocp/ProjectOlympusUniversalMotherboard20170410/assy_mb_olympus_asm.stp"
+kind = "nested-assembly"
+ap = "AP203"
+products = 81
+nauos = 153
+exporter = "Creo Parametric 2016130"
+notes = "Project Olympus motherboard; 2,903,835 instances, 203 MB; repeated sub-assemblies (M.2 cards)"

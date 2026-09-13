@@ -17,8 +17,9 @@ milestones below; the open items in them carry over.
 - [x] EXPRESS schema reader, used only for attribute counts and aggregate
       bounds. Schemas are read at run time, not shipped (ISO copyright).
       Tested against AP203 ed1/ed2, AP214 ed3 and AP242 ed4.
-- [ ] Find a source for the AP242 ed1–ed3 long-form schemas; ISO only
-      hosts the current edition.
+- [x] AP242 editions 1–3: ISO only hosts the current edition, so files
+      of every AP242 edition are checked against edition 4. Accepted; an
+      older schema is used only if one becomes available.
 - [x] `stepq info`
 - [x] Fuzz targets for the lexer and parser.
 

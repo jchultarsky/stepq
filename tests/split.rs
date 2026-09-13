@@ -3,11 +3,13 @@
 //!
 //! This is the structural half of the split invariant; `tools/verify-split.py`
 //! checks the geometric half through Open CASCADE. Fixtures come from
-//! `tools/fetch-fixtures.sh`; missing files are skipped.
+//! `tools/fetch-fixtures.sh`; missing files are skipped, and so are files
+//! over 16 MB unless `STEPQ_LARGE_FIXTURES=1` is set.
+
+mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
 
 use stepq::model::{Graph, ProductStructure, extract, orphans};
 use stepq::p21::{Numbering, Writer, parse};
@@ -25,6 +27,17 @@ const FIXTURES: &[&str] = &[
     "nist-edm/clevis21.stp",
     "nist/NIST-PMI-STEP-Files/nist_ctc_01_asme1_ap242-e1.stp",
     "nist/NIST-PMI-STEP-Files/nist_ftc_09_asme1_ap242-e1.stp",
+    // Open Rack V3 (tools/fetch-fixtures.sh ocp): real Creo assemblies with
+    // up to 567 products; the four over 16 MB run only with
+    // STEPQ_LARGE_FIXTURES=1. The ~200 MB Project Olympus files are left out
+    // even then: extracting each of their definitions takes minutes.
+    "ocp/OCP_v3_Enclosure_6OU_Section_c30001_ARP_2022.stp",
+    "ocp/ORv3_BBU_Mechanical/Mechanical/BATTERY BACK UP UNIT, V3 LITHIUM ION BBU, 48V, 3KW.stp",
+    "ocp/ORv3_BBU_Mechanical/Mechanical/BBU SHELF, V3, 48V, 15KW_030422.stp",
+    "ocp/ORv3_PSU_Mechanical/Mechanical/POWER MODULE INTERFACE, PMI MODULE, V3.stp",
+    "ocp/ORv3_PSU_Mechanical/Mechanical/POWER SHELF, V3, IEC, SINGLE INPUT, 200-277V IN 346-480V IN, 48-50V OUT, 18KW.stp",
+    "ocp/ORv3_PSU_Mechanical/Mechanical/POWER SHELF, V3, NEMA, DUAL INPUT, 200-277V IN 346-480V IN, 48-50V OUT, 18KW.stp",
+    "ocp/ORv3_PSU_Mechanical/Mechanical/PSU, V3, 200-277V IN, 48-50V OUT, 3KW.stp",
 ];
 
 /// `id|name` of every definition in the sub-tree rooted at `root`, sorted.
@@ -66,12 +79,17 @@ fn subtree_usages(structure: &ProductStructure, root: usize) -> usize {
 
 #[test]
 fn every_extraction_is_closed_and_holds_exactly_its_subtree() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let root = common::fixtures_root();
     for file in FIXTURES {
-        let Ok(src) = fs::read(root.join(file)) else {
+        let path = root.join(file);
+        let Ok(src) = fs::read(&path) else {
             eprintln!("skipping: {file} not fetched (run tools/fetch-fixtures.sh)");
             continue;
         };
+        if !common::is_selected(&path) {
+            eprintln!("skipping: {file} is large (set STEPQ_LARGE_FIXTURES=1)");
+            continue;
+        }
         let graph = Graph::new(parse(&src).unwrap()).unwrap();
         let structure = ProductStructure::new(&graph);
         let mut extractions = Vec::new();
