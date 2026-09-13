@@ -111,8 +111,44 @@ fn split_reports_orphans() {
         .write_stdin(with_orphan)
         .assert()
         .success()
-        .stdout(predicate::str::contains("\n1 instance is in no output\n"))
-        .stdout(predicate::str::contains("DRAUGHTING_PRE_DEFINED_COLOUR"));
+        .stdout(predicate::str::contains(
+            "\n1 instance is in no output\n  referenced by nothing: 1\n         1  DRAUGHTING_PRE_DEFINED_COLOUR\n",
+        ))
+        .stdout(predicate::str::contains("left behind").not());
+    fs::remove_dir_all(&dir).unwrap();
+
+    // A colour a layer lists is left behind: the layer is extracted with
+    // product A, but its list keeps only what is extracted.
+    let left_behind = ASSEMBLY.replace(
+        "ENDSEC;END",
+        "#900=DRAUGHTING_PRE_DEFINED_COLOUR('red');\n\
+         #902=PRESENTATION_LAYER_ASSIGNMENT('layer','',(#11,#900));\nENDSEC;END",
+    );
+    stepq()
+        .args(["split", "-", "--report-orphans", "--out"])
+        .arg(&dir)
+        .write_stdin(left_behind.as_str())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\n1 instance is in no output\n  left behind: 1\n         1  DRAUGHTING_PRE_DEFINED_COLOUR\n",
+        ))
+        .stdout(predicate::str::contains("referenced by nothing").not());
+    fs::remove_dir_all(&dir).unwrap();
+    stepq()
+        .args([
+            "split",
+            "-",
+            "--report-orphans",
+            "--format",
+            "json",
+            "--out",
+        ])
+        .arg(&dir)
+        .write_stdin(left_behind)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""unreferenced": []"#));
     fs::remove_dir_all(&dir).unwrap();
 
     let with_orphans = ASSEMBLY.replace(
