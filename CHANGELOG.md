@@ -37,6 +37,15 @@ Until 1.0, minor versions may contain breaking changes.
   input. The summary is also available as the library type `info::Info`.
 - Fuzz targets `lex` and `parse` (cargo-fuzz, with a Part 21 dictionary),
   run for 60 seconds each in CI.
+- `express::Schema`: reads long-form EXPRESS schemas at run time
+  (entities, supertypes, explicit attributes, explicit and derived
+  redeclarations, defined types) and computes the Part 21 attribute layout
+  of simple and complex instances, with aggregate lower bounds.
+- `express::check`: reports unknown entity types, wrong attribute counts
+  and lists shorter than their aggregate bound.
+- `tools/fetch-schemas.sh`: downloads the AP242 ed. 4, AP214 ed. 3 and
+  AP203 ed. 1 and 2 schemas, checksum-pinned. Schemas are ISO copyright
+  and are not committed or shipped.
 
 ### Changed
 
