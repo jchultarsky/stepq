@@ -95,6 +95,7 @@ pub struct Writer<'e, 'a> {
     header: Option<&'e [u8]>,
     numbering: Numbering,
     replacements: Option<&'e Replacements>,
+    appended: Option<&'e [u8]>,
 }
 
 impl<'e, 'a> Writer<'e, 'a> {
@@ -106,6 +107,19 @@ impl<'e, 'a> Writer<'e, 'a> {
             header: None,
             numbering: Numbering::Preserve,
             replacements: None,
+            appended: None,
+        }
+    }
+
+    /// Appends `instances` to the last data section: complete instance
+    /// records, each ending in `;`, written exactly as given. They are not
+    /// checked: their names must not clash with the written instances', and
+    /// what they refer to must be written too.
+    #[must_use]
+    pub fn append(self, instances: &'e [u8]) -> Self {
+        Self {
+            appended: Some(instances),
+            ..self
         }
     }
 
@@ -364,7 +378,8 @@ impl<'e, 'a> Writer<'e, 'a> {
         let verbatim = self.numbering == Numbering::Preserve
             && self.replacements.is_none()
             && names.data.iter().all(Option::is_some)
-            && plans.iter().all(Option::is_none);
+            && plans.iter().all(Option::is_none)
+            && self.appended.is_none();
         let extra = exchange.extra_sections();
         out.write_all(b"ISO-10303-21;\nHEADER;")?;
         match (self.header, self.replacements) {
@@ -389,7 +404,8 @@ impl<'e, 'a> Writer<'e, 'a> {
                 self.write_extra_section(out, section, names)?;
             }
         }
-        for (params, positions) in exchange.data_sections() {
+        let last = exchange.data_sections().count().saturating_sub(1);
+        for (section, (params, positions)) in exchange.data_sections().enumerate() {
             out.write_all(b"DATA")?;
             out.write_all(params)?;
             out.write_all(b";\n")?;
@@ -402,6 +418,12 @@ impl<'e, 'a> Writer<'e, 'a> {
                         names,
                         plans[position].as_deref(),
                     )?;
+                    out.write_all(b"\n")?;
+                }
+            }
+            if let Some(appended) = self.appended.filter(|_| section == last) {
+                out.write_all(appended)?;
+                if !appended.ends_with(b"\n") {
                     out.write_all(b"\n")?;
                 }
             }
@@ -584,6 +606,27 @@ mod tests {
         format!(
             "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\nDATA;\n{data}ENDSEC;\nEND-ISO-10303-21;\n"
         )
+    }
+
+    #[test]
+    fn appended_instances_end_the_last_data_section() {
+        let src = "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\n\
+                   DATA;\n#1=A();\nENDSEC;\n\
+                   SIGNATURE;'c2ln';ENDSEC;\n\
+                   END-ISO-10303-21;\n";
+        let exchange = parse(src.as_bytes()).unwrap();
+        let mut out = Vec::new();
+        Writer::new(&exchange)
+            .append(b"#2=B(#1);")
+            .write_all(&mut out)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\n\
+             DATA;\n#1=A();\n#2=B(#1);\nENDSEC;\n\
+             END-ISO-10303-21;\n",
+            "the appended instance, and no signature: the content changed"
+        );
     }
 
     #[test]

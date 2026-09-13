@@ -29,6 +29,7 @@ $ stepq tree  assembly.stp --usages       # assembly hierarchy and placements
 $ stepq bom   assembly.stp                # multi-level bill of materials as a tree
 $ stepq bom   assembly.stp --format csv   # the same as an indented CSV
 $ stepq split assembly.stp --out parts/   # one file per sub-assembly and part (--bodies: per solid)
+$ stepq split assembly.stp --master --out parts/  # assemblies refer to component files (CAx-IF)
 $ stepq lint  assembly.stp --schema schemas/   # structural problems; exit 1 on errors
 $ stepq refs  assembly.stp 1234 --depth 2      # what #1234 refers to, and what refers to it
 $ stepq query assembly.stp --type product      # instances by entity type or text
