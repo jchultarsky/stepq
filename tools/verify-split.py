@@ -21,7 +21,7 @@ silent"). For every fixture:
    (2e-7 relative on the NIST weldment, whose every component matches its own
    file exactly), and check 2 already holds each component to 1e-9.
 
-    tools/verify-split.py [FIXTURE...]    # default: every fixture
+    tools/verify-split.py [FIXTURE...]    # default: every fixture up to 16 MB
 
 Exit status 0 if every check holds, 1 otherwise.
 """
@@ -31,6 +31,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import os
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,9 @@ _spec.loader.exec_module(occt)
 
 STEPQ = ROOT / "target" / "release" / "stepq"
 ASSEMBLY_REL_TOL = 1e-6
+# Without arguments, larger fixtures are skipped unless STEPQ_LARGE_FIXTURES=1:
+# Open CASCADE needs minutes for each of the Open Compute assemblies.
+LARGE_FIXTURE_BYTES = 16 * 1024 * 1024
 
 
 def stepq(*args: str) -> str:
@@ -148,11 +152,21 @@ def check(fixture: Path, scratch: Path) -> list[str]:
 
 
 def main() -> int:
-    fixtures = [Path(arg) for arg in sys.argv[1:]] or sorted(
-        p
-        for p in (ROOT / "tests" / "fixtures").rglob("*")
-        if p.suffix.lower() in (".stp", ".step")
-    )
+    fixtures = [Path(arg) for arg in sys.argv[1:]]
+    if not fixtures:
+        found = sorted(
+            p
+            for p in (ROOT / "tests" / "fixtures").rglob("*")
+            if p.suffix.lower() in (".stp", ".step")
+        )
+        large = os.environ.get("STEPQ_LARGE_FIXTURES", "") not in ("", "0")
+        fixtures = [p for p in found if large or p.stat().st_size <= LARGE_FIXTURE_BYTES]
+        if len(fixtures) < len(found):
+            print(
+                f"skipping {len(found) - len(fixtures)} fixtures over 16 MB "
+                "(set STEPQ_LARGE_FIXTURES=1 to include them)",
+                file=sys.stderr,
+            )
     if not fixtures:
         print("no fixtures (run tools/fetch-fixtures.sh)", file=sys.stderr)
         return 2

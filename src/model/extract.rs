@@ -235,6 +235,20 @@ pub const RULES: &[Rule] = &[
         1,
         Some(("NAME_ATTRIBUTE", 1)),
     ),
+    // Persistent identifiers (AP242 PMI) and descriptions of shape aspects,
+    // datums and tolerances: left behind by every split before.
+    owned(
+        &["ID_ATTRIBUTE"],
+        "identified_item",
+        1,
+        Some(("ID_ATTRIBUTE", 1)),
+    ),
+    owned(
+        &["DESCRIPTION_ATTRIBUTE"],
+        "described_item",
+        1,
+        Some(("DESCRIPTION_ATTRIBUTE", 1)),
+    ),
     owned(
         &["APPROVAL_DATE_TIME"],
         "dated_approval",
