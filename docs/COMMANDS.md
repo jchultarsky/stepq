@@ -201,7 +201,7 @@ stepq bom [--flat] [--depth N] [--no-dedupe] [--charset auto|utf8|ascii] [--pref
 |---|---|
 | `FILE` | STEP file to inspect, or `-` for standard input. |
 | `--flat` | One line per distinct component with its total quantity. |
-| `--depth N` | List at most this many levels below each top-level assembly. |
+| `--depth N` | List at most this many levels below each top-level assembly. The summary line still counts the whole BOM, and says so when levels are left out. |
 | `--no-dedupe` | In the tree, expand repeated sub-assemblies every time. By default a repeated sub-assembly is expanded once and marked `(*)`. CSV and JSON always expand them. |
 | `--charset auto\|utf8\|ascii` | Characters used to draw the tree. `auto` (the default) uses box-drawing characters when `LC_ALL`, `LC_CTYPE` or `LANG` asks for UTF-8, ASCII otherwise. |
 | `--prefix indent\|depth\|none` | How each tree line starts: tree lines (default), the level number (0 for the top assembly), or nothing. |
@@ -264,7 +264,7 @@ $ stepq bom assembly.stp --depth 1 --charset ascii --prefix depth
 1 L-BRACKET ASSEMBLY  x2
 1 ROD-ASSEMBLY
 
-3 sub-assemblies, 5 distinct parts, 18 parts in total
+3 sub-assemblies, 5 distinct parts, 18 parts in total, including levels below --depth 1
 ```
 
 ## split
@@ -288,7 +288,7 @@ stepq split [-o DIR] [--force] [--report-orphans] [--bodies] [--master] FILE
 |---|---|
 | `FILE` | STEP file to split, or `-` for standard input. |
 | `-o`, `--out DIR` | Directory to write the output files into; created if missing. Default `.`. |
-| `--force` | Overwrite output files that already exist. Without it, `split` stops before writing if a file it would write exists. |
+| `--force` | Overwrite output files that already exist. Without it, `split` stops before writing anything if a file it would write exists, `--bodies` files included. |
 | `--report-orphans` | Also list the entity types, with counts, of the instances that no output contains. |
 | `--bodies` | Also write one file per solid of every part with several, `<part>.body-<n>.stp`: the part with its other solids, and everything only they bring (faces, colours), left out. |
 | `--master` | Write assemblies as master files that refer to their components' files instead of copying their geometry. Parts are written as usual. |
@@ -319,7 +319,7 @@ $ stepq split assembly.stp --out parts --report-orphans
        144       7  part      ROD.stp
 
 wrote 9 files to parts
-1 instances are in no output
+1 instance is in no output
          1  PRODUCT_CATEGORY
 ```
 
@@ -625,7 +625,8 @@ Lists product properties — user-defined attributes, validation properties
 properties — and persistent identifiers (`id_attribute`). They are
 grouped under the product definition they belong to, found by following
 shapes and shape aspects. Values are printed as written in the file;
-nothing is recomputed.
+nothing is recomputed. In the table, a value whose text spans lines is
+printed on one line, and a property with no name is shown as `(unnamed)`.
 
 ```
 stepq props [--kind validation|user|other|id]... FILE
@@ -638,7 +639,7 @@ stepq props [--kind validation|user|other|id]... FILE
 
 With `--format csv`, one row per value; with `--format json`, the product
 definitions, properties and identifiers (where the property kind is
-written `validation`, `user_defined` or `other`).
+written `validation`, `user` or `other`, as `--kind` names them).
 
 Library: [`stepq::props::properties`](https://docs.rs/stepq/latest/stepq/props/fn.properties.html).
 
@@ -656,8 +657,8 @@ BRACKET  #4368
   validation  volume of BRACKET / volume measure = 14644822.6361138 (VOLUME_MEASURE, unit #639)  [on PRODUCT_DEFINITION_SHAPE #4269]
   validation  volume of BRACKET / wetted area measure = 807080.802199914 (AREA_MEASURE, unit #640)  [on PRODUCT_DEFINITION_SHAPE #4269]
   validation  volume of BRACKET / centre point = #3942=CARTESIAN_POINT('centre point',(-2.29264395139875,-1.36345168588643,-32.2974419857648));  [on PRODUCT_DEFINITION_SHAPE #4269]
-  user         = B  [on SHAPE_ASPECT #316]
-  user         = A  [on SHAPE_ASPECT #317]
+  user        (unnamed) = B  [on SHAPE_ASPECT #316]
+  user        (unnamed) = A  [on SHAPE_ASPECT #317]
 
 7 properties, 13 values, 0 identifiers
 ```
@@ -819,8 +820,11 @@ stepq pmi FILE
 |---|---|
 | `FILE` | STEP file to inspect, or `-` for standard input. |
 
-With `--format json`, one document with `datums`, `tolerances` and
-`dimensions`; with `--format csv`, one row per item. A file without
+The table lists, under each product definition, its datums, then its
+tolerances, then its dimensions, each in instance order. With
+`--format json`, one document with `datums`, `tolerances` and
+`dimensions`; with `--format csv`, one row per item, datums first, then
+tolerances, then dimensions, each in instance order. A file without
 semantic PMI prints `no semantic PMI`.
 
 Library: [`stepq::pmi::pmi`](https://docs.rs/stepq/latest/stepq/pmi/fn.pmi.html).
@@ -828,18 +832,18 @@ Library: [`stepq::pmi::pmi`](https://docs.rs/stepq/latest/stepq/pmi/fn.pmi.html)
 ```console
 $ stepq pmi pmi-part.stp
 BRACKET  #4368
-  tolerance   position 0.75 | A | B | C  Position.1  [on COMPOSITE_SHAPE_ASPECT #235]
-  tolerance   position 0.75 | A | B | C  Position.2  [on COMPOSITE_SHAPE_ASPECT #236]
-  dimension   linear distance  [from SHAPE_ASPECT #324 to SHAPE_ASPECT #325]
-  dimension   linear distance  [from SHAPE_ASPECT #328 to SHAPE_ASPECT #329]
-  tolerance   surface profile 1.25 | A | B | C  Position surfacic profile.3  [on COMPOSITE_SHAPE_ASPECT #230]
-  tolerance   surface profile 0.5 | A  Position surfacic profile.2  [on ALL_AROUND_SHAPE_ASPECT #23]
-  dimension   angle 60.0 (-0.5 .. 0.5)  [from SHAPE_ASPECT #310 to SHAPE_ASPECT #311]
   datum       A
   datum       B
   datum       C
+  tolerance   position 0.75 | A | B | C  Position.1  [on COMPOSITE_SHAPE_ASPECT #235]
+  tolerance   position 0.75 | A | B | C  Position.2  [on COMPOSITE_SHAPE_ASPECT #236]
+  tolerance   surface profile 1.25 | A | B | C  Position surfacic profile.3  [on COMPOSITE_SHAPE_ASPECT #230]
+  tolerance   surface profile 0.5 | A  Position surfacic profile.2  [on ALL_AROUND_SHAPE_ASPECT #23]
   tolerance   perpendicularity 1.5 | A  Perpendicularity.1  [on SHAPE_ASPECT #298]
   tolerance   flatness 0.2  Flatness.1  [on SHAPE_ASPECT #297]
+  dimension   linear distance  [from SHAPE_ASPECT #324 to SHAPE_ASPECT #325]
+  dimension   linear distance  [from SHAPE_ASPECT #328 to SHAPE_ASPECT #329]
+  dimension   angle 60.0 (-0.5 .. 0.5)  [from SHAPE_ASPECT #310 to SHAPE_ASPECT #311]
   dimension   diameter 35. (-0.2 .. 0.)  [on COMPOSITE_SHAPE_ASPECT #219]
 …
   dimension   diameter 25. (-0.15 .. 0.15)  [on COMPOSITE_SHAPE_ASPECT #231]

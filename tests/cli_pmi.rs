@@ -62,6 +62,58 @@ fn pmi_table_groups_by_product_definition() {
 }
 
 #[test]
+fn pmi_table_lists_datums_then_tolerances_then_dimensions() {
+    // Datums defined after the tolerances and a dimension before them.
+    let reordered = SAMPLE
+        .replace("#30=DATUM(", "#130=DATUM(")
+        .replace("#31=DATUM(", "#131=DATUM(")
+        .replace(",#30,$);", ",#130,$);")
+        .replace(",#31,(", ",#131,(")
+        .replace("#98=DIMENSIONAL_LOCATION(", "#8=DIMENSIONAL_LOCATION(");
+    stepq()
+        .args(["pmi", "-"])
+        .write_stdin(reordered.as_str())
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "part [P]  #12\n  \
+             datum       A\n  \
+             datum       B\n  \
+             tolerance   position 0.75 (maximum_material_requirement) | A | B (maximum_material_requirement)  Position.1  [on SHAPE_ASPECT #60]\n  \
+             tolerance   flatness 0.05  Flatness.1  [on SHAPE_ASPECT #61]\n  \
+             dimension   linear distance  [from SHAPE_ASPECT #60 to SHAPE_ASPECT #61]\n  \
+             dimension   diameter 35. (-0.2 .. 0.)  [on SHAPE_ASPECT #60]\n\
+             \n\
+             2 datums, 2 tolerances, 2 dimensions\n",
+        ));
+    let csv = stepq()
+        .args(["pmi", "-", "--format", "csv"])
+        .write_stdin(reordered)
+        .output()
+        .unwrap();
+    let categories: Vec<String> = String::from_utf8(csv.stdout)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let fields: Vec<&str> = line.split(',').collect();
+            format!("{} {}", fields[0], fields[3])
+        })
+        .collect();
+    assert_eq!(
+        categories,
+        [
+            "datum #130",
+            "datum #131",
+            "tolerance #80",
+            "tolerance #81",
+            "dimension #8",
+            "dimension #90"
+        ]
+    );
+}
+
+#[test]
 fn pmi_json_and_csv() {
     let output = stepq()
         .args(["--format", "json", "pmi", "-"])
