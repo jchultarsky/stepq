@@ -40,7 +40,9 @@ kernel; that is the constraint that keeps the project finishable.
 - [ ] `stepq split` — self-contained mode.
 - [ ] `stepq split --bodies` — multi-body products into one file per solid.
 - [ ] `--report-orphans`: print everything left outside the closure.
-- [ ] `tools/verify-occt.py`: Σ volume(outputs) == volume(input subtree).
+- [x] `tools/verify-occt.py`: Σ volume(outputs) == volume(input subtree),
+      equal solid counts, no lost names or colours. Already run in CI on
+      every fixture rewritten by stepq (`tools/verify-rewrite.sh`).
 
 ## 0.4 — inspect
 

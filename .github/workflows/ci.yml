@@ -105,6 +105,25 @@ jobs:
           name: fuzz-artifacts
           path: fuzz/artifacts
 
+  occt:
+    name: OCCT geometry check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # setup-uv publishes no moving major tag, so pin the release.
+      - uses: astral-sh/setup-uv@v10.1.0
+      - name: Cache fixtures
+        uses: actions/cache@v6
+        with:
+          path: tests/fixtures
+          key: fixtures-${{ hashFiles('tools/fetch-fixtures.sh') }}
+      - run: tools/fetch-fixtures.sh
+      # Rewrites every fixture with renumbered instances and checks through
+      # Open CASCADE that solids, volume, names and colours are unchanged.
+      - run: tools/verify-rewrite.sh
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
