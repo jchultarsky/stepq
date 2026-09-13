@@ -332,13 +332,19 @@ fn bom_tree_in_ascii() {
 
 #[test]
 fn bom_charset_follows_the_locale() {
+    // Windows ignores the locale variables and always draws UTF-8.
+    let ascii = if cfg!(windows) {
+        "├── bracket assembly [B]"
+    } else {
+        "|-- bracket assembly [B]"
+    };
     stepq()
         .args(["bom", "-"])
         .env("LC_ALL", "C")
         .write_stdin(ASSEMBLY)
         .assert()
         .success()
-        .stdout(predicate::str::contains("|-- bracket assembly [B]"));
+        .stdout(predicate::str::contains(ascii));
     stepq()
         .args(["bom", "-"])
         .env("LC_ALL", "en_US.UTF-8")
