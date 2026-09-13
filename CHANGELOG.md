@@ -8,6 +8,14 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-13
+
+Extraction coverage: the rule table grown from orphan reports on every
+fixture, so `split` keeps PMI presentation, saved views, notes, documents
+and more with their products; the orphan report tells what is left behind
+from what nothing refers to; a command reference (`docs/COMMANDS.md`); and
+small CLI output fixes.
+
 ### Added
 
 - `split` and `model::extract` keep much more of what belongs to a
@@ -238,7 +246,8 @@ First release.
 
 - License is now MIT only (previously MIT OR Apache-2.0).
 
-[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jchultarsky/stepq/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jchultarsky/stepq/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jchultarsky/stepq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jchultarsky/stepq/releases/tag/v0.1.0
