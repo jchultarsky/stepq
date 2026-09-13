@@ -31,15 +31,18 @@ kernel; that is the constraint that keeps the project finishable.
 
 ## 0.3 — split
 
-- [ ] Back-reference closure with the empirically grown rule table
-      (`context_dependent_shape_representation`, `styled_item`,
-      `presentation_layer_assignment`, PMI graph, validation properties…).
-- [ ] Aggregate filtering for entities shared across parts.
-- [ ] Per-output `representation_context` handling (never merge).
+- [x] Back-reference closure with the empirically grown rule table
+      (`model::RULES`: shapes, placements, styles, PMI, assembly usages),
+      every attribute position checked against the schemas.
+- [x] Aggregate filtering for entities shared across parts.
+- [x] Per-output `representation_context` handling (never merge): contexts
+      are copied as referenced, never deduplicated.
 - [ ] Drop assembly-scope validation properties on re-root.
-- [ ] `stepq split` — self-contained mode.
+- [x] `stepq split` — self-contained mode.
 - [ ] `stepq split --bodies` — multi-body products into one file per solid.
-- [ ] `--report-orphans`: print everything left outside the closure.
+- [x] `--report-orphans`: print everything left outside the closure.
+- [ ] Grow the rule table from the orphan reports (dates, persons and
+      organizations on some exporters; PMI presentation on NIST AP242).
 - [x] `tools/verify-occt.py`: Σ volume(outputs) == volume(input subtree),
       equal solid counts, no lost names or colours. Already run in CI on
       every fixture rewritten by stepq (`tools/verify-rewrite.sh`).

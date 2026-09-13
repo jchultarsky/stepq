@@ -63,6 +63,7 @@ bindings (`cadquery-ocp`) on first use:
 $ tools/verify-occt.py summary tests/fixtures/steptools/as1-ug-214.stp
 $ tools/verify-occt.py compare INPUT OUTPUT...
 $ tools/verify-rewrite.sh      # rewrite every fixture and compare, as CI does
+$ tools/verify-split.py        # split every fixture and compare, as CI does
 ```
 
 ### Fuzzing
