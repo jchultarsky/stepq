@@ -44,8 +44,11 @@ $ stepq pmi   part.stp --format json           # semantic GD&T: tolerances, datu
 Every command reads `-` as standard input and prints a table, JSON
 (`--format json`) or CSV (`--format csv`).
 
+**Commands:** [docs/COMMANDS.md](docs/COMMANDS.md) documents every command
+and option, with real example output and the library function behind each.
+
 ```console
-$ stepq bom as1-ac-214.stp
+$ stepq bom assembly.stp
 AS1-AC-214
 ├── PLATE
 ├── L-BRACKET ASSEMBLY  ×2
@@ -142,8 +145,9 @@ short version:
   file every tool reads happily with zero solids and no warning. The test
   oracle is therefore geometric: every output is read back through Open
   CASCADE and checked against volume and solid-count invariants of the
-  input (`tools/verify-occt.py`). CI already uses it to check that
-  rewriting every sample file through stepq changes no geometry.
+  input (`tools/verify-occt.py`). CI uses it on the core sample files to
+  check that rewriting through stepq changes no geometry, and that `split`
+  outputs reproduce the input (`tools/verify-split.py`).
 
 ## Contributing
 
