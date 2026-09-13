@@ -66,6 +66,7 @@
 pub mod error;
 pub mod express;
 pub mod info;
+pub mod lint;
 pub mod model;
 pub mod p21;
 

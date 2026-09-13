@@ -8,7 +8,9 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use stepq::express::Schema;
 use stepq::info::Info;
+use stepq::lint::{Check, Report};
 use stepq::model::{
     BomNode, BomTreeOptions, Definition, Graph, Placement, ProductStructure, Usage,
 };
@@ -132,12 +134,32 @@ enum Command {
         #[arg(long)]
         report_orphans: bool,
     },
+    /// Check a file for structural problems, without a geometry kernel.
+    ///
+    /// Always checks syntax, duplicate and dangling references,
+    /// transformations whose representations share a context, and
+    /// products with no category or a file with no application protocol
+    /// definition. With --schema, also checks every record's entity type,
+    /// attribute count and list sizes against the schema the file's header
+    /// names; tools/fetch-schemas.sh downloads the ISO schemas.
+    ///
+    /// Exits with status 1 if there are errors. Warnings alone exit 0.
+    Lint {
+        /// STEP file to check, or `-` for standard input.
+        file: PathBuf,
+        /// EXPRESS schema file, or a directory of `.exp` files. Repeatable.
+        #[arg(long = "schema", value_name = "PATH")]
+        schemas: Vec<PathBuf>,
+        /// In the table, list every finding instead of the first 10 per check.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(&cli) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         // `stepq info big.stp | head` closes the pipe early; that is not an error.
         Err(err) if is_broken_pipe(&err) => ExitCode::SUCCESS,
         Err(err) => {
@@ -147,8 +169,8 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: &Cli) -> anyhow::Result<()> {
-    match &cli.command {
+fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
+    let done = match &cli.command {
         Command::Info { file, top } => info(file, cli.format, *top),
         Command::Tree { file, usages } => tree(file, cli.format, *usages),
         Command::Bom {
@@ -175,7 +197,9 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
             force,
             report_orphans,
         } => split(file, out, cli.format, *force, *report_orphans),
-    }
+        Command::Lint { file, schemas, all } => return lint(file, schemas, cli.format, *all),
+    };
+    done.map(|()| ExitCode::SUCCESS)
 }
 
 fn is_broken_pipe(err: &anyhow::Error) -> bool {
@@ -245,6 +269,173 @@ fn info(path: &Path, format: Format, top: usize) -> anyhow::Result<()> {
         }
     }
     out.flush()?;
+    Ok(())
+}
+
+/// Findings of each check listed in the table unless `--all` is given.
+const LINT_TABLE_LIMIT: usize = 10;
+
+fn lint(
+    path: &Path,
+    schema_paths: &[PathBuf],
+    format: Format,
+    all: bool,
+) -> anyhow::Result<ExitCode> {
+    let schemas = load_schemas(schema_paths)?;
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let report = stepq::lint::lint(&src, &schemas);
+
+    let mut out = BufWriter::new(io::stdout().lock());
+    match format {
+        Format::Table | Format::Tree => {
+            write_lint_table(&mut out, &name, &report, !schemas.is_empty(), all)?;
+        }
+        Format::Json => {
+            #[derive(serde::Serialize)]
+            struct Document<'a> {
+                file: &'a str,
+                errors: usize,
+                warnings: usize,
+                #[serde(flatten)]
+                report: &'a Report,
+            }
+            serde_json::to_writer_pretty(
+                &mut out,
+                &Document {
+                    file: &name,
+                    errors: report.errors(),
+                    warnings: report.warnings(),
+                    report: &report,
+                },
+            )?;
+            writeln!(out)?;
+        }
+        Format::Csv => {
+            writeln!(out, "severity,check,instance,message")?;
+            for finding in &report.findings {
+                writeln!(
+                    out,
+                    "{},{},{},{}",
+                    finding.severity,
+                    finding.check,
+                    finding
+                        .instance
+                        .map(|id| format!("#{id}"))
+                        .unwrap_or_default(),
+                    csv_field(&finding.message)
+                )?;
+            }
+        }
+    }
+    out.flush()?;
+    Ok(if report.errors() > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// Reads every schema named on the command line; a directory contributes
+/// its `.exp` files in name order.
+fn load_schemas(paths: &[PathBuf]) -> anyhow::Result<Vec<Schema>> {
+    let mut files = Vec::new();
+    for path in paths {
+        if path.is_dir() {
+            let mut entries: Vec<PathBuf> = fs::read_dir(path)
+                .with_context(|| format!("reading {}", path.display()))?
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|file| {
+                    file.extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("exp"))
+                })
+                .collect();
+            if entries.is_empty() {
+                bail!("{} contains no .exp schema files", path.display());
+            }
+            entries.sort();
+            files.extend(entries);
+        } else {
+            files.push(path.clone());
+        }
+    }
+    files
+        .iter()
+        .map(|file| {
+            let src = fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+            Schema::parse(&src).with_context(|| format!("reading schema {}", file.display()))
+        })
+        .collect()
+}
+
+fn write_lint_table(
+    out: &mut impl Write,
+    name: &str,
+    report: &Report,
+    schemas_given: bool,
+    all: bool,
+) -> io::Result<()> {
+    let schema_line = match (&report.checked_schema, schemas_given) {
+        (Some(schema), _) => format!("checked against {schema}"),
+        (None, true) => format!(
+            "no schema given for {}; schema checks skipped",
+            report.file_schemas.join(", ")
+        ),
+        (None, false) => "schema checks skipped (pass --schema)".to_owned(),
+    };
+    writeln!(out, "{name}: {schema_line}")?;
+    if report.findings.is_empty() {
+        writeln!(out, "no problems found")?;
+        return Ok(());
+    }
+
+    writeln!(out)?;
+    writeln!(
+        out,
+        "{:<8}  {:<28}  {:>10}  MESSAGE",
+        "SEVERITY", "CHECK", "INSTANCE"
+    )?;
+    let mut shown: std::collections::HashMap<Check, usize> = std::collections::HashMap::new();
+    let mut hidden: std::collections::BTreeMap<Check, usize> = std::collections::BTreeMap::new();
+    for finding in &report.findings {
+        let count = shown.entry(finding.check).or_default();
+        if !all && *count >= LINT_TABLE_LIMIT {
+            *hidden.entry(finding.check).or_default() += 1;
+            continue;
+        }
+        *count += 1;
+        writeln!(
+            out,
+            "{:<8}  {:<28}  {:>10}  {}",
+            finding.severity,
+            finding.check,
+            finding
+                .instance
+                .map(|id| format!("#{id}"))
+                .unwrap_or_default(),
+            finding.message
+        )?;
+    }
+    for (check, count) in &hidden {
+        writeln!(
+            out,
+            "{:<8}  {:<28}  {:>10}  … {} more (--all lists them)",
+            check.severity(),
+            check,
+            "",
+            grouped(*count)
+        )?;
+    }
+
+    let plural =
+        |n: usize, word: &str| format!("{} {word}{}", grouped(n), if n == 1 { "" } else { "s" });
+    writeln!(out)?;
+    writeln!(
+        out,
+        "{}, {}",
+        plural(report.errors(), "error"),
+        plural(report.warnings(), "warning")
+    )?;
     Ok(())
 }
 

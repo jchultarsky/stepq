@@ -57,7 +57,8 @@ impl fmt::Display for Problem {
             }
             ProblemKind::AttributeCount { expected, found } => write!(
                 f,
-                "#{instance} {entity}: expected {expected} attributes, found {found}"
+                "#{instance} {entity}: expected {expected} attribute{}, found {found}",
+                if *expected == 1 { "" } else { "s" }
             ),
             ProblemKind::TooFewElements {
                 attribute,

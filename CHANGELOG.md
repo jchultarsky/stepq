@@ -10,6 +10,14 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- `stepq lint`: syntax errors, duplicate ids, dangling references,
+  transformations whose representations share a context, a missing
+  application protocol definition and products with no category; with
+  `--schema` (a file or a directory of `.exp` files), also unknown entity
+  types, attribute counts and lists below their lower bound. Table (10
+  findings per check unless `--all`), JSON or CSV; exits 1 on errors. Also
+  available as the library function `lint::lint`.
+
 - Open Compute Project test fixtures: ten Open Rack V3 and Project Olympus
   assemblies (Creo, AP214 and AP203), up to 207 MB and 3.5 million
   instances. `tools/fetch-fixtures.sh` takes the sets to fetch (`core`,
