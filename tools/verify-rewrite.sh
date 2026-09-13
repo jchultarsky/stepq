@@ -2,6 +2,9 @@
 # Rewrite every fetched fixture through stepq, renumbering every instance,
 # and check through Open CASCADE that no solid, volume, name or colour
 # changed. Fetch fixtures first with tools/fetch-fixtures.sh.
+#
+# Fixtures over 16 MB are skipped unless STEPQ_LARGE_FIXTURES=1: Open
+# CASCADE needs minutes for each of the large Open Compute assemblies.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,10 +14,14 @@ trap 'rm -rf "$out"' EXIT
 cargo build --release --quiet --example rewrite --manifest-path "$here/Cargo.toml"
 rewrite="$here/target/release/examples/rewrite"
 
+size=(-size -16M)
+if [[ -n "${STEPQ_LARGE_FIXTURES:-}" && "${STEPQ_LARGE_FIXTURES}" != "0" ]]; then
+  size=()
+fi
 files=()
 while IFS= read -r -d '' file; do
   files+=("$file")
-done < <(find "$here/tests/fixtures" -type f \( -iname '*.stp' -o -iname '*.step' \) -print0 | sort -z)
+done < <(find "$here/tests/fixtures" -type f \( -iname '*.stp' -o -iname '*.step' \) ${size[@]+"${size[@]}"} -print0 | sort -z)
 if [[ ${#files[@]} -eq 0 ]]; then
   echo "no fixtures under tests/fixtures (run tools/fetch-fixtures.sh)" >&2
   exit 2

@@ -152,9 +152,19 @@ disconnected needs point-in-solid to assign voids; refuse it.
 
 ## Validation properties
 
-Assembly-scope geometric validation properties (total volume, centroid)
-are wrong the moment you re-root. They cannot be recomputed without a
-kernel. Drop them on extraction; keep part-scope ones.
+Geometric validation properties (volume, area, centroid) cannot be
+recomputed without a kernel, so an extraction must never carry one that
+describes something else. It does not: the rule table takes only the
+properties of each extracted definition and its shape aspects, and an
+assembly's own properties describe its own sub-tree — exactly what its
+extraction holds. Nothing needs dropping on re-root.
+
+Measured on the AS1 splits from two exporters (CADDS via Theorem, and
+Unigraphics): in all 18 output files, the root definition's declared
+volume matches the volume Open CASCADE computes for that file to the
+exporter's precision (for example 108452.2 declared, 108453 computed for
+the L-bracket sub-assembly). `stepq props --kind validation` reads the
+declared values.
 
 ## Non-goals, and why
 

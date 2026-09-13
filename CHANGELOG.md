@@ -50,6 +50,16 @@ Until 1.0, minor versions may contain breaking changes.
   instances. `tools/fetch-fixtures.sh` takes the sets to fetch (`core`,
   `ocp`, `all`) and checks every download against a pinned SHA-256.
 
+### Changed
+
+- `split` and `model::extract` now keep persistent identifiers
+  (`id_attribute`) and `description_attribute`s with what they describe;
+  every split left them behind before.
+- Assembly-scope validation properties need no special handling on
+  re-root: an extraction carries only its root's own properties, and in
+  every AS1 split output the declared volume matches Open CASCADE
+  (`docs/ARCHITECTURE.md`).
+
 ## [0.1.0] - 2026-09-13
 
 First release.

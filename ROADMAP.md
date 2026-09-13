@@ -42,12 +42,18 @@ milestones below; the open items in them carry over.
 - [x] Aggregate filtering for entities shared across parts.
 - [x] Per-output `representation_context` handling (never merge): contexts
       are copied as referenced, never deduplicated.
-- [ ] Drop assembly-scope validation properties on re-root.
+- [x] Assembly-scope validation properties on re-root: not needed. An
+      extraction carries only its root's own properties, which describe
+      its own sub-tree; declared volumes match Open CASCADE in every AS1
+      split output (`docs/ARCHITECTURE.md`).
 - [x] `stepq split` — self-contained mode.
 - [ ] `stepq split --bodies` — multi-body products into one file per solid.
 - [x] `--report-orphans`: print everything left outside the closure.
-- [ ] Grow the rule table from the orphan reports (dates, persons and
-      organizations on some exporters; PMI presentation on NIST AP242).
+- [ ] Grow the rule table from the orphan reports. Persistent identifiers
+      are done (orphaned `id_attribute`s on the core fixtures: 3,298 → 55);
+      what remains is dates, persons and organizations on some exporters,
+      and PMI presentation on NIST AP242 (annotation planes, camera
+      models, styled annotation).
 - [x] `tools/verify-occt.py`: Σ volume(outputs) == volume(input subtree),
       equal solid counts, no lost names or colours. Already run in CI on
       every fixture rewritten by stepq (`tools/verify-rewrite.sh`).
