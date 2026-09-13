@@ -819,6 +819,102 @@ fn query_matches_complex_instances_and_counts() {
     );
 }
 
+/// A part with a validated volume on a shape aspect, a user-defined
+/// attribute with three values, a property of nothing product-shaped, and a
+/// persistent identifier.
+const PROPERTIES: &str = "ISO-10303-21;HEADER;FILE_SCHEMA(('AP242'));ENDSEC;DATA;
+#1=APPLICATION_CONTEXT('');
+#10=PRODUCT('P1','bracket','',());
+#11=PRODUCT_DEFINITION_FORMATION('','',#10);
+#12=PRODUCT_DEFINITION('design','',#11,#13);
+#13=PRODUCT_DEFINITION_CONTEXT('',#1,'design');
+#20=PRODUCT_DEFINITION_SHAPE('','',#12);
+#21=SHAPE_ASPECT('','solid',#20,.F.);
+#30=PROPERTY_DEFINITION('geometric_validation_property','volume of solid',#21);
+#31=PROPERTY_DEFINITION_REPRESENTATION(#30,#32);
+#32=REPRESENTATION('volume',(#33),#1);
+#33=MEASURE_REPRESENTATION_ITEM('volume measure',VOLUME_MEASURE(96858.91343205),#99);
+#40=PROPERTY_DEFINITION('MATERIAL','user defined attribute',#12);
+#41=GENERAL_PROPERTY('','MATERIAL','user defined attribute');
+#42=GENERAL_PROPERTY_ASSOCIATION('user defined attribute','',#41,#40);
+#43=PROPERTY_DEFINITION_REPRESENTATION(#40,#44);
+#44=REPRESENTATION('',(#45,#46,#47),#1);
+#45=DESCRIPTIVE_REPRESENTATION_ITEM('MATERIAL','Steel ''S235''');
+#46=VALUE_REPRESENTATION_ITEM('THICKNESS',LENGTH_MEASURE(1.E0));
+#47=(MEASURE_REPRESENTATION_ITEM()MEASURE_WITH_UNIT(MASS_MEASURE(2.5),#99)REPRESENTATION_ITEM('mass'));
+#50=PROPERTY_DEFINITION('centroid','',#1);
+#51=PROPERTY_DEFINITION_REPRESENTATION(#50,#52);
+#52=REPRESENTATION('',(#53),#1);
+#53=CARTESIAN_POINT('centre',(1.,2.,3.));
+#70=ID_ATTRIBUTE('aspect.1',#21);
+#99=DERIVED_UNIT(());
+ENDSEC;END-ISO-10303-21;";
+
+#[test]
+fn props_table_groups_by_product_definition() {
+    stepq()
+        .args(["props", "-"])
+        .write_stdin(PROPERTIES)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "bracket [P1]  #12\n  \
+             validation  volume of solid / volume measure = 96858.91343205 (VOLUME_MEASURE, unit #99)  [on SHAPE_ASPECT #21]\n  \
+             user        MATERIAL = Steel 'S235'\n  \
+             user        MATERIAL / THICKNESS = 1.E0 (LENGTH_MEASURE)\n  \
+             user        MATERIAL / mass = 2.5 (MASS_MEASURE, unit #99)\n  \
+             id          aspect.1  [on SHAPE_ASPECT #21]\n\
+             \n\
+             (not attached to a product definition)\n  \
+             other       centroid / centre = #53=CARTESIAN_POINT('centre',(1.,2.,3.));  [on APPLICATION_CONTEXT #1]\n\
+             \n\
+             3 properties, 5 values, 1 identifier\n",
+        ));
+}
+
+#[test]
+fn props_kind_filter() {
+    stepq()
+        .args(["props", "-", "--kind", "user", "--kind", "id"])
+        .write_stdin(PROPERTIES)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("validation").not())
+        .stdout(predicate::str::contains("other ").not())
+        .stdout(predicate::str::ends_with(
+            "1 property, 3 values, 1 identifier\n",
+        ));
+}
+
+#[test]
+fn props_csv_and_json() {
+    stepq()
+        .args(["props", "-", "--kind", "validation", "--kind", "id", "--format", "csv"])
+        .write_stdin(PROPERTIES)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "product_definition,product,kind,instance,name,description,subject,subject_type,value_instance,value_name,measure,value,unit\n\
+             #12,bracket [P1],validation,#30,geometric_validation_property,volume of solid,#21,SHAPE_ASPECT,#33,volume measure,VOLUME_MEASURE,96858.91343205,#99\n\
+             #12,bracket [P1],id,#70,aspect.1,,#21,SHAPE_ASPECT,,,,,\n",
+        ));
+
+    let output = stepq()
+        .args(["--format", "json", "props", "-"])
+        .write_stdin(PROPERTIES)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["definitions"][0]["instance"], 12);
+    let material = &json["properties"][1];
+    assert_eq!(material["kind"], "user_defined");
+    assert_eq!(material["subject"]["product_definition"], 12);
+    assert_eq!(material["values"][0]["value"], "Steel 'S235'");
+    assert_eq!(material["values"][1]["measure"], "LENGTH_MEASURE");
+    assert_eq!(json["identifiers"][0]["id"], "aspect.1");
+}
+
 #[test]
 fn bom_flat_lists_total_quantities() {
     stepq()

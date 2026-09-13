@@ -10,6 +10,12 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- `stepq props`: user-defined attributes, geometric validation properties,
+  other properties and persistent identifiers (`id_attribute`), grouped by
+  the product definition they belong to, with values as written in the
+  file; `--kind validation|user|other|id`; table, JSON or CSV. Also
+  available as `props::properties`.
+
 - `stepq refs FILE ID...`: what instances refer to and what refers to
   them, `--direction both|out|in`, `--depth` up to 64 with repeats marked
   `(*)`, as a table, nested JSON or CSV.
