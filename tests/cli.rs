@@ -634,6 +634,192 @@ fn lint_table_lists_ten_findings_per_check_unless_all() {
 }
 
 #[test]
+fn refs_lists_both_directions() {
+    stepq()
+        .args(["refs", "-", "20"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "#20=PRODUCT_DEFINITION('b-def','',#22,#3);\n\
+             references\n  \
+             #3=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');\n  \
+             #22=PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE('2','',#21,.MADE.);\n\
+             referenced by\n  \
+             #71=PRODUCT_DEFINITION_SHAPE('','',#20);\n  \
+             #100=NEXT_ASSEMBLY_USAGE_OCCURRENCE('u1','B1','',#10,#20,$);\n  \
+             #101=NEXT_ASSEMBLY_USAGE_OCCURRENCE('u2','B2','',#10,#20,$);\n  \
+             #102=NEXT_ASSEMBLY_USAGE_OCCURRENCE('u3','C1','',#20,#30,'X1');\n  \
+             #103=NEXT_ASSEMBLY_USAGE_OCCURRENCE('u4','C2','',#20,#30,'X2');\n  \
+             #104=NEXT_ASSEMBLY_USAGE_OCCURRENCE('u5','C3','',#20,#30,'X3');\n",
+        ));
+}
+
+#[test]
+fn refs_follows_references_to_a_depth_and_marks_repeats() {
+    stepq()
+        .args(["refs", "-", "#60", "--direction", "in", "--depth", "2"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "#60=AXIS2_PLACEMENT_3D('',#61,$,$);\n\
+             referenced by\n  \
+             #50=SHAPE_REPRESENTATION('a',(#60),#1);\n    \
+             #80=SHAPE_DEFINITION_REPRESENTATION(#70,#50);\n    \
+             #91=(REPRESENTATION_RELATIONSHIP('','',#51,#50)REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#92)…\n  \
+             #51=SHAPE_REPRESENTATION('b',(#60),#1);\n    \
+             #81=SHAPE_DEFINITION_REPRESENTATION(#71,#51);\n    \
+             #91=(REPRESENTATION_RELATIONSHIP('','',#51,#50)REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#92)… (*)\n    \
+             #95=REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION('','',#51,#52,#92);\n  \
+             #52=SHAPE_REPRESENTATION('c',(#60),#1);\n    \
+             #82=SHAPE_DEFINITION_REPRESENTATION(#72,#52);\n    \
+             #95=REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION('','',#51,#52,#92); (*)\n  \
+             #92=ITEM_DEFINED_TRANSFORMATION('','',#60,#60);\n    \
+             #91=(REPRESENTATION_RELATIONSHIP('','',#51,#50)REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#92)… (*)\n    \
+             #95=REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION('','',#51,#52,#92); (*)\n",
+        ));
+}
+
+#[test]
+fn refs_json_and_csv() {
+    let output = stepq()
+        .args(["--format", "json", "refs", "-", "70", "--full"])
+        .write_stdin(ASSEMBLY)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json[0]["id"], 70);
+    assert_eq!(
+        json[0]["types"],
+        serde_json::json!(["PRODUCT_DEFINITION_SHAPE"])
+    );
+    assert_eq!(json[0]["references"][0]["id"], 10);
+    assert_eq!(json[0]["referenced_by"][0]["id"], 80);
+    assert_eq!(
+        json[0]["referenced_by"][0]["text"],
+        "#80=SHAPE_DEFINITION_REPRESENTATION(#70,#50);"
+    );
+
+    stepq()
+        .args(["refs", "-", "70", "--direction", "out", "--format", "csv"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "from,direction,level,instance,type,text\n\
+             #70,references,1,#10,PRODUCT_DEFINITION,\"#10=PRODUCT_DEFINITION('a-def','',#12,#3);\"\n",
+        ));
+}
+
+#[test]
+fn refs_rejects_unknown_instances() {
+    stepq()
+        .args(["refs", "-", "999"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("<stdin> has no instance #999"));
+    stepq()
+        .args(["refs", "-", "x1"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not an instance name"));
+}
+
+#[test]
+fn query_by_type_and_text() {
+    stepq()
+        .args(["query", "-", "--type", "product"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "#11=PRODUCT('A','assembly','',(#2));\n\
+             #21=PRODUCT('B','bracket assembly','',(#2));\n\
+             #31=PRODUCT('C','bolt','',(#2));\n\
+             #41=PRODUCT('D','plate','',(#2));\n\
+             4 instances\n",
+        ));
+    stepq()
+        .args(["query", "-", "--type", "PRODUCT", "--contains", "BOLT"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "#31=PRODUCT('C','bolt','',(#2));\n1 instance\n",
+        ));
+    stepq()
+        .args(["query", "-", "--type", "product", "--limit", "1"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::ends_with(
+            "#11=PRODUCT('A','assembly','',(#2));\n… 3 more (--limit)\n4 instances\n",
+        ));
+}
+
+#[test]
+fn query_matches_complex_instances_and_counts() {
+    // #105 is complex; one of its partial entities is a NAUO.
+    stepq()
+        .args([
+            "query",
+            "-",
+            "--type",
+            "next_assembly_usage_occurrence",
+            "--type",
+            "quantified_assembly_component_usage",
+            "--count",
+        ])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "         6  NEXT_ASSEMBLY_USAGE_OCCURRENCE\n         \
+             1  QUANTIFIED_ASSEMBLY_COMPONENT_USAGE\n",
+        ));
+    stepq()
+        .args([
+            "query",
+            "-",
+            "--type",
+            "quantified_assembly_component_usage",
+        ])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "#105=(ASSEMBLY_COMPONENT_USAGE($)NEXT_ASSEMBLY_USAGE_OCCURRENCE()PRODUCT_DEFINITION_RELATIONSHIP('u…\n\
+             1 instance\n",
+        ));
+
+    let output = stepq()
+        .args([
+            "--format",
+            "json",
+            "query",
+            "-",
+            "--type",
+            "measure_with_unit",
+        ])
+        .write_stdin(ASSEMBLY)
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!([{
+            "id": 106,
+            "types": ["MEASURE_WITH_UNIT"],
+            "text": "#106=MEASURE_WITH_UNIT(COUNT_MEASURE(4.),#1);"
+        }])
+    );
+}
+
+#[test]
 fn bom_flat_lists_total_quantities() {
     stepq()
         .args(["bom", "-", "--flat"])

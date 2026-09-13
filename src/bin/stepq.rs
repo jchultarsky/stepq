@@ -14,7 +14,7 @@ use stepq::lint::{Check, Report};
 use stepq::model::{
     BomNode, BomTreeOptions, Definition, Graph, Placement, ProductStructure, Usage,
 };
-use stepq::p21::parse;
+use stepq::p21::{Exchange, Instance, parse};
 
 /// Query, inspect, split and reshape STEP (ISO 10303-21) files.
 #[derive(Debug, Parser)]
@@ -154,6 +154,70 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Show what instances refer to and what refers to them.
+    ///
+    /// In STEP most links point from the describing entity to the described
+    /// one: a product's shape, colours, PMI and placement all refer *to* it,
+    /// so "referenced by" is usually where the answers are. With --depth,
+    /// references are followed further; each instance is expanded once per
+    /// direction and marked (*) where it repeats.
+    Refs {
+        /// STEP file to inspect, or `-` for standard input.
+        file: PathBuf,
+        /// Instance names, as `12` or `'#12'` (quote `#` in the shell).
+        #[arg(required = true, value_parser = parse_instance_name)]
+        ids: Vec<u64>,
+        /// Which references to follow.
+        #[arg(long, value_enum, default_value_t = Direction::Both)]
+        direction: Direction,
+        /// How many steps to follow in each direction.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=64))]
+        depth: u8,
+        /// Print whole instances instead of their first 100 characters.
+        #[arg(long)]
+        full: bool,
+    },
+    /// List instances by entity type or text.
+    ///
+    /// A complex instance matches a type if any of its partial entities
+    /// does. With no filter, lists every instance.
+    Query {
+        /// STEP file to inspect, or `-` for standard input.
+        file: PathBuf,
+        /// Entity type, ignoring case. Repeatable: an instance matches if it
+        /// has any of them.
+        #[arg(long = "type", value_name = "NAME")]
+        types: Vec<String>,
+        /// Only instances whose text contains this, ignoring ASCII case.
+        #[arg(long, value_name = "TEXT")]
+        contains: Option<String>,
+        /// Print at most this many instances.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Print how many instances of each entity type match instead.
+        #[arg(long)]
+        count: bool,
+        /// Print whole instances instead of their first 100 characters.
+        #[arg(long)]
+        full: bool,
+    },
+}
+
+/// Which references `stepq refs` follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Direction {
+    /// Both ways.
+    Both,
+    /// What the instance refers to.
+    Out,
+    /// What refers to the instance.
+    In,
+}
+
+impl Direction {
+    fn includes(self, other: Self) -> bool {
+        self == Self::Both || self == other
+    }
 }
 
 fn main() -> ExitCode {
@@ -198,6 +262,40 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             report_orphans,
         } => split(file, out, cli.format, *force, *report_orphans),
         Command::Lint { file, schemas, all } => return lint(file, schemas, cli.format, *all),
+        Command::Refs {
+            file,
+            ids,
+            direction,
+            depth,
+            full,
+        } => refs(
+            file,
+            ids,
+            &RefsOptions {
+                direction: *direction,
+                depth: usize::from(*depth),
+                full: *full,
+            },
+            cli.format,
+        ),
+        Command::Query {
+            file,
+            types,
+            contains,
+            limit,
+            count,
+            full,
+        } => query(
+            file,
+            &QueryOptions {
+                types,
+                contains: contains.as_deref(),
+                limit: *limit,
+                count: *count,
+                full: *full,
+            },
+            cli.format,
+        ),
     };
     done.map(|()| ExitCode::SUCCESS)
 }
@@ -269,6 +367,401 @@ fn info(path: &Path, format: Format, top: usize) -> anyhow::Result<()> {
         }
     }
     out.flush()?;
+    Ok(())
+}
+
+/// Characters of instance text shown unless `--full` is given.
+const TEXT_LIMIT: usize = 100;
+
+/// Accepts `12` or `#12`.
+fn parse_instance_name(value: &str) -> Result<u64, String> {
+    value
+        .strip_prefix('#')
+        .unwrap_or(value)
+        .parse()
+        .map_err(|_| format!("`{value}` is not an instance name such as 12 or #12"))
+}
+
+/// The upper-cased entity types of an instance, one per partial entity.
+fn entity_types(exchange: &Exchange<'_>, instance: &Instance) -> Vec<String> {
+    exchange
+        .records(instance)
+        .map(|record| String::from_utf8_lossy(record.name()).to_ascii_uppercase())
+        .collect()
+}
+
+/// An instance's text on one line: whitespace runs collapsed and, unless
+/// `full`, cut to [`TEXT_LIMIT`] characters.
+fn instance_line(exchange: &Exchange<'_>, instance: &Instance, full: bool) -> String {
+    let text = String::from_utf8_lossy(exchange.text(instance));
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if full || line.chars().count() <= TEXT_LIMIT {
+        line
+    } else {
+        let cut: String = line.chars().take(TEXT_LIMIT - 1).collect();
+        format!("{cut}…")
+    }
+}
+
+struct RefsOptions {
+    direction: Direction,
+    depth: usize,
+    full: bool,
+}
+
+/// The distinct nodes `node` refers to (`Out`) or that refer to it (`In`),
+/// in file order.
+fn neighbours(graph: &Graph<'_>, node: usize, direction: Direction) -> Vec<usize> {
+    let nodes = if direction == Direction::In {
+        graph.referenced_by(node)
+    } else {
+        graph.references(node)
+    };
+    let mut distinct: Vec<usize> = nodes.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    distinct
+}
+
+fn refs(path: &Path, ids: &[u64], options: &RefsOptions, format: Format) -> anyhow::Result<()> {
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let exchange = parse(&src).with_context(|| format!("parsing {name}"))?;
+    let graph = Graph::build(exchange);
+    let nodes = ids
+        .iter()
+        .map(|&id| {
+            graph
+                .node(id)
+                .with_context(|| format!("{name} has no instance #{id}"))
+        })
+        .collect::<anyhow::Result<Vec<usize>>>()?;
+    let directions = [
+        ("references", Direction::Out),
+        ("referenced by", Direction::In),
+    ];
+    let directions = directions
+        .into_iter()
+        .filter(|(_, direction)| options.direction.includes(*direction));
+
+    let mut out = BufWriter::new(io::stdout().lock());
+    match format {
+        Format::Table | Format::Tree => {
+            for (i, &node) in nodes.iter().enumerate() {
+                if i > 0 {
+                    writeln!(out)?;
+                }
+                let exchange = graph.exchange();
+                writeln!(
+                    out,
+                    "{}",
+                    instance_line(exchange, graph.instance(node), options.full)
+                )?;
+                for (label, direction) in directions.clone() {
+                    writeln!(out, "{label}")?;
+                    let next = neighbours(&graph, node, direction);
+                    if next.is_empty() {
+                        writeln!(out, "  (none)")?;
+                    }
+                    let mut walk = RefsWalk::new(&graph, direction, options, node);
+                    walk.write(&mut out, &next, 1)?;
+                }
+            }
+        }
+        Format::Json => {
+            let documents: Vec<JsonInstance> = nodes
+                .iter()
+                .map(|&node| {
+                    let mut document = JsonInstance::new(&graph, node);
+                    for (_, direction) in directions.clone() {
+                        let mut walk = RefsWalk::new(&graph, direction, options, node);
+                        let next = neighbours(&graph, node, direction);
+                        let linked = Some(walk.json(&next, 1));
+                        if direction == Direction::Out {
+                            document.references = linked;
+                        } else {
+                            document.referenced_by = linked;
+                        }
+                    }
+                    document
+                })
+                .collect();
+            serde_json::to_writer_pretty(&mut out, &documents)?;
+            writeln!(out)?;
+        }
+        Format::Csv => {
+            writeln!(out, "from,direction,level,instance,type,text")?;
+            for &node in &nodes {
+                for (_, direction) in directions.clone() {
+                    let mut walk = RefsWalk::new(&graph, direction, options, node);
+                    let next = neighbours(&graph, node, direction);
+                    walk.csv(&mut out, &next, 1)?;
+                }
+            }
+        }
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// One direction of a `stepq refs` walk from one instance.
+struct RefsWalk<'g, 'a> {
+    graph: &'g Graph<'a>,
+    direction: Direction,
+    depth: usize,
+    full: bool,
+    from: u64,
+    seen: std::collections::HashSet<usize>,
+}
+
+impl<'g, 'a> RefsWalk<'g, 'a> {
+    fn new(
+        graph: &'g Graph<'a>,
+        direction: Direction,
+        options: &RefsOptions,
+        start: usize,
+    ) -> Self {
+        Self {
+            graph,
+            direction,
+            depth: options.depth,
+            full: options.full,
+            from: graph.instance(start).id,
+            seen: std::collections::HashSet::from([start]),
+        }
+    }
+
+    /// Marks `node` seen; true if it was already.
+    fn repeated(&mut self, node: usize) -> bool {
+        !self.seen.insert(node)
+    }
+
+    fn write(&mut self, out: &mut impl Write, nodes: &[usize], level: usize) -> io::Result<()> {
+        for &node in nodes {
+            let repeated = self.repeated(node);
+            let line = instance_line(self.graph.exchange(), self.graph.instance(node), self.full);
+            let mark = if repeated { " (*)" } else { "" };
+            writeln!(out, "{}{line}{mark}", "  ".repeat(level))?;
+            if !repeated && level < self.depth {
+                let next = neighbours(self.graph, node, self.direction);
+                self.write(out, &next, level + 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn json(&mut self, nodes: &[usize], level: usize) -> Vec<JsonInstance> {
+        nodes
+            .iter()
+            .map(|&node| {
+                let mut document = JsonInstance::new(self.graph, node);
+                document.repeated = self.repeated(node);
+                if !document.repeated && level < self.depth {
+                    let next = neighbours(self.graph, node, self.direction);
+                    let linked = Some(self.json(&next, level + 1));
+                    if self.direction == Direction::Out {
+                        document.references = linked;
+                    } else {
+                        document.referenced_by = linked;
+                    }
+                }
+                document
+            })
+            .collect()
+    }
+
+    fn csv(&mut self, out: &mut impl Write, nodes: &[usize], level: usize) -> io::Result<()> {
+        let direction = if self.direction == Direction::Out {
+            "references"
+        } else {
+            "referenced_by"
+        };
+        for &node in nodes {
+            let repeated = self.repeated(node);
+            let exchange = self.graph.exchange();
+            let instance = self.graph.instance(node);
+            writeln!(
+                out,
+                "#{},{direction},{level},#{},{},{}",
+                self.from,
+                instance.id,
+                csv_field(&entity_types(exchange, instance).join("+")),
+                csv_field(&String::from_utf8_lossy(exchange.text(instance)))
+            )?;
+            if !repeated && level < self.depth {
+                let next = neighbours(self.graph, node, self.direction);
+                self.csv(out, &next, level + 1)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An instance in `stepq refs` and `stepq query` JSON.
+#[derive(serde::Serialize)]
+struct JsonInstance {
+    id: u64,
+    types: Vec<String>,
+    text: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    repeated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    references: Option<Vec<JsonInstance>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    referenced_by: Option<Vec<JsonInstance>>,
+}
+
+impl JsonInstance {
+    fn new(graph: &Graph<'_>, node: usize) -> Self {
+        Self::of(graph.exchange(), graph.instance(node))
+    }
+
+    fn of(exchange: &Exchange<'_>, instance: &Instance) -> Self {
+        Self {
+            id: instance.id,
+            types: entity_types(exchange, instance),
+            text: String::from_utf8_lossy(exchange.text(instance)).into_owned(),
+            repeated: false,
+            references: None,
+            referenced_by: None,
+        }
+    }
+}
+
+struct QueryOptions<'a> {
+    types: &'a [String],
+    contains: Option<&'a str>,
+    limit: Option<usize>,
+    count: bool,
+    full: bool,
+}
+
+fn query(path: &Path, options: &QueryOptions<'_>, format: Format) -> anyhow::Result<()> {
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let exchange = parse(&src).with_context(|| format!("parsing {name}"))?;
+    let needle = options.contains.map(str::to_ascii_lowercase);
+    let matches: Vec<&Instance> = exchange
+        .instances()
+        .iter()
+        .filter(|instance| {
+            options.types.is_empty()
+                || exchange
+                    .records(instance)
+                    .any(|record| options.types.iter().any(|name| record.is(name)))
+        })
+        .filter(|instance| {
+            needle.as_ref().is_none_or(|needle| {
+                String::from_utf8_lossy(exchange.text(instance))
+                    .to_ascii_lowercase()
+                    .contains(needle.as_str())
+            })
+        })
+        .collect();
+
+    let mut out = BufWriter::new(io::stdout().lock());
+    if options.count {
+        write_query_counts(&mut out, &exchange, &matches, options.types, format)?;
+        out.flush()?;
+        return Ok(());
+    }
+
+    let shown = options
+        .limit
+        .map_or(matches.len(), |limit| limit.min(matches.len()));
+    match format {
+        Format::Table | Format::Tree => {
+            for instance in &matches[..shown] {
+                writeln!(out, "{}", instance_line(&exchange, instance, options.full))?;
+            }
+            if shown < matches.len() {
+                writeln!(out, "… {} more (--limit)", grouped(matches.len() - shown))?;
+            }
+            let plural = if matches.len() == 1 { "" } else { "s" };
+            writeln!(out, "{} instance{plural}", grouped(matches.len()))?;
+        }
+        Format::Json => {
+            let documents: Vec<JsonInstance> = matches[..shown]
+                .iter()
+                .map(|instance| JsonInstance::of(&exchange, instance))
+                .collect();
+            serde_json::to_writer_pretty(&mut out, &documents)?;
+            writeln!(out)?;
+        }
+        Format::Csv => {
+            writeln!(out, "instance,type,text")?;
+            for instance in &matches[..shown] {
+                writeln!(
+                    out,
+                    "#{},{},{}",
+                    instance.id,
+                    csv_field(&entity_types(&exchange, instance).join("+")),
+                    csv_field(&String::from_utf8_lossy(exchange.text(instance)))
+                )?;
+            }
+        }
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// Matches per entity type: per requested type if any were given, else per
+/// every type the matches have. Most frequent first, then by name.
+fn write_query_counts(
+    out: &mut impl Write,
+    exchange: &Exchange<'_>,
+    matches: &[&Instance],
+    types: &[String],
+    format: Format,
+) -> anyhow::Result<()> {
+    let mut counts: std::collections::BTreeMap<String, usize> = types
+        .iter()
+        .map(|name| (name.to_ascii_uppercase(), 0))
+        .collect();
+    for instance in matches {
+        let mut names = entity_types(exchange, instance);
+        names.sort();
+        names.dedup();
+        for name in names {
+            if types.is_empty() {
+                *counts.entry(name).or_default() += 1;
+            } else if let Some(count) = counts.get_mut(&name) {
+                *count += 1;
+            }
+        }
+    }
+    let mut counts: Vec<(String, usize)> = counts.into_iter().collect();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    match format {
+        Format::Table | Format::Tree => {
+            for (name, count) in &counts {
+                writeln!(out, "{:>10}  {name}", grouped(*count))?;
+            }
+        }
+        Format::Json => {
+            #[derive(serde::Serialize)]
+            struct Count<'a> {
+                entity_type: &'a str,
+                count: usize,
+            }
+            let rows: Vec<Count<'_>> = counts
+                .iter()
+                .map(|(name, count)| Count {
+                    entity_type: name,
+                    count: *count,
+                })
+                .collect();
+            serde_json::to_writer_pretty(&mut *out, &rows)?;
+            writeln!(out)?;
+        }
+        Format::Csv => {
+            writeln!(out, "entity_type,count")?;
+            for (name, count) in &counts {
+                writeln!(out, "{name},{count}")?;
+            }
+        }
+    }
     Ok(())
 }
 
