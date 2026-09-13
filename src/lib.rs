@@ -71,5 +71,6 @@ pub mod lint;
 pub mod model;
 pub mod p21;
 pub mod props;
+pub mod strip;
 
 pub use error::{Error, Result};

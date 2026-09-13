@@ -31,4 +31,4 @@ pub use exchange::{
 pub use lexer::{Lexer, Span, Token, TokenKind};
 pub use parser::parse;
 pub use string::decode_string;
-pub use writer::{Numbering, Writer};
+pub use writer::{Numbering, Replacements, Writer};

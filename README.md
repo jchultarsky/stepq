@@ -33,6 +33,7 @@ $ stepq refs  assembly.stp 1234 --depth 2      # what #1234 refers to, and what 
 $ stepq query assembly.stp --type product      # instances by entity type or text
 $ stepq props assembly.stp --kind user         # user-defined attributes, validation properties, IDs
 $ stepq diff  old.stp new.stp                  # what changed: products, quantities, properties
+$ stepq strip assembly.stp --anonymize -o shareable.stp  # remove names before sharing a file
 ```
 
 Every command reads `-` as standard input and prints a table, JSON
@@ -60,7 +61,7 @@ instance placement, colours and names — without a CAD seat and without
 regenerating a single surface. As far as we can tell nothing open-source
 does this today; the usual answer is "open it in SolidWorks and Save As".
 
-Planned beyond that: `pmi` extraction to JSON, `strip`/`anonymize`, and `assemble` (the inverse of
+Planned beyond that: `pmi` extraction to JSON and `assemble` (the inverse of
 `split`). See [ROADMAP.md](ROADMAP.md) for the tiers.
 
 ## What it will not do

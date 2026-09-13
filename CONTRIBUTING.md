@@ -144,8 +144,9 @@ After changing `dist-workspace.toml` or upgrading dist, run
 
 Use the issue template. A bug report about a specific file is only
 actionable if you can attach the file, or a minimal file that reproduces
-it. If the file is confidential, `stepq strip --anonymize` (once it
-exists) is meant for exactly this.
+it. If the file is confidential, `stepq strip FILE --anonymize -o OUT`
+is meant for exactly this: it removes people, organizations, product
+names, descriptions and attribute text, and changes nothing else.
 
 Panics, unbounded memory use or hangs on crafted input are security
 issues: report them privately as described in [SECURITY.md](SECURITY.md),

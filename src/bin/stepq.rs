@@ -231,6 +231,29 @@ enum Command {
         #[arg(long = "section", value_enum)]
         sections: Vec<DiffSection>,
     },
+    /// Remove personal and identifying text before sharing a file.
+    ///
+    /// Always blanks the header's author, organization and authorization
+    /// and every string of PERSON, ORGANIZATION and address entities. With
+    /// --anonymize, also renames products to product-1, product-2, … and
+    /// usages to usage-1, …, and blanks the header's file name, product and
+    /// definition descriptions, usage names, shape names and user-defined
+    /// attribute text. Only those strings change: geometry, numbers, entity
+    /// types and instance names are copied byte for byte.
+    Strip {
+        /// STEP file to strip, or `-` for standard input.
+        file: PathBuf,
+        /// Where to write the result, or `-` for standard output (the report
+        /// then goes to standard error).
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Also replace product names, descriptions and attribute text.
+        #[arg(long)]
+        anonymize: bool,
+        /// Overwrite the output file if it exists.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// The sections `stepq diff --section` selects.
@@ -377,6 +400,12 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         Command::Diff { old, new, sections } => {
             return diff_files(old, new, sections, cli.format);
         }
+        Command::Strip {
+            file,
+            out,
+            anonymize,
+            force,
+        } => strip(file, out, *anonymize, *force, cli.format),
     };
     done.map(|()| ExitCode::SUCCESS)
 }
@@ -448,6 +477,76 @@ fn info(path: &Path, format: Format, top: usize) -> anyhow::Result<()> {
         }
     }
     out.flush()?;
+    Ok(())
+}
+
+fn strip(
+    path: &Path,
+    out_path: &Path,
+    anonymize: bool,
+    force: bool,
+    format: Format,
+) -> anyhow::Result<()> {
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let exchange = parse(&src).with_context(|| format!("parsing {name}"))?;
+    let plan = stepq::strip::strip(&exchange, anonymize);
+    let writer = stepq::p21::Writer::new(&exchange).replacements(&plan.replacements);
+
+    let to_stdout = out_path == Path::new("-");
+    let output = if to_stdout {
+        writer
+            .write_all(io::stdout().lock())
+            .with_context(|| format!("writing {name}"))?;
+        "<stdout>".to_owned()
+    } else {
+        if out_path.exists() && !force {
+            bail!(
+                "{} already exists; pass --force to overwrite it",
+                out_path.display()
+            );
+        }
+        let file = fs::File::create(out_path)
+            .with_context(|| format!("creating {}", out_path.display()))?;
+        writer
+            .write_all(file)
+            .with_context(|| format!("writing {}", out_path.display()))?;
+        out_path.display().to_string()
+    };
+
+    let strings = plan.replacements.len();
+    let report = match format {
+        Format::Table | Format::Tree => {
+            let plural = |n: usize, word: &str| {
+                format!("{} {word}{}", grouped(n), if n == 1 { "" } else { "s" })
+            };
+            format!(
+                "{output}: replaced {} in {}\n",
+                plural(strings, "string"),
+                plural(plan.instances, "instance")
+            )
+        }
+        Format::Json => {
+            let document = serde_json::json!({
+                "file": name,
+                "output": output,
+                "strings": strings,
+                "instances": plan.instances,
+            });
+            format!("{}\n", serde_json::to_string_pretty(&document)?)
+        }
+        Format::Csv => format!(
+            "file,output,strings,instances\n{},{},{strings},{}\n",
+            csv_field(&name),
+            csv_field(&output),
+            plan.instances
+        ),
+    };
+    if to_stdout {
+        eprint!("{report}");
+    } else {
+        print!("{report}");
+    }
     Ok(())
 }
 
