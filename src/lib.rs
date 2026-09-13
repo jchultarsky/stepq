@@ -70,6 +70,7 @@ pub mod info;
 pub mod lint;
 pub mod model;
 pub mod p21;
+pub mod pmi;
 pub mod props;
 pub mod strip;
 

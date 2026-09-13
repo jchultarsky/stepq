@@ -10,6 +10,12 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- `stepq pmi`: semantic GD&T of AP242 files — datums, geometric
+  tolerances (characteristic, magnitude, datum reference frame with
+  modifiers, tolerance modifiers, unit size, toleranced feature) and size
+  and location dimensions (nominal values, plus-minus bounds, features) —
+  grouped by product definition, with values as written; table, JSON or
+  CSV. Library: `pmi::pmi`.
 - `stepq split --bodies`: a part whose shape holds several solids also gets
   one file per solid, `<part>.body-<n>.stp`, holding the part with its
   other solids and everything only they bring (faces, styles) left out.

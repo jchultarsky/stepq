@@ -220,7 +220,7 @@ pub fn properties(graph: &Graph<'_>, structure: &ProductStructure) -> Properties
 }
 
 /// The entities, upper-cased and joined with `+`, of instance `#id`.
-fn entity(exchange: &Exchange<'_>, instance: &Instance) -> String {
+pub(crate) fn entity(exchange: &Exchange<'_>, instance: &Instance) -> String {
     exchange
         .records(instance)
         .map(|record| upper(record.name()))
@@ -232,7 +232,8 @@ fn upper(name: &[u8]) -> String {
     String::from_utf8_lossy(name).to_ascii_uppercase()
 }
 
-fn subject(exchange: &Exchange<'_>, definitions: &HashSet<u64>, target: u64) -> Subject {
+/// What `#target` is and which of `definitions` it belongs to.
+pub(crate) fn subject(exchange: &Exchange<'_>, definitions: &HashSet<u64>, target: u64) -> Subject {
     let entity = exchange
         .get(target)
         .map(|instance| entity(exchange, instance))
@@ -269,7 +270,7 @@ fn subject(exchange: &Exchange<'_>, definitions: &HashSet<u64>, target: u64) -> 
 }
 
 /// The items of representation `#id`, in order.
-fn representation_items(exchange: &Exchange<'_>, id: u64) -> Vec<u64> {
+pub(crate) fn representation_items(exchange: &Exchange<'_>, id: u64) -> Vec<u64> {
     let Some(instance) = exchange.get(id) else {
         return Vec::new();
     };
@@ -288,7 +289,9 @@ fn representation_items(exchange: &Exchange<'_>, id: u64) -> Vec<u64> {
         .collect()
 }
 
-fn value(exchange: &Exchange<'_>, id: u64) -> Option<Value> {
+/// Instance `#id` read as a value: a measure, a descriptive or literal item,
+/// or failing those its whole text.
+pub(crate) fn value(exchange: &Exchange<'_>, id: u64) -> Option<Value> {
     let instance = exchange.get(id)?;
     let records: Vec<Record<'_>> = exchange.records(instance).collect();
     let find = |name: &str| records.iter().copied().find(|r| r.is(name));
@@ -316,6 +319,17 @@ fn value(exchange: &Exchange<'_>, id: u64) -> Option<Value> {
                 measure: kind,
                 value,
                 unit: reference(record.param(2)),
+            });
+        }
+        // LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(0.05),#99) and the like.
+        if upper(record.name()).ends_with("MEASURE_WITH_UNIT") && record.params().count() == 2 {
+            let (kind, value) = typed(record.param(0));
+            return Some(Value {
+                instance: id,
+                name: None,
+                measure: kind,
+                value,
+                unit: reference(record.param(1)),
             });
         }
         if record.is("DESCRIPTIVE_REPRESENTATION_ITEM") {
@@ -383,7 +397,7 @@ fn literal_text(literal: Literal<'_>) -> String {
 }
 
 /// A string attribute, decoded; `None` if unset or not a string.
-fn text(param: Option<Param<'_>>) -> Option<String> {
+pub(crate) fn text(param: Option<Param<'_>>) -> Option<String> {
     let literal = param?.literal()?;
     if literal.text().first() != Some(&b'\'') {
         return None;
