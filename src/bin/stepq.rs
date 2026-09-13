@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use stepq::info::Info;
-use stepq::model::{Definition, Graph, ProductStructure, Usage};
+use stepq::model::{Definition, Graph, Placement, ProductStructure, Usage};
 use stepq::p21::parse;
 
 /// Query, inspect, split and reshape STEP (ISO 10303-21) files.
@@ -331,7 +331,7 @@ fn write_tree(out: &mut impl Write, structure: &ProductStructure, usages: bool) 
     let reversed = structure
         .usages()
         .iter()
-        .filter(|u| u.placement.as_ref().and_then(|p| p.reversed) == Some(true))
+        .filter(|u| u.placement.as_ref().and_then(Placement::reversed) == Some(true))
         .count();
     if reversed > 0 {
         writeln!(
@@ -432,37 +432,86 @@ fn usage_detail(usage: &Usage) -> String {
         let _ = write!(detail, " ×{quantity}");
     }
     match &usage.placement {
-        Some(placement) => {
+        Some(Placement::ShapeRelationship {
+            context_dependent_shape_representation,
+            relationship,
+            transformation,
+            reversed,
+            ..
+        }) => {
             let _ = write!(
                 detail,
-                "  placed by #{} → #{}",
-                placement.context_dependent_shape_representation, placement.relationship
+                "  placed by #{context_dependent_shape_representation} → #{relationship}"
             );
-            if let Some(transformation) = placement.transformation {
+            if let Some(transformation) = transformation {
                 let _ = write!(detail, " (#{transformation})");
             }
-            if placement.reversed == Some(true) {
+            if *reversed == Some(true) {
                 detail.push_str(" [rep_1/rep_2 reversed]");
             }
         }
+        Some(Placement::MappedItem {
+            mapped_item,
+            representation_map,
+            target,
+            ..
+        }) => {
+            let _ = write!(
+                detail,
+                "  placed by mapped item #{mapped_item} (map #{representation_map}"
+            );
+            if let Some(target) = target {
+                let _ = write!(detail, ", target #{target}");
+            }
+            detail.push(')');
+        }
+        Some(_) => detail.push_str("  (placed)"),
         None => detail.push_str("  (no placement)"),
     }
     detail
 }
 
+/// One row per usage. `placement` is the representation relationship for a
+/// shape-relationship placement and the `MAPPED_ITEM` for a mapped item;
+/// `transformation` is the relationship's transformation or the mapped
+/// item's target placement.
 fn write_usages_csv(out: &mut impl Write, structure: &ProductStructure) -> io::Result<()> {
     writeln!(
         out,
-        "usage,usage_id,parent,parent_product,child,child_product,quantity,reference_designator,relationship,transformation,reversed"
+        "usage,usage_id,parent,parent_product,child,child_product,quantity,reference_designator,placement_kind,placement,transformation,reversed"
     )?;
+    let id = |id: Option<u64>| id.map_or_else(String::new, |id| id.to_string());
     let definitions = structure.definitions();
     for usage in structure.usages() {
         let parent = &definitions[usage.parent];
         let child = &definitions[usage.child];
-        let placement = usage.placement.as_ref();
+        let (kind, placement, transformation, reversed) = match &usage.placement {
+            Some(Placement::ShapeRelationship {
+                relationship,
+                transformation,
+                reversed,
+                ..
+            }) => (
+                "shape_relationship",
+                relationship.to_string(),
+                id(*transformation),
+                reversed.map_or_else(String::new, |r| r.to_string()),
+            ),
+            Some(Placement::MappedItem {
+                mapped_item,
+                target,
+                ..
+            }) => (
+                "mapped_item",
+                mapped_item.to_string(),
+                id(*target),
+                String::new(),
+            ),
+            Some(_) | None => ("", String::new(), String::new(), String::new()),
+        };
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{kind},{placement},{transformation},{reversed}",
             usage.instance,
             csv_field(usage.id.as_deref().unwrap_or_default()),
             parent.instance,
@@ -471,13 +520,6 @@ fn write_usages_csv(out: &mut impl Write, structure: &ProductStructure) -> io::R
             csv_field(&definition_label(child)),
             usage.quantity.unwrap_or(1.0),
             csv_field(usage.reference_designator.as_deref().unwrap_or_default()),
-            placement.map_or_else(String::new, |p| p.relationship.to_string()),
-            placement
-                .and_then(|p| p.transformation)
-                .map_or_else(String::new, |t| t.to_string()),
-            placement
-                .and_then(|p| p.reversed)
-                .map_or_else(String::new, |r| r.to_string()),
         )?;
     }
     Ok(())

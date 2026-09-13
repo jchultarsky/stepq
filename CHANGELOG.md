@@ -51,6 +51,9 @@ Until 1.0, minor versions may contain breaking changes.
   simple or complex), and the entities that place each usage, flagging
   shape relationships whose `rep_1`/`rep_2` are reversed. Parent and child
   always come from the usage. Includes a rolled-up bill of materials.
+- Placements expressed only through `MAPPED_ITEM` / `REPRESENTATION_MAP`
+  are read and matched to their usages when the counts agree.
+  `model::Placement` is now an enum: `ShapeRelationship` or `MappedItem`.
 - `stepq tree`: the assembly hierarchy with repeated components grouped
   (`--usages` lists each usage and its placement), as a table, JSON or CSV.
 - `stepq bom`: total quantity of every component under each top-level

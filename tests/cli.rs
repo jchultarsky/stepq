@@ -271,7 +271,7 @@ fn tree_csv_has_one_row_per_usage() {
     assert!(rows[0].starts_with("usage,usage_id,parent,"));
     assert_eq!(
         rows[3],
-        "102,u3,20,bracket assembly [B],30,bolt [C],1,X1,95,92,true"
+        "102,u3,20,bracket assembly [B],30,bolt [C],1,X1,shape_relationship,95,92,true"
     );
 }
 
@@ -291,7 +291,9 @@ fn tree_json_has_definitions_usages_and_roots() {
         json["usages"][5]["kind"],
         "quantified_assembly_component_usage"
     );
+    assert_eq!(json["usages"][2]["placement"]["kind"], "shape_relationship");
     assert_eq!(json["usages"][2]["placement"]["reversed"], true);
+    assert_eq!(json["usages"][1]["placement"], serde_json::Value::Null);
 }
 
 #[test]
