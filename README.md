@@ -15,19 +15,38 @@ That constraint is the point: every entity that describes your geometry
 comes out exactly as it went in, byte for byte, with its original names,
 colours, layers, properties and PMI attached.
 
-> **Status: pre-alpha.** The Part 21 parser, reference graph, writer and
+> **Status: 0.1, early.** The Part 21 parser, reference graph, writer and
 > EXPRESS schema reader are in place, and `stepq info`, `tree`, `bom` and
-> `split` work. Everything else below is still ahead; see
-> [ROADMAP.md](ROADMAP.md).
+> `split` work. The library API and the CLI output will still change
+> before 1.0; see [ROADMAP.md](ROADMAP.md).
 
-## What it does, and will do
+## What it does
 
 ```console
-$ stepq info  assembly.stp          # header, schema, units, entity histogram (works today)
-$ stepq tree  assembly.stp          # assembly hierarchy and placements (works today)
-$ stepq bom   assembly.stp          # multi-level bill of materials as a tree (works today)
-$ stepq split assembly.stp --out parts/   # one file per sub-assembly and part (works today)
-$ stepq lint  assembly.stp          # structural problems, no kernel needed
+$ stepq info  assembly.stp                # header, schema, units, entity histogram
+$ stepq tree  assembly.stp --usages       # assembly hierarchy and placements
+$ stepq bom   assembly.stp                # multi-level bill of materials as a tree
+$ stepq bom   assembly.stp --format csv   # the same as an indented CSV
+$ stepq split assembly.stp --out parts/   # one file per sub-assembly and part
+```
+
+Every command reads `-` as standard input and prints a table, JSON
+(`--format json`) or CSV (`--format csv`).
+
+```console
+$ stepq bom as1-ac-214.stp
+AS1-AC-214
+├── PLATE
+├── L-BRACKET ASSEMBLY  ×2
+│   ├── L-BRACKET  (2 total)
+│   └── NUT-BOLT ASSEMBLY  ×3  (6 total)
+│       ├── BOLT  (6 total)
+│       └── NUT  (6 total)
+└── ROD-ASSEMBLY
+    ├── ROD
+    └── NUT  ×2
+
+3 sub-assemblies, 5 distinct parts, 18 parts in total
 ```
 
 The headline feature is `split`: explode an assembly into self-contained
@@ -36,7 +55,8 @@ instance placement, colours and names — without a CAD seat and without
 regenerating a single surface. As far as we can tell nothing open-source
 does this today; the usual answer is "open it in SolidWorks and Save As".
 
-Planned beyond that: `query` and `refs` (jq-style entity search and
+Planned beyond that: `lint` (structural problems, no kernel needed),
+`query` and `refs` (jq-style entity search and
 back-reference lookup), structural `diff` of two files, `props` and `pmi`
 extraction to JSON, `strip`/`anonymize`, and `assemble` (the inverse of
 `split`). See [ROADMAP.md](ROADMAP.md) for the tiers.
@@ -51,16 +71,27 @@ replace it.
 
 ## Install
 
-Once published:
+Prebuilt binaries for macOS, Linux and Windows are attached to every
+[GitHub release](https://github.com/jchultarsky/stepq/releases). The
+installers put `stepq` in `~/.cargo/bin` without needing Rust.
+
+macOS and Linux:
 
 ```console
-$ cargo install stepq
+$ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/jchultarsky/stepq/releases/latest/download/stepq-installer.sh | sh
 ```
 
-Until then, from the repository (requires Rust 1.85 or newer):
+Windows (PowerShell):
 
 ```console
-$ cargo install --git https://github.com/jchultarsky/stepq
+> powershell -ExecutionPolicy Bypass -c "irm https://github.com/jchultarsky/stepq/releases/latest/download/stepq-installer.ps1 | iex"
+```
+
+The installers also install `stepq-update`, which upgrades to the latest
+release. With a Rust toolchain (1.85 or newer) instead:
+
+```console
+$ cargo install stepq            # or: cargo binstall stepq
 ```
 
 As a library, without the CLI dependencies:

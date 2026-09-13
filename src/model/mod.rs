@@ -11,12 +11,13 @@
 //! geometry.
 //!
 //! Instances are kept untyped (entity name + attribute tokens) and
-//! checked against the EXPRESS schema at the attribute-count level.
-//! There is no generated struct per entity type.
+//! checked against the EXPRESS schema at the attribute-count level (see
+//! [`express::check`](crate::express::check)). There is no generated
+//! struct per entity type.
 //!
-//! Implementation status: [`Graph`] builds both reference indices over a
-//! parsed [`Exchange`](crate::p21::Exchange); schema checking is not
-//! started. See `ROADMAP.md`.
+//! On top of the [`Graph`]: [`ProductStructure`] reads the assembly tree
+//! and bill of materials, and [`extract`] computes the self-contained
+//! closure of a product definition.
 
 mod assembly;
 mod extract;

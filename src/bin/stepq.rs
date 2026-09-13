@@ -132,11 +132,6 @@ enum Command {
         #[arg(long)]
         report_orphans: bool,
     },
-    /// Check a file for structural problems.
-    Lint {
-        /// STEP file to check.
-        file: PathBuf,
-    },
 }
 
 fn main() -> ExitCode {
@@ -180,12 +175,7 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
             force,
             report_orphans,
         } => split(file, out, cli.format, *force, *report_orphans),
-        Command::Lint { .. } => not_implemented("lint"),
     }
-}
-
-fn not_implemented(name: &str) -> anyhow::Result<()> {
-    bail!("`stepq {name}` is not implemented yet — see ROADMAP.md")
 }
 
 fn is_broken_pipe(err: &anyhow::Error) -> bool {
