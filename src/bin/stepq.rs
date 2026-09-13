@@ -9,7 +9,9 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use stepq::info::Info;
-use stepq::model::{Definition, Graph, Placement, ProductStructure, Usage};
+use stepq::model::{
+    BomNode, BomTreeOptions, Definition, Graph, Placement, ProductStructure, Usage,
+};
 use stepq::p21::parse;
 
 /// Query, inspect, split and reshape STEP (ISO 10303-21) files.
@@ -32,6 +34,31 @@ enum Format {
     Json,
     /// Comma-separated values.
     Csv,
+    /// Indented tree: the multi-level view of commands that have one
+    /// (`bom`). Other commands print their table.
+    Tree,
+}
+
+/// Characters used to draw a tree.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Charset {
+    /// UTF-8 box-drawing characters when the locale is UTF-8, ASCII otherwise.
+    Auto,
+    /// UTF-8 box-drawing characters.
+    Utf8,
+    /// ASCII only.
+    Ascii,
+}
+
+/// How each line of a tree starts.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Prefix {
+    /// Tree lines showing the hierarchy.
+    Indent,
+    /// The line's level number, 0 for the top assembly.
+    Depth,
+    /// Nothing.
+    None,
 }
 
 #[derive(Debug, Subcommand)]
@@ -58,11 +85,33 @@ enum Command {
         #[arg(long)]
         usages: bool,
     },
-    /// Emit a bill of materials: each component under each top-level
-    /// assembly, with its total quantity.
+    /// Emit the bill of materials of each top-level assembly.
+    ///
+    /// By default a multi-level (indented) BOM: every component under its
+    /// assembly with its quantity per assembly and, where different, its
+    /// total quantity. As a table or tree it is drawn as a tree, with
+    /// repeated sub-assemblies expanded once and marked (*); as CSV, one row
+    /// per line with its level and item number; as JSON, nested. With
+    /// --flat, one line per distinct component with its total quantity.
     Bom {
         /// STEP file to inspect, or `-` for standard input.
         file: PathBuf,
+        /// One line per distinct component with its total quantity.
+        #[arg(long)]
+        flat: bool,
+        /// List at most this many levels below each top-level assembly.
+        #[arg(long)]
+        depth: Option<usize>,
+        /// In the tree, expand repeated sub-assemblies every time. CSV and
+        /// JSON always expand them.
+        #[arg(long)]
+        no_dedupe: bool,
+        /// Characters used to draw the tree.
+        #[arg(long, value_enum, default_value_t = Charset::Auto)]
+        charset: Charset,
+        /// How each line of the tree starts.
+        #[arg(long, value_enum, default_value_t = Prefix::Indent)]
+        prefix: Prefix,
     },
     /// Write one self-contained STEP file per product definition: every
     /// assembly and every part, each with everything that belongs to it.
@@ -107,7 +156,24 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
     match &cli.command {
         Command::Info { file, top } => info(file, cli.format, *top),
         Command::Tree { file, usages } => tree(file, cli.format, *usages),
-        Command::Bom { file } => bom(file, cli.format),
+        Command::Bom {
+            file,
+            flat,
+            depth,
+            no_dedupe,
+            charset,
+            prefix,
+        } => bom(
+            file,
+            cli.format,
+            &BomOptions {
+                flat: *flat,
+                depth: *depth,
+                dedupe: !*no_dedupe,
+                charset: *charset,
+                prefix: *prefix,
+            },
+        ),
         Command::Split {
             file,
             out,
@@ -164,7 +230,7 @@ fn info(path: &Path, format: Format, top: usize) -> anyhow::Result<()> {
 
     let mut out = BufWriter::new(io::stdout().lock());
     match format {
-        Format::Table => write_info_table(&mut out, &name, &info, top)?,
+        Format::Table | Format::Tree => write_info_table(&mut out, &name, &info, top)?,
         Format::Json => {
             #[derive(serde::Serialize)]
             struct Document<'a> {
@@ -385,7 +451,7 @@ fn write_split_report(
 ) -> anyhow::Result<()> {
     let mut out = BufWriter::new(io::stdout().lock());
     match format {
-        Format::Table => {
+        Format::Table | Format::Tree => {
             writeln!(
                 out,
                 "{:>10}  {:>6}  {:<8}  FILE",
@@ -518,7 +584,7 @@ fn tree(path: &Path, format: Format, usages: bool) -> anyhow::Result<()> {
     with_structure(path, |structure| {
         let mut out = BufWriter::new(io::stdout().lock());
         match format {
-            Format::Table => write_tree(&mut out, structure, usages)?,
+            Format::Table | Format::Tree => write_tree(&mut out, structure, usages)?,
             Format::Json => {
                 serde_json::to_writer_pretty(&mut out, structure)?;
                 writeln!(out)?;
@@ -752,87 +818,398 @@ fn write_usages_csv(out: &mut impl Write, structure: &ProductStructure) -> io::R
     Ok(())
 }
 
-fn bom(path: &Path, format: Format) -> anyhow::Result<()> {
+struct BomOptions {
+    flat: bool,
+    depth: Option<usize>,
+    dedupe: bool,
+    charset: Charset,
+    prefix: Prefix,
+}
+
+fn bom(path: &Path, format: Format, options: &BomOptions) -> anyhow::Result<()> {
     with_structure(path, |structure| {
-        let definitions = structure.definitions();
+        // Top-level assemblies; stand-alone parts only if there are none.
+        let assemblies: Vec<usize> = structure
+            .roots()
+            .iter()
+            .copied()
+            .filter(|&root| structure.children(root).len() > 0)
+            .collect();
+        let roots = if assemblies.is_empty() {
+            structure.roots().to_vec()
+        } else {
+            assemblies
+        };
+
         let mut out = BufWriter::new(io::stdout().lock());
-        match format {
-            Format::Table => {
-                for (i, &root) in structure.roots().iter().enumerate() {
-                    if i > 0 {
-                        writeln!(out)?;
-                    }
-                    writeln!(out, "{}", definition_label(&definitions[root]))?;
-                    let lines = structure.bill_of_materials(root);
-                    if lines.is_empty() {
-                        writeln!(out, "  (no components)")?;
-                        continue;
-                    }
-                    writeln!(out, "{:>10}  {:<8}  PRODUCT", "QUANTITY", "TYPE")?;
-                    for line in lines {
-                        writeln!(
-                            out,
-                            "{:>10}  {:<8}  {}",
-                            line.quantity,
-                            kind(line.is_assembly),
-                            definition_label(&definitions[line.definition])
-                        )?;
-                    }
+        if options.flat {
+            write_flat_bom(&mut out, structure, &roots, format)?;
+        } else {
+            match format {
+                Format::Table | Format::Tree => {
+                    write_bom_tree(&mut out, structure, &roots, options)?;
                 }
-            }
-            Format::Json => {
-                #[derive(serde::Serialize)]
-                struct Line<'a> {
-                    quantity: f64,
-                    kind: &'static str,
-                    definition: &'a Definition,
-                }
-                #[derive(serde::Serialize)]
-                struct Bom<'a> {
-                    root: &'a Definition,
-                    lines: Vec<Line<'a>>,
-                }
-                let boms: Vec<Bom<'_>> = structure
-                    .roots()
-                    .iter()
-                    .map(|&root| Bom {
-                        root: &definitions[root],
-                        lines: structure
-                            .bill_of_materials(root)
-                            .into_iter()
-                            .map(|line| Line {
-                                quantity: line.quantity,
-                                kind: kind(line.is_assembly),
-                                definition: &definitions[line.definition],
-                            })
-                            .collect(),
-                    })
-                    .collect();
-                serde_json::to_writer_pretty(&mut out, &boms)?;
-                writeln!(out)?;
-            }
-            Format::Csv => {
-                writeln!(out, "root,product_id,product_name,type,quantity")?;
-                for &root in structure.roots() {
-                    let root_label = definition_label(&definitions[root]);
-                    for line in structure.bill_of_materials(root) {
-                        let product = definitions[line.definition].product.as_ref();
-                        writeln!(
-                            out,
-                            "{},{},{},{},{}",
-                            csv_field(&root_label),
-                            csv_field(product.and_then(|p| p.id.as_deref()).unwrap_or_default()),
-                            csv_field(product.and_then(|p| p.name.as_deref()).unwrap_or_default()),
-                            kind(line.is_assembly),
-                            line.quantity
-                        )?;
-                    }
+                Format::Csv => write_bom_csv(&mut out, structure, &roots, options.depth)?,
+                Format::Json => {
+                    let trees: Vec<JsonBomNode<'_>> = roots
+                        .iter()
+                        .map(|&root| {
+                            let tree =
+                                structure.bom_tree(root, BomTreeOptions::new(options.depth, false));
+                            json_bom_node(structure, &tree, 0, String::new())
+                        })
+                        .collect();
+                    serde_json::to_writer_pretty(&mut out, &trees)?;
+                    writeln!(out)?;
                 }
             }
         }
         out.flush()?;
         Ok(())
     })
+}
+
+/// Line-drawing characters for a tree.
+struct Glyphs {
+    tee: &'static str,
+    corner: &'static str,
+    pipe: &'static str,
+    blank: &'static str,
+    times: &'static str,
+}
+
+impl Glyphs {
+    fn new(charset: Charset) -> Self {
+        let utf8 = match charset {
+            Charset::Utf8 => true,
+            Charset::Ascii => false,
+            Charset::Auto => locale_is_utf8(),
+        };
+        if utf8 {
+            Self {
+                tee: "├── ",
+                corner: "└── ",
+                pipe: "│   ",
+                blank: "    ",
+                times: "×",
+            }
+        } else {
+            Self {
+                tee: "|-- ",
+                corner: "`-- ",
+                pipe: "|   ",
+                blank: "    ",
+                times: "x",
+            }
+        }
+    }
+}
+
+/// True if the locale asks for UTF-8, as `LC_ALL`, `LC_CTYPE` or `LANG`
+/// (the first one set) says. Windows terminals handle UTF-8.
+fn locale_is_utf8() -> bool {
+    if cfg!(windows) {
+        return true;
+    }
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+        .is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("utf-8") || value.contains("utf8")
+        })
+}
+
+/// Draws a multi-level bill of materials as a tree.
+struct BomPrinter<'a> {
+    structure: &'a ProductStructure,
+    glyphs: Glyphs,
+    prefix: Prefix,
+    repeated: bool,
+}
+
+impl BomPrinter<'_> {
+    fn write(
+        &mut self,
+        out: &mut impl Write,
+        node: &BomNode,
+        level: usize,
+        indent: &str,
+        last: bool,
+    ) -> io::Result<()> {
+        let mut line = definition_label(&self.structure.definitions()[node.definition]);
+        // Writing to a String cannot fail.
+        if level > 0 && (node.quantity - 1.0).abs() > f64::EPSILON {
+            let _ = write!(line, "  {}{}", self.glyphs.times, node.quantity);
+        }
+        if level > 0 && (node.total - node.quantity).abs() > f64::EPSILON {
+            let _ = write!(line, "  ({} total)", node.total);
+        }
+        if node.repeated {
+            line.push_str(" (*)");
+            self.repeated = true;
+        }
+        match self.prefix {
+            Prefix::Indent => {
+                let branch = match (level, last) {
+                    (0, _) => "",
+                    (_, true) => self.glyphs.corner,
+                    (_, false) => self.glyphs.tee,
+                };
+                writeln!(out, "{indent}{branch}{line}")?;
+            }
+            Prefix::Depth => writeln!(out, "{level} {line}")?,
+            Prefix::None => writeln!(out, "{line}")?,
+        }
+
+        let child_indent = match (level, last) {
+            (0, _) => String::new(),
+            (_, true) => format!("{indent}{}", self.glyphs.blank),
+            (_, false) => format!("{indent}{}", self.glyphs.pipe),
+        };
+        for (i, component) in node.components.iter().enumerate() {
+            let last = i + 1 == node.components.len();
+            self.write(out, component, level + 1, &child_indent, last)?;
+        }
+        Ok(())
+    }
+}
+
+fn write_bom_tree(
+    out: &mut impl Write,
+    structure: &ProductStructure,
+    roots: &[usize],
+    options: &BomOptions,
+) -> io::Result<()> {
+    let mut printer = BomPrinter {
+        structure,
+        glyphs: Glyphs::new(options.charset),
+        prefix: options.prefix,
+        repeated: false,
+    };
+    for (i, &root) in roots.iter().enumerate() {
+        if i > 0 {
+            writeln!(out)?;
+        }
+        let tree = structure.bom_tree(root, BomTreeOptions::new(options.depth, options.dedupe));
+        printer.write(out, &tree, 0, "", true)?;
+
+        let lines = structure.bill_of_materials(root);
+        if lines.is_empty() {
+            writeln!(out, "(no components)")?;
+            continue;
+        }
+        let assemblies = lines.iter().filter(|line| line.is_assembly).count();
+        let parts = lines.len() - assemblies;
+        let total: f64 = lines
+            .iter()
+            .filter(|line| !line.is_assembly)
+            .map(|line| line.quantity)
+            .sum();
+        writeln!(out)?;
+        writeln!(
+            out,
+            "{assemblies} {}, {parts} {}, {total} {} in total",
+            if assemblies == 1 {
+                "sub-assembly"
+            } else {
+                "sub-assemblies"
+            },
+            if parts == 1 {
+                "distinct part"
+            } else {
+                "distinct parts"
+            },
+            if (total - 1.0).abs() < f64::EPSILON {
+                "part"
+            } else {
+                "parts"
+            },
+        )?;
+    }
+    if printer.repeated {
+        writeln!(
+            out,
+            "(*) listed in full above; use --no-dedupe to repeat it"
+        )?;
+    }
+    Ok(())
+}
+
+/// One row per line of the multi-level BOM, with level and item number.
+fn write_bom_csv(
+    out: &mut impl Write,
+    structure: &ProductStructure,
+    roots: &[usize],
+    depth: Option<usize>,
+) -> io::Result<()> {
+    fn rows(
+        out: &mut impl Write,
+        structure: &ProductStructure,
+        node: &BomNode,
+        level: usize,
+        item: &str,
+    ) -> io::Result<()> {
+        let definition = &structure.definitions()[node.definition];
+        let product = definition.product.as_ref();
+        writeln!(
+            out,
+            "{level},{item},{},{},{},{},{},{}",
+            definition.instance,
+            csv_field(product.and_then(|p| p.id.as_deref()).unwrap_or_default()),
+            csv_field(product.and_then(|p| p.name.as_deref()).unwrap_or_default()),
+            kind(node.is_assembly),
+            node.quantity,
+            node.total,
+        )?;
+        for (i, component) in node.components.iter().enumerate() {
+            let child = if item.is_empty() {
+                (i + 1).to_string()
+            } else {
+                format!("{item}.{}", i + 1)
+            };
+            rows(out, structure, component, level + 1, &child)?;
+        }
+        Ok(())
+    }
+
+    writeln!(
+        out,
+        "level,item,definition,product_id,product_name,type,quantity,total_quantity"
+    )?;
+    for &root in roots {
+        let tree = structure.bom_tree(root, BomTreeOptions::new(depth, false));
+        rows(out, structure, &tree, 0, "")?;
+    }
+    Ok(())
+}
+
+/// A multi-level BOM node as JSON.
+#[derive(serde::Serialize)]
+struct JsonBomNode<'a> {
+    item: String,
+    level: usize,
+    quantity: f64,
+    total_quantity: f64,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
+    definition: &'a Definition,
+    components: Vec<JsonBomNode<'a>>,
+}
+
+fn json_bom_node<'a>(
+    structure: &'a ProductStructure,
+    node: &BomNode,
+    level: usize,
+    item: String,
+) -> JsonBomNode<'a> {
+    JsonBomNode {
+        components: node
+            .components
+            .iter()
+            .enumerate()
+            .map(|(i, component)| {
+                let child = if item.is_empty() {
+                    (i + 1).to_string()
+                } else {
+                    format!("{item}.{}", i + 1)
+                };
+                json_bom_node(structure, component, level + 1, child)
+            })
+            .collect(),
+        item,
+        level,
+        quantity: node.quantity,
+        total_quantity: node.total,
+        kind: kind(node.is_assembly),
+        truncated: node.truncated,
+        definition: &structure.definitions()[node.definition],
+    }
+}
+
+/// One line per distinct component under each root, with its total quantity.
+fn write_flat_bom(
+    out: &mut impl Write,
+    structure: &ProductStructure,
+    roots: &[usize],
+    format: Format,
+) -> anyhow::Result<()> {
+    let definitions = structure.definitions();
+    match format {
+        Format::Table | Format::Tree => {
+            for (i, &root) in roots.iter().enumerate() {
+                if i > 0 {
+                    writeln!(out)?;
+                }
+                writeln!(out, "{}", definition_label(&definitions[root]))?;
+                let lines = structure.bill_of_materials(root);
+                if lines.is_empty() {
+                    writeln!(out, "  (no components)")?;
+                    continue;
+                }
+                writeln!(out, "{:>10}  {:<8}  PRODUCT", "QUANTITY", "TYPE")?;
+                for line in lines {
+                    writeln!(
+                        out,
+                        "{:>10}  {:<8}  {}",
+                        line.quantity,
+                        kind(line.is_assembly),
+                        definition_label(&definitions[line.definition])
+                    )?;
+                }
+            }
+        }
+        Format::Json => {
+            #[derive(serde::Serialize)]
+            struct Line<'a> {
+                quantity: f64,
+                kind: &'static str,
+                definition: &'a Definition,
+            }
+            #[derive(serde::Serialize)]
+            struct Bom<'a> {
+                root: &'a Definition,
+                lines: Vec<Line<'a>>,
+            }
+            let boms: Vec<Bom<'_>> = roots
+                .iter()
+                .map(|&root| Bom {
+                    root: &definitions[root],
+                    lines: structure
+                        .bill_of_materials(root)
+                        .into_iter()
+                        .map(|line| Line {
+                            quantity: line.quantity,
+                            kind: kind(line.is_assembly),
+                            definition: &definitions[line.definition],
+                        })
+                        .collect(),
+                })
+                .collect();
+            serde_json::to_writer_pretty(&mut *out, &boms)?;
+            writeln!(out)?;
+        }
+        Format::Csv => {
+            writeln!(out, "root,product_id,product_name,type,quantity")?;
+            for &root in roots {
+                let root_label = definition_label(&definitions[root]);
+                for line in structure.bill_of_materials(root) {
+                    let product = definitions[line.definition].product.as_ref();
+                    writeln!(
+                        out,
+                        "{},{},{},{},{}",
+                        csv_field(&root_label),
+                        csv_field(product.and_then(|p| p.id.as_deref()).unwrap_or_default()),
+                        csv_field(product.and_then(|p| p.name.as_deref()).unwrap_or_default()),
+                        kind(line.is_assembly),
+                        line.quantity
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn kind(is_assembly: bool) -> &'static str {

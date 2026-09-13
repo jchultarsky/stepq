@@ -74,8 +74,14 @@ Until 1.0, minor versions may contain breaking changes.
   `model::Placement` is now an enum: `ShapeRelationship` or `MappedItem`.
 - `stepq tree`: the assembly hierarchy with repeated components grouped
   (`--usages` lists each usage and its placement), as a table, JSON or CSV.
-- `stepq bom`: total quantity of every component under each top-level
-  assembly, as a table, JSON or CSV.
+- `stepq bom`: the multi-level bill of materials of each top-level
+  assembly, with quantity per assembly and total quantity. Drawn as a tree
+  (`--charset`, `--prefix`, `--depth`; repeated sub-assemblies expanded
+  once and marked `(*)` unless `--no-dedupe`), as an indented CSV with
+  level and item number, or as nested JSON. `--flat` gives one line per
+  distinct component with its total quantity. The tree is also available
+  as `ProductStructure::bom_tree`.
+- `--format tree`, which commands without a tree view treat as `table`.
 
 ### Changed
 

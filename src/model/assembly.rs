@@ -190,6 +190,66 @@ pub struct BomLine {
     pub is_assembly: bool,
 }
 
+/// One line of a multi-level (indented) bill of materials; see
+/// [`ProductStructure::bom_tree`].
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct BomNode {
+    /// An index into [`ProductStructure::definitions`].
+    pub definition: usize,
+    /// Quantity per parent: this component's usages in its parent, added
+    /// up. 1 for the root.
+    pub quantity: f64,
+    /// Total quantity in the root: the quantities along the path multiplied.
+    pub total: f64,
+    /// True if the definition has components of its own, even when they are
+    /// not listed under this node.
+    pub is_assembly: bool,
+    /// True if this sub-assembly was already expanded earlier in the tree,
+    /// so its components are not repeated here.
+    pub repeated: bool,
+    /// True if components exist but were cut off: by the depth limit, by a
+    /// cycle, or by the size limit.
+    pub truncated: bool,
+    /// The components, one node per distinct component, in order of first
+    /// use.
+    pub components: Vec<BomNode>,
+}
+
+/// Options for [`ProductStructure::bom_tree`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BomTreeOptions {
+    /// List components at most this many levels below the root; `None`
+    /// lists all. A depth of 1 lists the root's direct components.
+    pub depth: Option<usize>,
+    /// Expand each sub-assembly only the first time it appears; later
+    /// occurrences are marked [`repeated`](BomNode::repeated).
+    pub dedupe: bool,
+}
+
+impl Default for BomTreeOptions {
+    fn default() -> Self {
+        Self {
+            depth: None,
+            dedupe: true,
+        }
+    }
+}
+
+impl BomTreeOptions {
+    /// Options with the given depth limit and deduplication.
+    pub fn new(depth: Option<usize>, dedupe: bool) -> Self {
+        Self { depth, dedupe }
+    }
+}
+
+/// Multi-level bills of materials larger than this are truncated, so that
+/// expanding every repeated sub-assembly of a crafted file cannot exhaust
+/// memory.
+const MAX_BOM_NODES: usize = 1_000_000;
+
 impl ProductStructure {
     /// Reads the product structure of the file behind `graph`. Usages whose
     /// parent or child is undefined are skipped.
@@ -359,6 +419,69 @@ impl ProductStructure {
             .collect()
     }
 
+    /// The multi-level bill of materials of `root`: the root with its
+    /// components, each with its own components, one node per distinct
+    /// component of each assembly. Quantities per parent add up the usages
+    /// of a component in that parent; totals multiply them along the path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `root` is out of range.
+    pub fn bom_tree(&self, root: usize, options: BomTreeOptions) -> BomNode {
+        let mut state = BomWalk {
+            options,
+            expanded: vec![false; self.definitions.len()],
+            path: vec![false; self.definitions.len()],
+            budget: MAX_BOM_NODES,
+        };
+        self.bom_node(root, 1.0, 1.0, 0, &mut state)
+    }
+
+    fn bom_node(
+        &self,
+        definition: usize,
+        quantity: f64,
+        total: f64,
+        level: usize,
+        state: &mut BomWalk,
+    ) -> BomNode {
+        state.budget = state.budget.saturating_sub(1);
+        let mut node = BomNode {
+            definition,
+            quantity,
+            total,
+            is_assembly: !self.children[definition].is_empty(),
+            repeated: false,
+            truncated: false,
+            components: Vec::new(),
+        };
+        if !node.is_assembly {
+            return node;
+        }
+        if state.options.dedupe && state.expanded[definition] {
+            node.repeated = true;
+            return node;
+        }
+        let too_deep = state.options.depth.is_some_and(|depth| level >= depth);
+        if too_deep || state.path[definition] || level >= MAX_DEPTH || state.budget == 0 {
+            node.truncated = true;
+            return node;
+        }
+        state.expanded[definition] = true;
+        state.path[definition] = true;
+        for (child, usages) in self.components(definition) {
+            if state.budget == 0 {
+                node.truncated = true;
+                break;
+            }
+            let each: f64 = usages.iter().map(|u| u.quantity.unwrap_or(1.0)).sum();
+            let component = self.bom_node(child, each, total * each, level + 1, state);
+            node.components.push(component);
+        }
+        state.path[definition] = false;
+        node
+    }
+
     fn totals(
         &self,
         definition: usize,
@@ -397,6 +520,16 @@ impl ProductStructure {
         memo[definition] = Some(totals.clone());
         totals
     }
+}
+
+struct BomWalk {
+    options: BomTreeOptions,
+    /// Sub-assemblies already expanded somewhere in the tree.
+    expanded: Vec<bool>,
+    /// Sub-assemblies on the path from the root to the current node.
+    path: Vec<bool>,
+    /// Nodes that may still be created.
+    budget: usize,
 }
 
 struct Builder<'g, 'a> {
@@ -972,5 +1105,123 @@ ENDSEC;END-ISO-10303-21;";
         let lines = structure.bill_of_materials(0);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].definition, 1);
+
+        let tree = structure.bom_tree(0, BomTreeOptions::default());
+        assert_eq!(
+            flatten(&tree),
+            [
+                (0, 0, "1".into(), "1".into(), ""),
+                (1, 1, "1".into(), "1".into(), ""),
+                (2, 0, "1".into(), "1".into(), "repeated")
+            ]
+        );
+        let tree = structure.bom_tree(0, BomTreeOptions::new(None, false));
+        assert_eq!(flatten(&tree)[2].4, "truncated", "cycles are cut off");
+    }
+
+    /// (level, definition, quantity, total, mark) for every node, depth first.
+    fn flatten(node: &BomNode) -> Vec<(usize, usize, String, String, &'static str)> {
+        fn walk(
+            node: &BomNode,
+            level: usize,
+            out: &mut Vec<(usize, usize, String, String, &'static str)>,
+        ) {
+            let mark = if node.repeated {
+                "repeated"
+            } else if node.truncated {
+                "truncated"
+            } else {
+                ""
+            };
+            out.push((
+                level,
+                node.definition,
+                node.quantity.to_string(),
+                node.total.to_string(),
+                mark,
+            ));
+            for component in &node.components {
+                walk(component, level + 1, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(node, 0, &mut out);
+        out
+    }
+
+    #[test]
+    fn bom_tree_groups_components_and_multiplies_totals() {
+        let structure = structure();
+        let tree = structure.bom_tree(0, BomTreeOptions::default());
+        assert_eq!(
+            flatten(&tree),
+            [
+                (0, 0, "1".into(), "1".into(), ""),
+                (1, 1, "2".into(), "2".into(), ""),
+                (2, 2, "3".into(), "6".into(), ""),
+                (1, 3, "4".into(), "4".into(), "")
+            ]
+        );
+        assert!(tree.is_assembly && tree.components[0].is_assembly);
+        assert!(!tree.components[1].is_assembly);
+    }
+
+    #[test]
+    fn bom_tree_depth_limits_the_listing() {
+        let structure = structure();
+        let tree = structure.bom_tree(0, BomTreeOptions::new(Some(1), true));
+        assert_eq!(
+            flatten(&tree),
+            [
+                (0, 0, "1".into(), "1".into(), ""),
+                (1, 1, "2".into(), "2".into(), "truncated"),
+                (1, 3, "4".into(), "4".into(), "")
+            ]
+        );
+        let root_only = structure.bom_tree(0, BomTreeOptions::new(Some(0), true));
+        assert!(root_only.components.is_empty() && root_only.truncated);
+    }
+
+    #[test]
+    fn bom_tree_expands_repeated_sub_assemblies_once() {
+        // A uses B and E; E uses B too; B uses C.
+        let src = "ISO-10303-21;HEADER;FILE_SCHEMA(('X'));ENDSEC;DATA;
+#1=PRODUCT_DEFINITION('a','',$,$);
+#2=PRODUCT_DEFINITION('b','',$,$);
+#3=PRODUCT_DEFINITION('e','',$,$);
+#4=PRODUCT_DEFINITION('c','',$,$);
+#10=NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#1,#2,$);
+#11=NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','','',#1,#3,$);
+#12=NEXT_ASSEMBLY_USAGE_OCCURRENCE('3','','',#3,#2,$);
+#13=NEXT_ASSEMBLY_USAGE_OCCURRENCE('4','','',#2,#4,$);
+ENDSEC;END-ISO-10303-21;";
+        let structure = structure_of(src);
+        let marks = |dedupe| {
+            flatten(&structure.bom_tree(0, BomTreeOptions::new(None, dedupe)))
+                .into_iter()
+                .map(|(level, definition, _, _, mark)| (level, definition, mark))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            marks(true),
+            [
+                (0, 0, ""),
+                (1, 1, ""),
+                (2, 3, ""),
+                (1, 2, ""),
+                (2, 1, "repeated")
+            ]
+        );
+        assert_eq!(
+            marks(false),
+            [
+                (0, 0, ""),
+                (1, 1, ""),
+                (2, 3, ""),
+                (1, 2, ""),
+                (2, 1, ""),
+                (3, 3, "")
+            ]
+        );
     }
 }

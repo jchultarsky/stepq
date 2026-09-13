@@ -22,6 +22,9 @@ mod assembly;
 mod extract;
 mod graph;
 
-pub use assembly::{BomLine, Definition, Placement, Product, ProductStructure, Usage, UsageKind};
+pub use assembly::{
+    BomLine, BomNode, BomTreeOptions, Definition, Placement, Product, ProductStructure, Usage,
+    UsageKind,
+};
 pub use extract::{Extraction, RULES, Rule, RuleKind, extract, orphans};
 pub use graph::Graph;
