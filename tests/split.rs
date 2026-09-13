@@ -25,6 +25,16 @@ const FIXTURES: &[&str] = &[
     "nist-edm/clevis21.stp",
     "nist/NIST-PMI-STEP-Files/nist_ctc_01_asme1_ap242-e1.stp",
     "nist/NIST-PMI-STEP-Files/nist_ftc_09_asme1_ap242-e1.stp",
+    // Open Rack V3 (tools/fetch-fixtures.sh ocp): real Creo assemblies with
+    // up to 567 products. The ~200 MB Project Olympus files are left out;
+    // extracting each of their definitions takes minutes in a debug build.
+    "ocp/OCP_v3_Enclosure_6OU_Section_c30001_ARP_2022.stp",
+    "ocp/ORv3_BBU_Mechanical/Mechanical/BATTERY BACK UP UNIT, V3 LITHIUM ION BBU, 48V, 3KW.stp",
+    "ocp/ORv3_BBU_Mechanical/Mechanical/BBU SHELF, V3, 48V, 15KW_030422.stp",
+    "ocp/ORv3_PSU_Mechanical/Mechanical/POWER MODULE INTERFACE, PMI MODULE, V3.stp",
+    "ocp/ORv3_PSU_Mechanical/Mechanical/POWER SHELF, V3, IEC, SINGLE INPUT, 200-277V IN 346-480V IN, 48-50V OUT, 18KW.stp",
+    "ocp/ORv3_PSU_Mechanical/Mechanical/POWER SHELF, V3, NEMA, DUAL INPUT, 200-277V IN 346-480V IN, 48-50V OUT, 18KW.stp",
+    "ocp/ORv3_PSU_Mechanical/Mechanical/PSU, V3, 200-277V IN, 48-50V OUT, 3KW.stp",
 ];
 
 /// `id|name` of every definition in the sub-tree rooted at `root`, sorted.

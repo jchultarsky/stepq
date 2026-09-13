@@ -72,14 +72,18 @@ fn real_schemas_parse_completely() {
 /// declares. That is the strongest available check that inheritance order,
 /// diamonds, redeclarations and complex-instance partials are read right.
 ///
-/// Two kinds of genuine problem in the NIST files are reported, not
+/// Three kinds of genuine problem in the fixtures are reported, not
 /// failed on:
 ///
-/// * some AP203 geometry-only files declare `CONFIG_CONTROL_DESIGN`
-///   (AP203 edition 1) but use presentation entities, such as
-///   `COLOUR_RGB`, that only edition 2 defines;
+/// * some AP203 geometry-only files (NIST, Project Olympus) declare
+///   `CONFIG_CONTROL_DESIGN` (AP203 edition 1) but use presentation
+///   entities, such as `COLOUR_RGB`, that only edition 2 defines;
 /// * some AP242 edition 3 files write lists shorter than the edition 4
-///   schema's lower bound.
+///   schema's lower bound;
+/// * an Open Rack Creo export declares `AUTOMOTIVE_DESIGN` (AP214) but
+///   writes `MECHANICAL_DESIGN_AND_DRAUGHTING_RELATIONSHIP`, which only
+///   AP203 edition 2 and AP242 define. Any entity type another loaded
+///   schema defines is reported this way; one no schema knows still fails.
 #[test]
 fn fixture_records_match_their_schemas() {
     let schemas = load_schemas();
@@ -114,6 +118,13 @@ fn fixture_records_match_their_schemas() {
             match problem.kind {
                 ProblemKind::UnknownEntity if schema.name() == "CONFIG_CONTROL_DESIGN" => {
                     eprintln!("{name}: {problem} (AP203 ed. 2 entity in an ed. 1 file)");
+                }
+                ProblemKind::UnknownEntity
+                    if schemas
+                        .iter()
+                        .any(|other| other.entity(&problem.entity).is_some()) =>
+                {
+                    eprintln!("{name}: {problem} (defined by another application protocol)");
                 }
                 ProblemKind::TooFewElements { .. } => eprintln!("{name}: {problem}"),
                 _ => failures.push(format!("{name}: {problem}")),

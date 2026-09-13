@@ -119,7 +119,9 @@ jobs:
         with:
           path: tests/fixtures
           key: fixtures-${{ hashFiles('tools/fetch-fixtures.sh') }}
-      - run: tools/fetch-fixtures.sh
+      # Only the small set: Open CASCADE needs minutes per Open Compute file
+      # (tools/fetch-fixtures.sh ocp), which is too slow for every push.
+      - run: tools/fetch-fixtures.sh core
       # Rewrites every fixture with renumbered instances and checks through
       # Open CASCADE that solids, volume, names and colours are unchanged.
       - run: tools/verify-rewrite.sh

@@ -29,9 +29,14 @@ $ cargo test --all-features
 ```
 
 The fixtures are not vendored. `tools/fetch-fixtures.sh` pulls the NIST
-MBE PMI test set (US-Government work, public domain) and the STEP Tools
-AS1 sample assemblies (redistribution terms unstated, so we fetch rather
-than copy). Tests that need a fixture skip themselves if it is missing.
+MBE PMI test set (US-Government work, public domain), the STEP Tools AS1
+sample assemblies and the Open Compute Project's Open Rack and Project
+Olympus assemblies (redistribution terms unstated or not granted, so we
+fetch rather than copy), and checks each download against a pinned
+SHA-256. The Open Compute set is large (~130 MB download, ~860 MB
+unpacked, files up to 3.5 million instances); fetch only the small set
+with `tools/fetch-fixtures.sh core`. Tests that need a fixture skip
+themselves if it is missing.
 
 The EXPRESS schemas are not vendored either. They are ISO copyright: ISO
 permits using them unmodified for the purposes of the standard, but does
