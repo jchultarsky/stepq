@@ -10,6 +10,14 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- `stepq strip FILE -o OUT`: blanks the header's author, organization and
+  authorization and every string of people, organizations and addresses;
+  with `--anonymize`, also renames products and usages and blanks the
+  file name, descriptions, usage and shape names and user-defined
+  attribute text. Only those strings change; the Open CASCADE check shows
+  identical geometry. Refuses to overwrite without `--force`. Also
+  available as `strip::strip`, with the new `p21::Replacements` for the
+  writer.
 - `stepq diff OLD NEW`: compares two files by what they describe, not by
   instance names: header fields, units and instance count, entity-type
   counts, products (matched by `product.id`), component quantities per

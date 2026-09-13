@@ -192,6 +192,16 @@ impl<'a> Exchange<'a> {
         self.header_text.slice(self.src)
     }
 
+    /// Where [`header_text`](Self::header_text) is in the source.
+    pub(crate) fn header_span(&self) -> Span {
+        self.header_text
+    }
+
+    /// The tokens of the header entities.
+    pub(crate) fn header_tokens(&self) -> &[Token] {
+        self.tokens.get(self.header.clone()).unwrap_or_default()
+    }
+
     /// For each data section: the source text of its `(...)` parameters
     /// (empty for a plain `DATA;`) and its instance positions.
     pub(crate) fn data_sections(&self) -> impl Iterator<Item = (&'a [u8], Range<usize>)> {

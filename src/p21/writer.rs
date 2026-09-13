@@ -8,11 +8,57 @@
 //! instance are copied as they are, so a comment that mentions an old
 //! `#id` keeps the old number.
 
+use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
 
 use super::exchange::{Exchange, Instance};
-use super::lexer::TokenKind;
+use super::lexer::{Span, Token, TokenKind};
 use crate::error::{Error, Result};
+
+/// Text to write in place of individual tokens, such as a string literal
+/// blanked or a name replaced. Every token without a replacement is still
+/// copied from the source.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Replacements {
+    /// By the token's start offset in the source: its end, and the text.
+    by_start: BTreeMap<usize, (usize, Vec<u8>)>,
+}
+
+impl Replacements {
+    /// No replacements.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Writes `text` instead of the token at `span`, which must be exactly
+    /// one token's span, as from [`Literal::span`](super::Literal::span).
+    /// `text` is written as given, so a string must include its quotes. A
+    /// later replacement of the same token wins.
+    pub fn replace(&mut self, span: Span, text: impl Into<Vec<u8>>) {
+        self.by_start.insert(span.start, (span.end, text.into()));
+    }
+
+    /// The number of tokens replaced.
+    pub fn len(&self) -> usize {
+        self.by_start.len()
+    }
+
+    /// True if nothing is replaced.
+    pub fn is_empty(&self) -> bool {
+        self.by_start.is_empty()
+    }
+
+    fn get(&self, span: Span) -> Option<&[u8]> {
+        self.by_start
+            .get(&span.start)
+            .filter(|(end, _)| *end == span.end)
+            .map(|(_, text)| text.as_slice())
+    }
+
+    fn any_within(&self, span: Span) -> bool {
+        self.by_start.range(span.start..span.end).next().is_some()
+    }
+}
 
 /// How instance names are assigned in the output.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -48,6 +94,7 @@ pub struct Writer<'e, 'a> {
     exchange: &'e Exchange<'a>,
     header: Option<&'e [u8]>,
     numbering: Numbering,
+    replacements: Option<&'e Replacements>,
 }
 
 impl<'e, 'a> Writer<'e, 'a> {
@@ -58,6 +105,19 @@ impl<'e, 'a> Writer<'e, 'a> {
             exchange,
             header: None,
             numbering: Numbering::Preserve,
+            replacements: None,
+        }
+    }
+
+    /// Writes replacement text for individual tokens of the source header
+    /// and of instances. Instances with no replaced token are still copied
+    /// byte for byte; a header given with [`header`](Self::header) is
+    /// written as given.
+    #[must_use]
+    pub fn replacements(self, replacements: &'e Replacements) -> Self {
+        Self {
+            replacements: Some(replacements),
+            ..self
         }
     }
 
@@ -276,7 +336,19 @@ impl<'e, 'a> Writer<'e, 'a> {
     ) -> Result<()> {
         let exchange = self.exchange;
         out.write_all(b"ISO-10303-21;\nHEADER;")?;
-        out.write_all(self.header.unwrap_or_else(|| exchange.header_text()))?;
+        match (self.header, self.replacements) {
+            (Some(header), _) => out.write_all(header)?,
+            (None, Some(replacements)) if replacements.any_within(exchange.header_span()) => {
+                write_replaced(
+                    out,
+                    exchange.source(),
+                    exchange.header_span(),
+                    exchange.header_tokens(),
+                    replacements,
+                )?;
+            }
+            (None, _) => out.write_all(exchange.header_text())?,
+        }
         out.write_all(b"ENDSEC;\n")?;
         for (params, positions) in exchange.data_sections() {
             out.write_all(b"DATA")?;
@@ -313,7 +385,10 @@ impl<'e, 'a> Writer<'e, 'a> {
         let exchange = self.exchange;
         let text = exchange.text(instance);
         let dense = self.numbering == Numbering::Dense;
-        if !dense && removed.is_none() {
+        let replacements = self
+            .replacements
+            .filter(|replacements| replacements.any_within(instance.span));
+        if !dense && removed.is_none() && replacements.is_none() {
             out.write_all(text)?;
             return Ok(());
         }
@@ -334,6 +409,10 @@ impl<'e, 'a> Writer<'e, 'a> {
             if removed.is_some_and(|removed| removed[i]) {
                 out.write_all(&src[cursor..token.span.start])?;
                 cursor = token.span.end;
+            } else if let Some(text) = replacements.and_then(|r| r.get(token.span)) {
+                out.write_all(&src[cursor..token.span.start])?;
+                out.write_all(text)?;
+                cursor = token.span.end;
             } else if let (true, TokenKind::InstanceName(id)) = (dense, token.kind) {
                 let target = target_name(exchange, names, instance, id)?;
                 out.write_all(&src[cursor..token.span.start])?;
@@ -344,6 +423,29 @@ impl<'e, 'a> Writer<'e, 'a> {
         out.write_all(&src[cursor..instance.span.end])?;
         Ok(())
     }
+}
+
+/// Writes `span` of `src`, with the replaced tokens among `tokens` swapped
+/// for their replacement text.
+fn write_replaced(
+    out: &mut impl Write,
+    src: &[u8],
+    span: Span,
+    tokens: &[Token],
+    replacements: &Replacements,
+) -> std::io::Result<()> {
+    let mut cursor = span.start;
+    for token in tokens {
+        if token.span.start < cursor || token.span.end > span.end {
+            continue;
+        }
+        if let Some(text) = replacements.get(token.span) {
+            out.write_all(&src[cursor..token.span.start])?;
+            out.write_all(text)?;
+            cursor = token.span.end;
+        }
+    }
+    out.write_all(&src[cursor..span.end])
 }
 
 /// The output name of the instance `from` refers to as `#id`.
@@ -373,6 +475,58 @@ mod tests {
         format!(
             "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\nDATA;\n{data}ENDSEC;\nEND-ISO-10303-21;\n"
         )
+    }
+
+    #[test]
+    fn replacements_change_only_their_tokens() {
+        let src = "ISO-10303-21;\nHEADER;\nFILE_NAME('a.stp','',('Jane'),('ACME'),'','','');\nFILE_SCHEMA(('X'));\nENDSEC;\nDATA;\n#10=A('secret',#20,'keep');\n#20=B('also secret');\n#30=C('untouched',  1.50);\nENDSEC;\nEND-ISO-10303-21;\n";
+        let exchange = parse(src.as_bytes()).unwrap();
+        let mut replacements = Replacements::new();
+        let author = exchange
+            .header_entity("FILE_NAME")
+            .unwrap()
+            .param(2)
+            .unwrap();
+        let author = author.list().unwrap().next().unwrap().literal().unwrap();
+        replacements.replace(author.span(), "''");
+        let records = |position: usize| {
+            exchange
+                .records(&exchange.instances()[position])
+                .next()
+                .unwrap()
+        };
+        let secret = records(0).param(0).unwrap().literal().unwrap();
+        replacements.replace(secret.span(), "'x'");
+        let also = records(1).param(0).unwrap().literal().unwrap();
+        replacements.replace(also.span(), "''");
+        assert_eq!(replacements.len(), 3);
+
+        let mut out = Vec::new();
+        Writer::new(&exchange)
+            .replacements(&replacements)
+            .write_all(&mut out)
+            .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("FILE_NAME('a.stp','',(''),('ACME'),'','','');"),
+            "{text}"
+        );
+        assert!(
+            text.contains("#10=A('x',#20,'keep');\n#20=B('');\n#30=C('untouched',  1.50);\n"),
+            "{text}"
+        );
+
+        let mut out = Vec::new();
+        Writer::new(&exchange)
+            .replacements(&replacements)
+            .numbering(Numbering::Dense)
+            .write_all(&mut out)
+            .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("#1=A('x',#2,'keep');\n#2=B('');\n#3=C('untouched',  1.50);\n"),
+            "{text}"
+        );
     }
 
     fn write(src: &str, numbering: Numbering, positions: Option<&[usize]>) -> String {

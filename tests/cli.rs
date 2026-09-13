@@ -827,6 +827,72 @@ fn temp_file(name: &str, contents: &str) -> std::path::PathBuf {
     path
 }
 
+/// A header naming a person, a PERSON, and a product.
+const PERSONAL: &str = "ISO-10303-21;HEADER;
+FILE_NAME('bracket.stp','2026',('Jane Doe'),('ACME'),'','CAD 1','boss');
+FILE_SCHEMA(('AP242'));ENDSEC;DATA;
+#1=PERSON('jdoe','Doe','Jane',$,$,$);
+#2=PRODUCT('BRK-100','bracket','secret',());
+ENDSEC;END-ISO-10303-21;";
+
+#[test]
+fn strip_writes_to_standard_output_and_reports_on_standard_error() {
+    stepq()
+        .args(["strip", "-", "-o", "-"])
+        .write_stdin(PERSONAL)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "FILE_NAME('bracket.stp','2026',(''),(''),'','CAD 1','');",
+        ))
+        .stdout(predicate::str::contains("#1=PERSON('','','',$,$,$);"))
+        .stdout(predicate::str::contains(
+            "#2=PRODUCT('BRK-100','bracket','secret',());",
+        ))
+        .stderr(predicate::str::diff(
+            "<stdout>: replaced 6 strings in 1 instance\n",
+        ));
+}
+
+#[test]
+fn strip_anonymizes_into_a_file_and_will_not_overwrite_it() {
+    let out = std::env::temp_dir().join(format!("stepq-cli-{}-strip.stp", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+    let first = stepq()
+        .args(["strip", "-", "--anonymize", "-o"])
+        .arg(&out)
+        .write_stdin(PERSONAL)
+        .assert();
+    let written = std::fs::read_to_string(&out).unwrap_or_default();
+    let again = stepq()
+        .args(["strip", "-", "-o"])
+        .arg(&out)
+        .write_stdin(PERSONAL)
+        .assert();
+    let forced = stepq()
+        .args(["strip", "-", "--force", "-o"])
+        .arg(&out)
+        .write_stdin(PERSONAL)
+        .assert();
+    let _ = std::fs::remove_file(&out);
+
+    first.success().stdout(predicate::str::ends_with(
+        "replaced 10 strings in 2 instances\n",
+    ));
+    assert!(
+        written.contains("FILE_NAME('','2026',(''),(''),'','CAD 1','');"),
+        "{written}"
+    );
+    assert!(
+        written.contains("#2=PRODUCT('product-1','product-1','',());"),
+        "{written}"
+    );
+    again
+        .failure()
+        .stderr(predicate::str::contains("already exists; pass --force"));
+    forced.success();
+}
+
 #[test]
 fn diff_of_identical_files_is_empty() {
     let copy = temp_file("diff-same.stp", ASSEMBLY);

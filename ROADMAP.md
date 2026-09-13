@@ -65,7 +65,7 @@ milestones below; the open items in them carry over.
 ## Later
 
 - [ ] `stepq pmi`: semantic GD&T to JSON.
-- [ ] `stepq strip` / `--anonymize`.
+- [x] `stepq strip` / `--anonymize`.
 - [ ] `stepq split --master`: CAx-IF external references instead of copies.
 - [ ] `stepq assemble`: the inverse of split, from a manifest.
 - [ ] Part 21 edition 3 anchors/references.
