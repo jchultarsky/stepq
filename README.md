@@ -15,10 +15,11 @@ That constraint is the point: every entity that describes your geometry
 comes out exactly as it went in, byte for byte, with its original names,
 colours, layers, properties and PMI attached.
 
-> **Status: 0.1, early.** The Part 21 parser, reference graph, writer and
-> EXPRESS schema reader are in place, and `stepq info`, `tree`, `bom` and
-> `split` work. The library API and the CLI output will still change
-> before 1.0; see [ROADMAP.md](ROADMAP.md).
+> **Status: 0.2, early.** The Part 21 parser, reference graph, writer and
+> EXPRESS schema reader are in place, and `stepq info`, `tree`, `bom`,
+> `split`, `lint`, `refs`, `query`, `props`, `diff` and `strip` work. The
+> library API and the CLI output will still change before 1.0; see
+> [ROADMAP.md](ROADMAP.md).
 
 ## What it does
 
@@ -101,7 +102,7 @@ As a library, without the CLI dependencies:
 
 ```toml
 [dependencies]
-stepq = { version = "0.1", default-features = false }
+stepq = { version = "0.2", default-features = false }
 ```
 
 ## Supported input

@@ -3,8 +3,8 @@
 Ordered by leverage per line of code. Nothing here needs a geometry
 kernel; that is the constraint that keeps the project finishable.
 
-The first release, 0.1.0, contains the parser, structure and split
-milestones below; the open items in them carry over.
+0.1.0 contains the parser, structure and split milestones below; 0.2.0
+adds the inspect milestone. Open items carry over.
 
 ## Parser
 
@@ -58,7 +58,7 @@ milestones below; the open items in them carry over.
       equal solid counts, no lost names or colours. Already run in CI on
       every fixture rewritten by stepq (`tools/verify-rewrite.sh`).
 
-## Next: inspect (0.2)
+## Inspect (0.2.0)
 
 - [x] `stepq lint`: dangling refs, duplicate ids, attribute counts,
       empty `SET[1:?]`, shared contexts across an RRWT, missing
