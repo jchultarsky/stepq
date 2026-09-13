@@ -10,6 +10,13 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- `stepq assemble MASTER -o OUT`: the inverse of `split --master`. Every
+  component stub with a CAx-IF external reference is replaced by the
+  instances of the file it names (read relative to the master), renamed
+  after the master's; references to the stub are pointed at the
+  component's own instances and the reference entities are dropped. Nested
+  masters are merged first. Library: `assemble::assemble`, with
+  `p21::Numbering::Offset` and `p21::Writer::write_instances`.
 - `stepq split --master`: assemblies are written as master files. Each
   component keeps its product, definition, placements and a shape without
   geometry, and refers to its own file through CAx-IF external references

@@ -190,6 +190,31 @@ solid. It does not attach external files to components placed through
 `mapped_item`s (the NIST moon buggy): its reader ties an external file to
 the component definition, which mapped items bypass.
 
+## Assembling
+
+`assemble` is the inverse of a master. Each `applied_document_reference`
+to a `document_file` names a file (the external identification's
+`assigned_id`, else the document id, as Open CASCADE reads it) and the stub
+definition it stands for. The stub's product, formation, definition, shape
+definition, its link to a shape and its shape representations are paired
+with the same instances of the file's definition with that product id;
+references to them are rewritten with `p21::Replacements`, and the stub
+and the reference entities are dropped. Component files are written after
+the master with `Numbering::Offset`, past every name already used, so
+nothing but the redirected tokens changes.
+
+A file is merged once, however many masters name it: the AS1 nut is used
+by the rod assembly and by the nut-and-bolt assembly, and assembling
+nested masters one file at a time brought it back twice. Merged files are
+therefore remembered by name, and a file that refers back to one being
+merged is an error rather than a loop.
+
+Measured on the AS1 assembly from four exporters (Unigraphics, CADDS,
+Pro/ENGINEER, and NIST's `as1_pe`): splitting into masters and assembling
+the top master gives the original products and component quantities
+(`stepq diff`), and Open CASCADE reads the same solid count, volume,
+names and colours as from the original file.
+
 ## Validation properties
 
 Geometric validation properties (volume, area, centroid) cannot be

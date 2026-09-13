@@ -30,6 +30,7 @@ $ stepq bom   assembly.stp                # multi-level bill of materials as a t
 $ stepq bom   assembly.stp --format csv   # the same as an indented CSV
 $ stepq split assembly.stp --out parts/   # one file per sub-assembly and part (--bodies: per solid)
 $ stepq split assembly.stp --master --out parts/  # assemblies refer to component files (CAx-IF)
+$ stepq assemble parts/assembly.stp -o whole.stp  # merge a master and its files into one
 $ stepq lint  assembly.stp --schema schemas/   # structural problems; exit 1 on errors
 $ stepq refs  assembly.stp 1234 --depth 2      # what #1234 refers to, and what refers to it
 $ stepq query assembly.stp --type product      # instances by entity type or text
@@ -63,9 +64,9 @@ STEP files for every sub-assembly and part, preserving nested structure,
 instance placement, colours and names — without a CAD seat and without
 regenerating a single surface. As far as we can tell nothing open-source
 does this today; the usual answer is "open it in SolidWorks and Save As".
-
-Planned beyond that: `assemble` (the inverse of
-`split`). See [ROADMAP.md](ROADMAP.md) for the tiers.
+Its inverse, `assemble`, merges a master file and the component files it
+refers to back into one file. See [ROADMAP.md](ROADMAP.md) for what comes
+next.
 
 ## What it will not do
 

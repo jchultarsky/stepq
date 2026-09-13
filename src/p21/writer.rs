@@ -70,6 +70,9 @@ pub enum Numbering {
     Preserve,
     /// Number the written instances `#1`, `#2`, … in file order.
     Dense,
+    /// Keep every instance's name, increased by this much: `#12` becomes
+    /// `#1012` with an offset of 1000. For merging files whose names clash.
+    Offset(u64),
 }
 
 /// Writes all or part of an [`Exchange`] back out as Part 21.
@@ -256,20 +259,27 @@ impl<'e, 'a> Writer<'e, 'a> {
             });
 
         let mut external = HashMap::new();
-        if self.numbering == Numbering::Dense {
-            let mut next = 0;
-            for name in data.iter_mut().flatten() {
-                next += 1;
-                *name = next;
-            }
-            for id in external_ids {
-                external.entry(id).or_insert_with(|| {
+        match self.numbering {
+            Numbering::Dense => {
+                let mut next = 0;
+                for name in data.iter_mut().flatten() {
                     next += 1;
-                    next
-                });
+                    *name = next;
+                }
+                for id in external_ids {
+                    external.entry(id).or_insert_with(|| {
+                        next += 1;
+                        next
+                    });
+                }
             }
-        } else {
-            external.extend(external_ids.map(|id| (id, id)));
+            Numbering::Offset(offset) => {
+                for name in data.iter_mut().flatten() {
+                    *name += offset;
+                }
+                external.extend(external_ids.map(|id| (id, id + offset)));
+            }
+            Numbering::Preserve => external.extend(external_ids.map(|id| (id, id))),
         }
         Names { data, external }
     }
@@ -288,8 +298,12 @@ impl<'e, 'a> Writer<'e, 'a> {
             if pruned[position] {
                 plans[position] = Some(self.removal_plan(instance, names)?);
             } else {
-                for id in exchange.references(instance) {
-                    target_name(exchange, names, instance, id)?;
+                for token in exchange.instance_tokens(instance) {
+                    if let TokenKind::InstanceName(id) = token.kind {
+                        if !self.is_replaced(token.span) {
+                            target_name(exchange, names, instance, id)?;
+                        }
+                    }
                 }
             }
         }
@@ -331,7 +345,7 @@ impl<'e, 'a> Writer<'e, 'a> {
             let TokenKind::InstanceName(id) = token.kind else {
                 continue;
             };
-            if target_name(exchange, names, instance, id).is_ok() {
+            if self.is_replaced(token.span) || target_name(exchange, names, instance, id).is_ok() {
                 continue;
             }
             let before = i.checked_sub(1).map(|j| tokens[j].kind);
@@ -494,6 +508,41 @@ impl<'e, 'a> Writer<'e, 'a> {
         Ok(())
     }
 
+    /// Writes the instances at `positions` alone, one per line, without a
+    /// header or sections: text to [`append`](Self::append) to another
+    /// file, usually renamed with [`Numbering::Offset`].
+    ///
+    /// # Errors
+    ///
+    /// As [`write_selection`](Self::write_selection).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a position is out of range.
+    pub fn write_instances<W: Write>(
+        &self,
+        positions: impl IntoIterator<Item = usize>,
+        out: W,
+    ) -> Result<()> {
+        let names = self.assign_names(positions);
+        let plans = self.check_closed(&names, &vec![false; names.data.len()])?;
+        let mut out = BufWriter::new(out);
+        for (position, instance) in self.exchange.instances().iter().enumerate() {
+            if let Some(name) = names.data[position] {
+                self.write_instance(&mut out, instance, name, &names, plans[position].as_deref())?;
+                out.write_all(b"\n")?;
+            }
+        }
+        out.flush()?;
+        Ok(())
+    }
+
+    /// True if the token at `span` has a replacement: the caller names its
+    /// target, so it is not checked.
+    fn is_replaced(&self, span: Span) -> bool {
+        self.replacements.is_some_and(|r| r.get(span).is_some())
+    }
+
     /// Writes one instance from its source text, renaming instance names
     /// when renumbering and dropping the tokens `removed` marks.
     fn write_instance(
@@ -506,7 +555,7 @@ impl<'e, 'a> Writer<'e, 'a> {
     ) -> Result<()> {
         let exchange = self.exchange;
         let text = exchange.text(instance);
-        let dense = self.numbering == Numbering::Dense;
+        let dense = self.numbering != Numbering::Preserve;
         let replacements = self
             .replacements
             .filter(|replacements| replacements.any_within(instance.span));
@@ -606,6 +655,44 @@ mod tests {
         format!(
             "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\nDATA;\n{data}ENDSEC;\nEND-ISO-10303-21;\n"
         )
+    }
+
+    #[test]
+    fn offset_numbering_and_bare_instances() {
+        let src = file_with("#1=A(#2,'#2');\n#2=B();\n");
+        let exchange = parse(src.as_bytes()).unwrap();
+        let mut out = Vec::new();
+        Writer::new(&exchange)
+            .numbering(Numbering::Offset(100))
+            .write_instances(0..2, &mut out)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "#101=A(#102,'#2');\n#102=B();\n"
+        );
+    }
+
+    #[test]
+    fn replaced_references_are_the_callers_to_resolve() {
+        let src = file_with("#1=A(#9);\n");
+        let exchange = parse(src.as_bytes()).unwrap();
+        let reference = exchange.instance_tokens(&exchange.instances()[0])[2];
+        assert_eq!(reference.kind, TokenKind::InstanceName(9));
+        let mut replacements = Replacements::new();
+        replacements.replace(reference.span, "#5");
+        let mut out = Vec::new();
+        Writer::new(&exchange)
+            .replacements(&replacements)
+            .append(b"#5=B();")
+            .write_all(&mut out)
+            .unwrap();
+        assert!(
+            String::from_utf8(out)
+                .unwrap()
+                .contains("DATA;\n#1=A(#5);\n#5=B();\nENDSEC;\n")
+        );
+        // Without the replacement #9 is still dangling.
+        assert!(Writer::new(&exchange).write_all(io::sink()).is_err());
     }
 
     #[test]

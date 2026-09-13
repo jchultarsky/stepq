@@ -73,7 +73,8 @@ adds the inspect milestone. Open items carry over.
 - [x] `stepq pmi`: semantic GD&T to JSON.
 - [x] `stepq strip` / `--anonymize`.
 - [x] `stepq split --master`: CAx-IF external references instead of copies.
-- [ ] `stepq assemble`: the inverse of split, from a manifest.
+- [x] `stepq assemble`: the inverse of `split --master`, from the CAx-IF
+      external references themselves rather than a separate manifest.
 - [x] Part 21 edition 3 anchors/references.
 
 ## Not planned
