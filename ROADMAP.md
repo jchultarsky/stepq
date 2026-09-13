@@ -50,10 +50,14 @@ adds the inspect milestone. Open items carry over.
 - [x] `stepq split --bodies` — multi-body products into one file per solid.
 - [x] `--report-orphans`: print everything left outside the closure.
 - [ ] Grow the rule table from the orphan reports. Persistent identifiers
-      are done (orphaned `id_attribute`s on the core fixtures: 3,298 → 55);
-      what remains is dates, persons and organizations on some exporters,
-      and PMI presentation on NIST AP242 (annotation planes, camera
-      models, styled annotation).
+      are done (orphaned `id_attribute`s on the core fixtures: 3,298 → 55).
+      On every fixture under 16 MB, `split --report-orphans` leaves 43,534
+      instances in no output, none of them solids: PMI presentation on NIST
+      AP242 and AP203 (annotation planes, camera models, tessellated and
+      polyline annotation, 1,164 `coordinates_list`), saved views on the
+      Creo Open Rack files (`draughting_model`, `camera_usage`,
+      `constructive_geometry_representation`, their points and
+      directions), and moon buggy's 186 `personal_address`es.
 - [x] `tools/verify-occt.py`: Σ volume(outputs) == volume(input subtree),
       equal solid counts, no lost names or colours. Already run in CI on
       every fixture rewritten by stepq (`tools/verify-rewrite.sh`).
