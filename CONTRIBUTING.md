@@ -24,6 +24,7 @@ dependency audit, [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny)
 $ git clone https://github.com/jchultarsky/stepq
 $ cd stepq
 $ tools/fetch-fixtures.sh      # downloads public test files into tests/fixtures/
+$ tools/fetch-schemas.sh       # downloads EXPRESS schemas into tests/schemas/
 $ cargo test --all-features
 ```
 
@@ -31,6 +32,12 @@ The fixtures are not vendored. `tools/fetch-fixtures.sh` pulls the NIST
 MBE PMI test set (US-Government work, public domain) and the STEP Tools
 AS1 sample assemblies (redistribution terms unstated, so we fetch rather
 than copy). Tests that need a fixture skip themselves if it is missing.
+
+The EXPRESS schemas are not vendored either. They are ISO copyright: ISO
+permits using them unmodified for the purposes of the standard, but does
+not clearly permit redistribution. Do not commit a schema, or a table
+generated from one, without that being settled first.
+`tools/fetch-schemas.sh` checks every download against a pinned SHA-256.
 
 ## Before you open a pull request
 

@@ -11,8 +11,11 @@ kernel; that is the constraint that keeps the project finishable.
 - [x] Parser into an untyped entity graph with forward and back indices.
 - [x] Writer that reproduces unchanged entities verbatim and renumbers
       densely. Must not touch `#` inside string literals.
-- [ ] EXPRESS schema reader, used only for attribute counts and aggregate
-      bounds (AP203e2, AP214, AP242 ed1–ed4).
+- [x] EXPRESS schema reader, used only for attribute counts and aggregate
+      bounds. Schemas are read at run time, not shipped (ISO copyright).
+      Tested against AP203 ed1/ed2, AP214 ed3 and AP242 ed4.
+- [ ] Find a source for the AP242 ed1–ed3 long-form schemas; ISO only
+      hosts the current edition.
 - [x] `stepq info`
 - [x] Fuzz targets for the lexer and parser.
 
