@@ -296,10 +296,173 @@ fn tree_json_has_definitions_usages_and_roots() {
     assert_eq!(json["usages"][1]["placement"], serde_json::Value::Null);
 }
 
+const BOM_SUMMARY: &str = "1 sub-assembly, 2 distinct parts, 10 parts in total\n";
+
 #[test]
-fn bom_table_and_csv() {
+fn bom_is_a_tree_by_default() {
+    stepq()
+        .args(["bom", "-", "--charset", "utf8"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(format!(
+            "assembly [A]\n\
+             ├── bracket assembly [B]  ×2\n\
+             │   └── bolt [C]  ×3  (6 total)\n\
+             └── plate [D]  ×4\n\
+             \n{BOM_SUMMARY}"
+        )));
+}
+
+#[test]
+fn bom_tree_in_ascii() {
+    stepq()
+        .args(["bom", "-", "--format", "tree", "--charset", "ascii"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(format!(
+            "assembly [A]\n\
+             |-- bracket assembly [B]  x2\n\
+             |   `-- bolt [C]  x3  (6 total)\n\
+             `-- plate [D]  x4\n\
+             \n{BOM_SUMMARY}"
+        )));
+}
+
+#[test]
+fn bom_charset_follows_the_locale() {
     stepq()
         .args(["bom", "-"])
+        .env("LC_ALL", "C")
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("|-- bracket assembly [B]"));
+    stepq()
+        .args(["bom", "-"])
+        .env("LC_ALL", "en_US.UTF-8")
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("├── bracket assembly [B]"));
+}
+
+#[test]
+fn bom_tree_prefix_and_depth() {
+    stepq()
+        .args(["bom", "-", "--prefix", "depth", "--charset", "utf8"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(format!(
+            "0 assembly [A]\n\
+             1 bracket assembly [B]  ×2\n\
+             2 bolt [C]  ×3  (6 total)\n\
+             1 plate [D]  ×4\n\
+             \n{BOM_SUMMARY}"
+        )));
+    stepq()
+        .args(["bom", "-", "--depth", "1", "--charset", "utf8"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(format!(
+            "assembly [A]\n\
+             ├── bracket assembly [B]  ×2\n\
+             └── plate [D]  ×4\n\
+             \n{BOM_SUMMARY}"
+        )));
+}
+
+/// A uses B and E; E uses B too; B uses part C.
+const REPEATED: &str = "ISO-10303-21;HEADER;FILE_SCHEMA(('X'));ENDSEC;DATA;
+#1=PRODUCT_DEFINITION('a','',$,$);
+#2=PRODUCT_DEFINITION('b','',$,$);
+#3=PRODUCT_DEFINITION('e','',$,$);
+#4=PRODUCT_DEFINITION('c','',$,$);
+#10=NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#1,#2,$);
+#11=NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','','',#1,#3,$);
+#12=NEXT_ASSEMBLY_USAGE_OCCURRENCE('3','','',#3,#2,$);
+#13=NEXT_ASSEMBLY_USAGE_OCCURRENCE('4','','',#2,#4,$);
+ENDSEC;END-ISO-10303-21;";
+
+#[test]
+fn bom_tree_marks_repeated_sub_assemblies() {
+    stepq()
+        .args(["bom", "-", "--charset", "utf8"])
+        .write_stdin(REPEATED)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "a\n\
+             ├── b\n\
+             │   └── c\n\
+             └── e\n    \
+             └── b (*)\n\
+             \n\
+             2 sub-assemblies, 1 distinct part, 2 parts in total\n\
+             (*) listed in full above; use --no-dedupe to repeat it\n",
+        ));
+    stepq()
+        .args(["bom", "-", "--charset", "utf8", "--no-dedupe"])
+        .write_stdin(REPEATED)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "a\n\
+             ├── b\n\
+             │   └── c\n\
+             └── e\n    \
+             └── b\n        \
+             └── c\n\
+             \n\
+             2 sub-assemblies, 1 distinct part, 2 parts in total\n",
+        ));
+}
+
+#[test]
+fn bom_csv_is_an_indented_bom() {
+    stepq()
+        .args(["bom", "-", "--format", "csv"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "level,item,definition,product_id,product_name,type,quantity,total_quantity\n\
+             0,,10,A,assembly,assembly,1,1\n\
+             1,1,20,B,bracket assembly,assembly,2,2\n\
+             2,1.1,30,C,bolt,part,3,6\n\
+             1,2,40,D,plate,part,4,4\n",
+        ));
+}
+
+#[test]
+fn bom_json_is_nested() {
+    let output = stepq()
+        .args(["--format", "json", "bom", "-"])
+        .write_stdin(ASSEMBLY)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let root = &json[0];
+    assert_eq!(root["item"], "");
+    assert_eq!(root["definition"]["product"]["id"], "A");
+    let bolt = &root["components"][0]["components"][0];
+    assert_eq!(bolt["item"], "1.1");
+    assert_eq!(bolt["level"], 2);
+    assert_eq!(bolt["quantity"], 3.0);
+    assert_eq!(bolt["total_quantity"], 6.0);
+    assert_eq!(bolt["kind"], "part");
+    assert_eq!(bolt["components"], serde_json::json!([]));
+    assert!(bolt.get("truncated").is_none());
+}
+
+#[test]
+fn bom_flat_lists_total_quantities() {
+    stepq()
+        .args(["bom", "-", "--flat"])
         .write_stdin(ASSEMBLY)
         .assert()
         .success()
@@ -311,7 +474,7 @@ fn bom_table_and_csv() {
              4  part      plate [D]\n",
         ));
     stepq()
-        .args(["bom", "-", "--format", "csv"])
+        .args(["bom", "-", "--flat", "--format", "csv"])
         .write_stdin(ASSEMBLY)
         .assert()
         .success()
@@ -321,19 +484,11 @@ fn bom_table_and_csv() {
              assembly [A],C,bolt,part,6\n\
              assembly [A],D,plate,part,4\n",
         ));
-}
-
-#[test]
-fn bom_json() {
     let output = stepq()
-        .args(["--format", "json", "bom", "-"])
+        .args(["--format", "json", "bom", "-", "--flat"])
         .write_stdin(ASSEMBLY)
         .output()
         .unwrap();
-    assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json[0]["root"]["product"]["id"], "A");
-    assert_eq!(json[0]["lines"].as_array().unwrap().len(), 3);
     assert_eq!(json[0]["lines"][1]["quantity"], 6.0);
-    assert_eq!(json[0]["lines"][1]["kind"], "part");
 }

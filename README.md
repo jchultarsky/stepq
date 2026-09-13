@@ -25,7 +25,7 @@ colours, layers, properties and PMI attached.
 ```console
 $ stepq info  assembly.stp          # header, schema, units, entity histogram (works today)
 $ stepq tree  assembly.stp          # assembly hierarchy and placements (works today)
-$ stepq bom   assembly.stp --format csv   # rolled-up quantities (works today)
+$ stepq bom   assembly.stp          # multi-level bill of materials as a tree (works today)
 $ stepq split assembly.stp --out parts/   # one file per sub-assembly and part (works today)
 $ stepq lint  assembly.stp          # structural problems, no kernel needed
 ```
