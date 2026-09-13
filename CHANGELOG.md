@@ -10,6 +10,16 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- `stepq split --master`: assemblies are written as master files. Each
+  component keeps its product, definition, placements and a shape without
+  geometry, and refers to its own file through CAx-IF external references
+  (Recommended Practices for External References 3.1: `document_file`,
+  `applied_external_identification_assignment`,
+  `applied_document_reference`). Open CASCADE reads the top master of the
+  AS1 assembly from three exporters, nested masters included, with the
+  original solid count and volume; it does not attach external files to
+  components placed through `mapped_item`s. `p21::Writer::append` writes instances the source does
+  not have.
 - Part 21 edition 3 anchors and references: `Exchange::anchors`,
   `Exchange::external_references` and `Exchange::is_external`. Instance
   names a `REFERENCE` section defines no longer count as dangling. The

@@ -156,6 +156,40 @@ single (schema-illegal) shell, which would need union-find over shared
 `edge_curve` references, and a `brep_with_voids` whose outer shell is
 disconnected, which needs point-in-solid to assign its voids.
 
+## Master files
+
+`split --master` writes each assembly as a master file that refers to its
+components' files, following the CAx-IF Recommended Practices for
+External (Element) References 3.1, §6.1. Attribute order comes from the
+schema, not the document: two of its own examples are wrong
+(`applied_document_reference` has three attributes, and one example
+reverses them).
+
+A master keeps its own instances and, of each component, a stub: the
+product, formation and definition, the shape definition, and its shape
+representations reduced to their placements. It is `extract_excluding`
+from the assembly with every component definition, every non-placement
+item of their shape representations, and every simple
+`shape_representation_relationship` to those representations excluded.
+That last exclusion is not optional: exporters such as Unigraphics tie a
+placement-only representation to the one holding the solid with such a
+relationship, and without it the rule table pulls the geometry back in.
+Per component the file gains, numbered after its highest instance name:
+`document_type`, `document_file` (id = file name),
+`document_representation_type('digital')`, `identification_role('external
+document id and location')`, `external_source` (empty: same folder),
+`applied_external_identification_assignment` (the file name, which Open
+CASCADE reads first), `applied_document_reference` to the component
+definition, `object_role('mandatory')` with its `role_association`, and the
+'external definition' property linking the document to the stub shape.
+
+Open CASCADE reads the top master of the AS1 assembly from three exporters
+(Unigraphics, CADDS, Pro/ENGINEER), nested masters included, with exactly
+the original solid count and volume, and every master file holds no
+solid. It does not attach external files to components placed through
+`mapped_item`s (the NIST moon buggy): its reader ties an external file to
+the component definition, which mapped items bypass.
+
 ## Validation properties
 
 Geometric validation properties (volume, area, centroid) cannot be

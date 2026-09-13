@@ -128,6 +128,12 @@ enum Command {
     /// With --bodies, a part whose shape holds several solids also gets one
     /// file per solid, `<part>.body-<n>.stp`: the part with its other solids
     /// left out.
+    ///
+    /// With --master, every assembly is written as a master file instead:
+    /// its components keep their products, placements and a shape with no
+    /// geometry, and refer to their own files through CAx-IF external
+    /// references (`document_file`, `applied_document_reference`). Parts are
+    /// written as usual.
     Split {
         /// STEP file to split, or `-` for standard input.
         file: PathBuf,
@@ -143,6 +149,10 @@ enum Command {
         /// Also write one file per solid of every part with several.
         #[arg(long)]
         bodies: bool,
+        /// Write assemblies as master files that refer to their components'
+        /// files instead of copying their geometry.
+        #[arg(long)]
+        master: bool,
     },
     /// Check a file for structural problems, without a geometry kernel.
     ///
@@ -380,7 +390,18 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             force,
             report_orphans,
             bodies,
-        } => split(file, out, cli.format, *force, *report_orphans, *bodies),
+            master,
+        } => split(
+            file,
+            out,
+            cli.format,
+            *force,
+            *report_orphans,
+            SplitMode {
+                bodies: *bodies,
+                master: *master,
+            },
+        ),
         Command::Lint { file, schemas, all } => return lint(file, schemas, cli.format, *all),
         Command::Refs {
             file,
@@ -1970,13 +1991,22 @@ struct SplitFile<'a> {
     pruned: usize,
 }
 
+/// What `stepq split` writes besides one file per definition.
+#[derive(Debug, Clone, Copy)]
+struct SplitMode {
+    /// One file per solid of multi-body parts.
+    bodies: bool,
+    /// Assemblies as master files with external references.
+    master: bool,
+}
+
 fn split(
     path: &Path,
     dir: &Path,
     format: Format,
     force: bool,
     report_orphans: bool,
-    bodies: bool,
+    mode: SplitMode,
 ) -> anyhow::Result<()> {
     let src = read_input(path)?;
     let name = display_name(path);
@@ -2008,31 +2038,43 @@ fn split(
     }
 
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let files: Vec<String> = plans.iter().map(|(_, _, file, _)| file.clone()).collect();
     let mut extractions = Vec::with_capacity(plans.len());
     let mut written = Vec::with_capacity(plans.len());
     for (index, node, file, target) in plans {
         let extraction = stepq::model::extract(&graph, &[node]);
+        let is_assembly = structure.children(index).len() > 0;
         let output =
             fs::File::create(&target).with_context(|| format!("creating {}", target.display()))?;
-        stepq::p21::Writer::new(graph.exchange())
-            .numbering(stepq::p21::Numbering::Dense)
-            .write_pruned(
-                extraction.nodes().iter().copied(),
-                extraction.pruned().iter().copied(),
-                output,
+        let (file_kind, instances, pruned) = if mode.master && is_assembly {
+            let (instances, pruned) = write_master(&graph, &structure, index, node, &files, output)
+                .with_context(|| format!("writing {}", target.display()))?;
+            ("master", instances, pruned)
+        } else {
+            stepq::p21::Writer::new(graph.exchange())
+                .numbering(stepq::p21::Numbering::Dense)
+                .write_pruned(
+                    extraction.nodes().iter().copied(),
+                    extraction.pruned().iter().copied(),
+                    output,
+                )
+                .with_context(|| format!("writing {}", target.display()))?;
+            (
+                kind(is_assembly),
+                extraction.nodes().len(),
+                extraction.pruned().len(),
             )
-            .with_context(|| format!("writing {}", target.display()))?;
-        let is_assembly = structure.children(index).len() > 0;
+        };
         let stem = file.trim_end_matches(".stp").to_owned();
         written.push(SplitFile {
             file,
-            kind: kind(is_assembly),
+            kind: file_kind,
             definition: &definitions[index],
-            instances: extraction.nodes().len(),
-            pruned: extraction.pruned().len(),
+            instances,
+            pruned,
         });
 
-        let solids: Vec<usize> = if bodies && !is_assembly {
+        let solids: Vec<usize> = if mode.bodies && !is_assembly {
             extraction
                 .nodes()
                 .iter()
@@ -2228,6 +2270,231 @@ fn write_bodies<'d>(
         });
     }
     Ok(written)
+}
+
+/// Writes the assembly `definitions[index]`, at `node`, as a master file.
+///
+/// The assembly's own instances are written as `split` writes them. Of each
+/// component only a stub is kept — its product, definition, shape definition
+/// and shape representations, holding their placements but no geometry —
+/// with a CAx-IF external reference (Recommended Practices for External
+/// References 3.1, §6.1) to the component's file in `files`. The
+/// component's own components are left to that file. Instance names are
+/// kept, and the reference entities are numbered after the file's highest.
+/// Returns how many instances were written, and how many pruned.
+fn write_master(
+    graph: &Graph<'_>,
+    structure: &ProductStructure,
+    index: usize,
+    node: usize,
+    files: &[String],
+    output: fs::File,
+) -> anyhow::Result<(usize, usize)> {
+    let (nodes, pruned, stubs) = master_selection(graph, structure, index, node);
+    let (text, appended) = external_reference_text(graph, structure, &stubs, files);
+    stepq::p21::Writer::new(graph.exchange())
+        .append(text.as_bytes())
+        .write_pruned(nodes.iter().copied(), pruned.iter().copied(), output)?;
+    Ok((nodes.len() + appended, pruned.len()))
+}
+
+/// The instances of a master file, the ones to prune, and each component as
+/// `(definition index, node)`.
+fn master_selection(
+    graph: &Graph<'_>,
+    structure: &ProductStructure,
+    index: usize,
+    node: usize,
+) -> (Vec<usize>, Vec<usize>, Vec<(usize, usize)>) {
+    let exchange = graph.exchange();
+    let definitions = structure.definitions();
+    let mut components: Vec<usize> = structure.children(index).map(|usage| usage.child).collect();
+    components.sort_unstable();
+    components.dedup();
+
+    // Leave out each component and every item of its shape representations
+    // but placements: with them, its geometry and its own components.
+    let mut excluded = Vec::new();
+    let mut stubs = Vec::new();
+    for &component in &components {
+        let definition = &definitions[component];
+        let Some(child) = graph.node(definition.instance) else {
+            continue;
+        };
+        excluded.push(child);
+        stubs.push((component, child));
+        for &rep in &definition.shape_representations {
+            let Some(rep_node) = graph.node(rep) else {
+                continue;
+            };
+            // A shape spread over several representations: a simple
+            // shape_representation_relationship would bring the geometry
+            // back. (Complex ones are the placements the master keeps.)
+            excluded.extend(
+                graph
+                    .referenced_by(rep_node)
+                    .iter()
+                    .copied()
+                    .filter(|&link| {
+                        let instance = graph.instance(link);
+                        !instance.is_complex()
+                            && exchange.records(instance).next().is_some_and(|record| {
+                                record.is("SHAPE_REPRESENTATION_RELATIONSHIP")
+                            })
+                    }),
+            );
+            let items = exchange
+                .records(graph.instance(rep_node))
+                .find(|r| r.params().count() >= 3)
+                .and_then(|record| record.param(1))
+                .and_then(|items| items.list());
+            for item in items.into_iter().flatten().filter_map(|p| p.reference()) {
+                let Some(item) = graph.node(item) else {
+                    continue;
+                };
+                let placement = exchange
+                    .records(graph.instance(item))
+                    .any(|record| record.is("AXIS2_PLACEMENT_3D"));
+                if !placement {
+                    excluded.push(item);
+                }
+            }
+        }
+    }
+    excluded.sort_unstable();
+    excluded.dedup();
+    let base = stepq::model::extract_excluding(graph, &[node], &excluded);
+
+    // Add each component's stub: its definition, shape definition and shape
+    // definition representations, and what they refer to, short of the
+    // excluded items.
+    let mut selected = vec![false; graph.len()];
+    for &taken in base.nodes() {
+        selected[taken] = true;
+    }
+    for &(_, child) in &stubs {
+        let mut stack = vec![child];
+        for &shape in graph.referenced_by(child) {
+            if refers_as(graph, shape, "PRODUCT_DEFINITION_SHAPE", 2, child) {
+                stack.push(shape);
+                stack.extend(graph.referenced_by(shape).iter().copied().filter(|&sdr| {
+                    refers_as(graph, sdr, "SHAPE_DEFINITION_REPRESENTATION", 0, shape)
+                }));
+            }
+        }
+        while let Some(next) = stack.pop() {
+            if selected[next] {
+                continue;
+            }
+            selected[next] = true;
+            stack.extend(
+                graph
+                    .references(next)
+                    .iter()
+                    .copied()
+                    .filter(|target| !selected[*target] && excluded.binary_search(target).is_err()),
+            );
+        }
+    }
+    let nodes: Vec<usize> = (0..graph.len()).filter(|&n| selected[n]).collect();
+    let mut pruned: Vec<usize> = base.pruned().to_vec();
+    pruned.extend(
+        nodes
+            .iter()
+            .copied()
+            .filter(|&n| graph.references(n).iter().any(|&target| !selected[target])),
+    );
+    pruned.sort_unstable();
+    pruned.dedup();
+    (nodes, pruned, stubs)
+}
+
+/// The external reference entities for each of `stubs`, numbered after the
+/// file's highest instance name, and how many there are.
+fn external_reference_text(
+    graph: &Graph<'_>,
+    structure: &ProductStructure,
+    stubs: &[(usize, usize)],
+    files: &[String],
+) -> (String, usize) {
+    let exchange = graph.exchange();
+    let definitions = structure.definitions();
+    let mut next = exchange.instances().iter().map(|i| i.id).max().unwrap_or(0);
+    let mut id = || {
+        next += 1;
+        next
+    };
+    let mut text = String::new();
+    let mut appended = 0;
+    for &(component, child) in stubs {
+        let file = &files[component];
+        let child = graph.instance(child).id;
+        let [
+            kind,
+            document,
+            representation,
+            role,
+            source,
+            assignment,
+            reference,
+            object_role,
+            association,
+        ] = [(); 9].map(|()| id());
+        let _ = writeln!(text, "#{kind}=DOCUMENT_TYPE('geometry');");
+        let _ = writeln!(
+            text,
+            "#{document}=DOCUMENT_FILE('{file}','',$,#{kind},'',$);"
+        );
+        let _ = writeln!(
+            text,
+            "#{representation}=DOCUMENT_REPRESENTATION_TYPE('digital',#{document});"
+        );
+        let _ = writeln!(
+            text,
+            "#{role}=IDENTIFICATION_ROLE('external document id and location',$);"
+        );
+        let _ = writeln!(text, "#{source}=EXTERNAL_SOURCE(IDENTIFIER(''));");
+        let _ = writeln!(
+            text,
+            "#{assignment}=APPLIED_EXTERNAL_IDENTIFICATION_ASSIGNMENT('{file}',#{role},#{source},(#{document}));"
+        );
+        let _ = writeln!(
+            text,
+            "#{reference}=APPLIED_DOCUMENT_REFERENCE(#{document},'',(#{child}));"
+        );
+        let _ = writeln!(text, "#{object_role}=OBJECT_ROLE('mandatory',$);");
+        let _ = writeln!(
+            text,
+            "#{association}=ROLE_ASSOCIATION(#{object_role},#{reference});"
+        );
+        appended += 9;
+        if let Some(&shape) = definitions[component].shape_representations.first() {
+            let [property, link] = [(); 2].map(|()| id());
+            let _ = writeln!(
+                text,
+                "#{property}=PROPERTY_DEFINITION('external definition',$,#{document});"
+            );
+            let _ = writeln!(
+                text,
+                "#{link}=PROPERTY_DEFINITION_REPRESENTATION(#{property},#{shape});"
+            );
+            appended += 2;
+        }
+    }
+    (text, appended)
+}
+
+/// True if `node` is an `entity` whose attribute `index` is `target`.
+fn refers_as(graph: &Graph<'_>, node: usize, entity: &str, index: usize, target: usize) -> bool {
+    graph
+        .exchange()
+        .records(graph.instance(node))
+        .next()
+        .is_some_and(|record| {
+            record.is(entity)
+                && record.param(index).and_then(|p| p.reference())
+                    == Some(graph.instance(target).id)
+        })
 }
 
 /// True if `node` is a solid body: a `manifold_solid_brep`, including a
