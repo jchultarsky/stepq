@@ -46,6 +46,10 @@ Until 1.0, minor versions may contain breaking changes.
   out.
 - `pmi` lists datums, then tolerances, then dimensions under each product
   definition, each in instance order, instead of mixing them.
+- `tools/verify-occt.py` sums volumes solid by solid. Open CASCADE's volume
+  of a compound that also holds open shells (Creo surface models) is not
+  the sum of its parts, which failed the assembly check on three Open Rack
+  fixtures although every placed solid matched its component to 1e-15.
 
 ## [0.3.0] - 2026-09-13
 
