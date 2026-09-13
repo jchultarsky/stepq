@@ -272,6 +272,26 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Merge a master file and the files it refers to into one file.
+    ///
+    /// The inverse of `split --master`: every component stub with a CAx-IF
+    /// external reference (`document_file`, `applied_document_reference`) is
+    /// replaced by the instances of the file it names, read relative to the
+    /// master's folder, and the reference entities are dropped. Component
+    /// files that are masters themselves are merged first. Instances are
+    /// copied as written, renamed after the master's.
+    Assemble {
+        /// Master STEP file, or `-` for standard input (references are then
+        /// read relative to the current directory).
+        file: PathBuf,
+        /// Where to write the result, or `-` for standard output (the report
+        /// then goes to standard error).
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Overwrite the output file if it exists.
+        #[arg(long)]
+        force: bool,
+    },
     /// List semantic PMI: geometric tolerances, dimensions and datums.
     ///
     /// Reads the machine-readable GD&T of AP242 files, not the annotation
@@ -447,6 +467,7 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             anonymize,
             force,
         } => strip(file, out, *anonymize, *force, cli.format),
+        Command::Assemble { file, out, force } => assemble(file, out, *force, cli.format),
         Command::Pmi { file } => pmi(file, cli.format),
     };
     done.map(|()| ExitCode::SUCCESS)
@@ -839,6 +860,77 @@ fn strip(
             csv_field(&output),
             plan.instances
         ),
+    };
+    if to_stdout {
+        eprint!("{report}");
+    } else {
+        print!("{report}");
+    }
+    Ok(())
+}
+
+fn assemble(path: &Path, out_path: &Path, force: bool, format: Format) -> anyhow::Result<()> {
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let base = if path == Path::new("-") {
+        PathBuf::from(".")
+    } else {
+        path.parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    };
+    // A nested master's references are relative to the folder of the file
+    // that names them; `split --master` writes them all to one folder.
+    let mut load = |file: &str| fs::read(base.join(file));
+    let assembled =
+        stepq::assemble::assemble(&src, &mut load).with_context(|| format!("assembling {name}"))?;
+
+    let to_stdout = out_path == Path::new("-");
+    let output = if to_stdout {
+        io::stdout().lock().write_all(&assembled.text)?;
+        "<stdout>".to_owned()
+    } else {
+        if out_path.exists() && !force {
+            bail!(
+                "{} already exists; pass --force to overwrite it",
+                out_path.display()
+            );
+        }
+        fs::write(out_path, &assembled.text)
+            .with_context(|| format!("writing {}", out_path.display()))?;
+        out_path.display().to_string()
+    };
+
+    let files = &assembled.files;
+    let report = match format {
+        Format::Table | Format::Tree => {
+            let mut report = format!(
+                "{output}: merged {} file{}\n",
+                grouped(files.len()),
+                if files.len() == 1 { "" } else { "s" }
+            );
+            report.extend(files.iter().map(|file| format!("  {file}\n")));
+            report
+        }
+        Format::Json => {
+            let document = serde_json::json!({
+                "file": name,
+                "output": output,
+                "files": files,
+            });
+            format!("{}\n", serde_json::to_string_pretty(&document)?)
+        }
+        Format::Csv => {
+            let mut report = String::from("file,output,merged\n");
+            report.extend(files.iter().map(|file| {
+                format!(
+                    "{},{},{}\n",
+                    csv_field(&name),
+                    csv_field(&output),
+                    csv_field(file)
+                )
+            }));
+            report
+        }
     };
     if to_stdout {
         eprint!("{report}");
