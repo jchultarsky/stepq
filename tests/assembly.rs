@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 
 use stepq::info::Info;
-use stepq::model::{Graph, ProductStructure};
+use stepq::model::{Graph, Placement, ProductStructure};
 use stepq::p21::parse;
 
 fn structure_of(relative: &str) -> Option<(ProductStructure, Info)> {
@@ -97,7 +97,7 @@ fn assembly_fixtures_are_consistent_with_info() {
         let reversed = structure
             .usages()
             .iter()
-            .filter(|u| u.placement.as_ref().and_then(|p| p.reversed) == Some(true))
+            .filter(|u| u.placement.as_ref().and_then(Placement::reversed) == Some(true))
             .count();
         let placed = structure
             .usages()
@@ -116,5 +116,14 @@ fn assembly_fixtures_are_consistent_with_info() {
             structure.roots().len(),
         );
         assert!(components > 0, "{file}");
+        if file.ends_with("moon_buggy_asm.stp") {
+            assert!(
+                structure
+                    .usages()
+                    .iter()
+                    .all(|u| matches!(u.placement, Some(Placement::MappedItem { .. }))),
+                "{file}: every usage is placed through a mapped item"
+            );
+        }
     }
 }

@@ -23,7 +23,7 @@ kernel; that is the constraint that keeps the project finishable.
 
 - [x] Product tree: `product` → `product_definition_formation` →
       `product_definition`, NAUO, CDSR / RRWT / IDT.
-- [ ] Placements expressed only through `mapped_item` /
+- [x] Placements expressed only through `mapped_item` /
       `representation_map`.
 - [x] Trust the NAUO over the SRR direction (real files reverse it).
 - [x] `stepq tree`, `stepq bom` (quantities via NAUO count and
