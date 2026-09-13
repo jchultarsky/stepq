@@ -71,7 +71,9 @@ pub enum PropertyKind {
     /// with spaces or underscores.
     Validation,
     /// A user-defined attribute: associated with a `general_property`, or
-    /// described as `user defined attribute`.
+    /// described as `user defined attribute`. Serialized as `user`, the
+    /// name `stepq props --kind` uses.
+    #[cfg_attr(feature = "serde", serde(rename = "user"))]
     UserDefined,
     /// Anything else.
     Other,

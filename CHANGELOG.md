@@ -8,6 +8,28 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- `props --format json` writes the property kind as `user`, the name
+  `props --kind` and the table use, instead of `user_defined` (also the
+  `serde` serialization of `props::PropertyKind::UserDefined`).
+
+### Fixed
+
+- `split --report-orphans` says "1 instance is in no output" rather than
+  "1 instances are".
+- `split`, `strip` and `assemble` word a refused overwrite the same way:
+  "… already exists; pass --force to overwrite it".
+- `split --bodies` checks whether the `<part>.body-<n>.stp` files exist
+  before writing anything, instead of stopping part-way through.
+- `props` and `diff` tables print a value whose text spans lines (such as
+  a centroid point) on one line.
+- `props` shows a property with no name as `(unnamed)` in the table.
+- `bom --depth` says when its summary line counts levels the tree leaves
+  out.
+- `pmi` lists datums, then tolerances, then dimensions under each product
+  definition, each in instance order, instead of mixing them.
+
 ## [0.3.0] - 2026-09-13
 
 Reshaping and PMI: `split --bodies`, `split --master` and its inverse

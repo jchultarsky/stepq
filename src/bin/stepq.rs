@@ -98,13 +98,17 @@ enum Command {
     /// repeated sub-assemblies expanded once and marked (*); as CSV, one row
     /// per line with its level and item number; as JSON, nested. With
     /// --flat, one line per distinct component with its total quantity.
+    ///
+    /// The summary line under the tree always counts the whole BOM, including
+    /// levels that --depth leaves out.
     Bom {
         /// STEP file to inspect, or `-` for standard input.
         file: PathBuf,
         /// One line per distinct component with its total quantity.
         #[arg(long)]
         flat: bool,
-        /// List at most this many levels below each top-level assembly.
+        /// List at most this many levels below each top-level assembly. The
+        /// summary line still counts every level.
         #[arg(long)]
         depth: Option<usize>,
         /// In the tree, expand repeated sub-assemblies every time. CSV and
@@ -639,11 +643,13 @@ fn write_pmi_table(
         return writeln!(out, "no semantic PMI");
     }
     let on = |subject: &Subject| format!("[on {} #{}]", subject.entity, subject.instance);
-    // (group, instance, line), printed in group then file order.
-    let mut rows: Vec<(usize, u64, String)> = Vec::new();
+    // (group, kind, instance, line), printed by product definition, then
+    // datums, tolerances and dimensions, each in instance order.
+    let mut rows: Vec<(usize, u8, u64, String)> = Vec::new();
     for datum in &found.datums {
         rows.push((
             props_group(structure, datum.subject.product_definition),
+            0,
             datum.instance,
             format!("  {:<10}  {}", "datum", datum.label),
         ));
@@ -651,6 +657,7 @@ fn write_pmi_table(
     for tolerance in &found.tolerances {
         rows.push((
             props_group(structure, tolerance.target.product_definition),
+            1,
             tolerance.instance,
             format!(
                 "  {:<10}  {}  {}",
@@ -671,6 +678,7 @@ fn write_pmi_table(
         };
         rows.push((
             props_group(structure, target.product_definition),
+            2,
             dimension.instance,
             format!(
                 "  {:<10}  {}  {features}",
@@ -679,10 +687,10 @@ fn write_pmi_table(
             ),
         ));
     }
-    rows.sort_by_key(|(group, instance, _)| (*group, *instance));
+    rows.sort_by_key(|(group, kind, instance, _)| (*group, *kind, *instance));
 
     let mut current = None;
-    for (group, _, line) in &rows {
+    for (group, _, _, line) in &rows {
         if current != Some(*group) {
             if current.is_some() {
                 writeln!(out)?;
@@ -728,7 +736,14 @@ fn write_pmi_csv(
         out,
         "category,product_definition,product,instance,type,name,value,lower,upper,datums,modifiers,target,target_type"
     )?;
-    for datum in &found.datums {
+    // Datums, tolerances, then dimensions, each in instance order.
+    let mut datums: Vec<_> = found.datums.iter().collect();
+    datums.sort_by_key(|datum| datum.instance);
+    let mut tolerances: Vec<_> = found.tolerances.iter().collect();
+    tolerances.sort_by_key(|tolerance| tolerance.instance);
+    let mut dimensions: Vec<_> = found.dimensions.iter().collect();
+    dimensions.sort_by_key(|dimension| dimension.instance);
+    for datum in datums {
         let subject = &datum.subject;
         writeln!(
             out,
@@ -741,7 +756,7 @@ fn write_pmi_csv(
             csv_field(&subject.entity)
         )?;
     }
-    for tolerance in &found.tolerances {
+    for tolerance in tolerances {
         let target = &tolerance.target;
         let datums: Vec<String> = tolerance
             .datums
@@ -774,7 +789,7 @@ fn write_pmi_csv(
             csv_field(&target.entity)
         )?;
     }
-    for dimension in &found.dimensions {
+    for dimension in dimensions {
         let target = &dimension.target;
         let bound = |value: Option<&Value>| value.map_or(String::new(), |v| csv_field(&v.value));
         let nominal: Vec<&str> = dimension.values.iter().map(|v| v.value.as_str()).collect();
@@ -819,12 +834,7 @@ fn strip(
             .with_context(|| format!("writing {name}"))?;
         "<stdout>".to_owned()
     } else {
-        if out_path.exists() && !force {
-            bail!(
-                "{} already exists; pass --force to overwrite it",
-                out_path.display()
-            );
-        }
+        refuse_existing(out_path, force)?;
         let file = fs::File::create(out_path)
             .with_context(|| format!("creating {}", out_path.display()))?;
         writer
@@ -889,12 +899,7 @@ fn assemble(path: &Path, out_path: &Path, force: bool, format: Format) -> anyhow
         io::stdout().lock().write_all(&assembled.text)?;
         "<stdout>".to_owned()
     } else {
-        if out_path.exists() && !force {
-            bail!(
-                "{} already exists; pass --force to overwrite it",
-                out_path.display()
-            );
-        }
+        refuse_existing(out_path, force)?;
         fs::write(out_path, &assembled.text)
             .with_context(|| format!("writing {}", out_path.display()))?;
         out_path.display().to_string()
@@ -1022,8 +1027,9 @@ fn change_name(kind: ChangeKind) -> &'static str {
     }
 }
 
-fn or_none(value: Option<&String>) -> &str {
-    value.map_or("(none)", String::as_str)
+/// A value for the diff table, on one line; `(none)` where it is missing.
+fn or_none(value: Option<&String>) -> String {
+    value.map_or_else(|| "(none)".to_owned(), |value| one_line(value))
 }
 
 fn write_diff_table(out: &mut impl Write, old: &str, new: &str, diff: &Diff) -> io::Result<()> {
@@ -1092,15 +1098,15 @@ fn write_diff_table(out: &mut impl Write, old: &str, new: &str, diff: &Diff) -> 
         writeln!(out, "Properties")?;
         for change in &diff.properties {
             let product = if change.product.is_empty() {
-                "(no product)"
+                "(no product)".to_owned()
             } else {
-                &change.product
+                one_line(&change.product)
             };
             writeln!(
                 out,
                 "  {} {product}: {}: {} → {}",
                 change_mark(change.kind),
-                change.property,
+                one_line(&change.property),
                 or_none(change.old.as_ref()),
                 or_none(change.new.as_ref())
             )?;
@@ -1247,9 +1253,9 @@ fn value_text(label: &str, value: &Value) -> String {
         .as_deref()
         .filter(|n| !n.is_empty() && *n != label)
     {
-        let _ = write!(text, " / {name}");
+        let _ = write!(text, " / {}", one_line(name));
     }
-    let _ = write!(text, " = {}", value.value);
+    let _ = write!(text, " = {}", one_line(&value.value));
     let suffix = match (&value.measure, value.unit) {
         _ if value.value.starts_with('#') => None,
         (Some(measure), Some(unit)) => Some(format!("{measure}, unit #{unit}")),
@@ -1282,12 +1288,17 @@ fn write_props_table(
     for property in properties {
         let group = props_group(structure, property.subject.product_definition);
         let label = property.label();
+        let shown = if label.trim().is_empty() {
+            "(unnamed)".to_owned()
+        } else {
+            one_line(label)
+        };
         let kind = PropsKind::of(property).name();
         if property.values.is_empty() {
             rows.push((
                 group,
                 property.instance,
-                format!("  {kind:<10}  {label}{}", on(&property.subject)),
+                format!("  {kind:<10}  {shown}{}", on(&property.subject)),
             ));
         }
         for value in &property.values {
@@ -1296,7 +1307,7 @@ fn write_props_table(
                 group,
                 property.instance,
                 format!(
-                    "  {kind:<10}  {label}{}{}",
+                    "  {kind:<10}  {shown}{}{}",
                     value_text(label, value),
                     on(&property.subject)
                 ),
@@ -1310,7 +1321,7 @@ fn write_props_table(
             format!(
                 "  {:<10}  {}{}",
                 "id",
-                identifier.id,
+                one_line(&identifier.id),
                 on(&identifier.subject)
             ),
         ));
@@ -1432,11 +1443,16 @@ fn entity_types(exchange: &Exchange<'_>, instance: &Instance) -> Vec<String> {
         .collect()
 }
 
+/// `text` on one line for a table: every run of whitespace, line breaks
+/// included, collapsed to one space, and none at either end.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// An instance's text on one line: whitespace runs collapsed and, unless
 /// `full`, cut to [`TEXT_LIMIT`] characters.
 fn instance_line(exchange: &Exchange<'_>, instance: &Instance, full: bool) -> String {
-    let text = String::from_utf8_lossy(exchange.text(instance));
-    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = one_line(&String::from_utf8_lossy(exchange.text(instance)));
     if full || line.chars().count() <= TEXT_LIMIT {
         line
     } else {
@@ -2112,6 +2128,8 @@ fn split(
         bail!("{name} has no product definitions to split");
     }
 
+    // Plan every output, body files included, before writing any: an
+    // existing file must stop the split before it has written anything.
     let mut used = std::collections::HashSet::new();
     let mut plans = Vec::with_capacity(definitions.len());
     for (index, definition) in definitions.iter().enumerate() {
@@ -2120,22 +2138,33 @@ fn split(
             .context("product definition missing from the graph")?;
         let file = output_name(definition, &mut used);
         let target = dir.join(&file);
-        if target.exists() && !force {
-            bail!(
-                "{} already exists; use --force to overwrite",
-                target.display()
-            );
+        refuse_existing(&target, force)?;
+        let extraction = stepq::model::extract(&graph, &[node]);
+        let is_assembly = structure.children(index).len() > 0;
+        let solids: Vec<usize> = if mode.bodies && !is_assembly {
+            extraction
+                .nodes()
+                .iter()
+                .copied()
+                .filter(|&node| is_solid(&graph, node))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if solids.len() > 1 {
+            let stem = file.trim_end_matches(".stp");
+            for number in 1..=solids.len() {
+                refuse_existing(&dir.join(body_file_name(stem, number)), force)?;
+            }
         }
-        plans.push((index, node, file, target));
+        plans.push((index, node, file, target, extraction, is_assembly, solids));
     }
 
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let files: Vec<String> = plans.iter().map(|(_, _, file, _)| file.clone()).collect();
+    let files: Vec<String> = plans.iter().map(|plan| plan.2.clone()).collect();
     let mut extractions = Vec::with_capacity(plans.len());
     let mut written = Vec::with_capacity(plans.len());
-    for (index, node, file, target) in plans {
-        let extraction = stepq::model::extract(&graph, &[node]);
-        let is_assembly = structure.children(index).len() > 0;
+    for (index, node, file, target, extraction, is_assembly, solids) in plans {
         let output =
             fs::File::create(&target).with_context(|| format!("creating {}", target.display()))?;
         let (file_kind, instances, pruned) = if mode.master && is_assembly {
@@ -2166,16 +2195,6 @@ fn split(
             pruned,
         });
 
-        let solids: Vec<usize> = if mode.bodies && !is_assembly {
-            extraction
-                .nodes()
-                .iter()
-                .copied()
-                .filter(|&node| is_solid(&graph, node))
-                .collect()
-        } else {
-            Vec::new()
-        };
         if solids.len() > 1 {
             written.extend(write_bodies(
                 &graph,
@@ -2183,7 +2202,6 @@ fn split(
                 &solids,
                 &stem,
                 dir,
-                force,
                 &definitions[index],
             )?);
         }
@@ -2233,7 +2251,12 @@ fn write_split_report(
             writeln!(out, "wrote {} files to {}", written.len(), dir.display())?;
             if let Some(orphans) = orphans {
                 let total: usize = orphans.iter().map(|(_, count)| count).sum();
-                writeln!(out, "{} instances are in no output", grouped(total))?;
+                let (noun, verb) = if total == 1 {
+                    ("instance", "is")
+                } else {
+                    ("instances", "are")
+                };
+                writeln!(out, "{} {noun} {verb} in no output", grouped(total))?;
                 for (entity, count) in orphans {
                     writeln!(out, "{:>10}  {entity}", grouped(*count))?;
                 }
@@ -2314,29 +2337,39 @@ fn output_name(definition: &Definition, used: &mut std::collections::HashSet<Str
     file
 }
 
+/// Fails if `target` exists and `force` was not given.
+fn refuse_existing(target: &Path, force: bool) -> anyhow::Result<()> {
+    if target.exists() && !force {
+        bail!(
+            "{} already exists; pass --force to overwrite it",
+            target.display()
+        );
+    }
+    Ok(())
+}
+
+/// `<stem>.body-<number>.stp`, numbered from 1.
+fn body_file_name(stem: &str, number: usize) -> String {
+    format!("{stem}.body-{number}.stp")
+}
+
 /// Writes `<stem>.body-<n>.stp` into `dir` for each of a part's `solids`:
 /// the part definition at `node`, extracted with its other solids left out.
+/// The caller has checked that the files may be written.
 fn write_bodies<'d>(
     graph: &Graph<'_>,
     node: usize,
     solids: &[usize],
     stem: &str,
     dir: &Path,
-    force: bool,
     definition: &'d Definition,
 ) -> anyhow::Result<Vec<SplitFile<'d>>> {
     let mut written = Vec::with_capacity(solids.len());
-    for (number, &solid) in solids.iter().enumerate() {
+    for (index, &solid) in solids.iter().enumerate() {
         let others: Vec<usize> = solids.iter().copied().filter(|&s| s != solid).collect();
         let body = stepq::model::extract_excluding(graph, &[node], &others);
-        let file = format!("{stem}.body-{}.stp", number + 1);
+        let file = body_file_name(stem, index + 1);
         let target = dir.join(&file);
-        if target.exists() && !force {
-            bail!(
-                "{} already exists; use --force to overwrite",
-                target.display()
-            );
-        }
         let output =
             fs::File::create(&target).with_context(|| format!("creating {}", target.display()))?;
         stepq::p21::Writer::new(graph.exchange())
@@ -3052,10 +3085,17 @@ fn write_bom_tree(
             .filter(|line| !line.is_assembly)
             .map(|line| line.quantity)
             .sum();
+        // The counts are of the whole BOM; say so when the tree hides levels.
+        let hidden = match options.depth {
+            Some(depth) if has_truncated(&tree) => {
+                format!(", including levels below --depth {depth}")
+            }
+            _ => String::new(),
+        };
         writeln!(out)?;
         writeln!(
             out,
-            "{assemblies} {}, {parts} {}, {total} {} in total",
+            "{assemblies} {}, {parts} {}, {total} {} in total{hidden}",
             if assemblies == 1 {
                 "sub-assembly"
             } else {
@@ -3080,6 +3120,11 @@ fn write_bom_tree(
         )?;
     }
     Ok(())
+}
+
+/// True if `node` or anything below it has components that were cut off.
+fn has_truncated(node: &BomNode) -> bool {
+    node.truncated || node.components.iter().any(has_truncated)
 }
 
 /// One row per line of the multi-level BOM, with level and item number.
