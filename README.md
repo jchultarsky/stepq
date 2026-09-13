@@ -15,7 +15,7 @@ That constraint is the point: every entity that describes your geometry
 comes out exactly as it went in, byte for byte, with its original names,
 colours, layers, properties and PMI attached.
 
-> **Status: 0.3, early.** The Part 21 parser, reference graph, writer and
+> **Status: 0.4, early.** The Part 21 parser, reference graph, writer and
 > EXPRESS schema reader are in place, and `stepq info`, `tree`, `bom`,
 > `split` (with `--bodies` and `--master`), `assemble`, `lint`, `refs`,
 > `query`, `props`, `diff`, `strip` and `pmi` work. The
@@ -115,7 +115,7 @@ As a library, without the CLI dependencies:
 
 ```toml
 [dependencies]
-stepq = { version = "0.3", default-features = false }
+stepq = { version = "0.4", default-features = false }
 ```
 
 ## Supported input

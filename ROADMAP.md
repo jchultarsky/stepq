@@ -6,7 +6,8 @@ kernel; that is the constraint that keeps the project finishable.
 0.1.0 contains the parser, structure and split milestones below; 0.2.0
 adds the inspect milestone and 0.3.0 the reshape milestone. A few items
 in the earlier milestones shipped later — the multi-level `bom` and
-persistent identifiers in 0.2.0, `split --bodies` in 0.3.0; see
+persistent identifiers in 0.2.0, `split --bodies` in 0.3.0, and the grown
+rule table, which completes the split milestone, in 0.4.0; see
 [CHANGELOG.md](CHANGELOG.md). Open items carry over.
 
 ## Parser
