@@ -51,6 +51,10 @@ pub struct Rule {
     pub partial: Option<(&'static str, usize)>,
     /// Owned or shared.
     pub kind: RuleKind,
+    /// For shared rules: list items of these entity types are followed even
+    /// though the list is not — presentation that exists only as an item of
+    /// the aggregate (a draughting model's cameras). Empty for most rules.
+    pub follow: &'static [&'static str],
 }
 
 const fn owned(
@@ -65,6 +69,7 @@ const fn owned(
         simple,
         partial,
         kind: RuleKind::Owned,
+        follow: &[],
     }
 }
 
@@ -74,12 +79,23 @@ const fn shared(
     simple: usize,
     partial: Option<(&'static str, usize)>,
 ) -> Rule {
+    shared_following(entities, attribute, simple, partial, &[])
+}
+
+const fn shared_following(
+    entities: &'static [&'static str],
+    attribute: &'static str,
+    simple: usize,
+    partial: Option<(&'static str, usize)>,
+    follow: &'static [&'static str],
+) -> Rule {
     Rule {
         entities,
         attribute,
         simple,
         partial,
         kind: RuleKind::Shared,
+        follow,
     }
 }
 
@@ -108,6 +124,7 @@ const SHAPE_ASPECTS: &[&str] = &[
     "PLACED_DATUM_TARGET_FEATURE",
     "SYMMETRIC_SHAPE_ASPECT",
     "TANGENT",
+    "TOLERANCE_ZONE",
 ];
 
 const SHAPE_ASPECT_RELATIONSHIPS: &[&str] = &[
@@ -115,6 +132,7 @@ const SHAPE_ASPECT_RELATIONSHIPS: &[&str] = &[
     "ANGULAR_LOCATION",
     "DIMENSIONAL_LOCATION",
     "DIMENSIONAL_LOCATION_WITH_PATH",
+    "DIRECTED_DIMENSIONAL_LOCATION",
     "FEATURE_FOR_DATUM_TARGET_RELATIONSHIP",
     "SHAPE_ASPECT_DERIVING_RELATIONSHIP",
 ];
@@ -142,6 +160,15 @@ const GEOMETRIC_TOLERANCES: &[&str] = &[
     "SYMMETRY_TOLERANCE",
     "TOTAL_RUNOUT_TOLERANCE",
     "UNEQUALLY_DISPOSED_GEOMETRIC_TOLERANCE",
+];
+
+/// Links from semantic PMI (or other definitions) to the presentation that
+/// shows it.
+const ASSOCIATIONS: &[&str] = &[
+    "ITEM_IDENTIFIED_REPRESENTATION_USAGE",
+    "DRAUGHTING_MODEL_ITEM_ASSOCIATION",
+    "DRAUGHTING_MODEL_ITEM_ASSOCIATION_WITH_PLACEHOLDER",
+    "GEOMETRIC_ITEM_SPECIFIC_USAGE",
 ];
 
 /// The closure rule table. Positions are those of the long-form schemas
@@ -196,6 +223,74 @@ pub const RULES: &[Rule] = &[
         2,
         Some(("STYLED_ITEM", 1)),
     ),
+    // PMI presentation: the plane an annotation is placed on belongs to the
+    // callouts it holds, and a saved view (camera) and the draughting model
+    // that links presentation to semantic PMI belong to the draughting model
+    // those callouts are extracted with.
+    owned(
+        &["ANNOTATION_PLANE"],
+        "elements",
+        3,
+        Some(("ANNOTATION_PLANE", 0)),
+    ),
+    owned(
+        &["MECHANICAL_DESIGN_AND_DRAUGHTING_RELATIONSHIP"],
+        "rep_2",
+        3,
+        Some(("REPRESENTATION_RELATIONSHIP", 3)),
+    ),
+    owned(
+        &["MODEL_GEOMETRIC_VIEW", "DEFAULT_MODEL_GEOMETRIC_VIEW"],
+        "rep",
+        3,
+        Some(("CHARACTERIZED_ITEM_WITHIN_REPRESENTATION", 1)),
+    ),
+    // The default view of a shape is also a shape aspect of it; its second
+    // supertype puts `of_shape` after the view's four attributes.
+    owned(
+        &["DEFAULT_MODEL_GEOMETRIC_VIEW"],
+        "of_shape",
+        6,
+        Some(("SHAPE_ASPECT", 2)),
+    ),
+    // Saved views (AP242): a camera used by an extracted draughting model.
+    owned(
+        &["CAMERA_USAGE"],
+        "mapped_representation",
+        1,
+        Some(("REPRESENTATION_MAP", 1)),
+    ),
+    // Validation properties of one annotation (AP242: its text, curve
+    // length, number of points) hang off this link to the callout.
+    owned(
+        &["CHARACTERIZED_ITEM_WITHIN_REPRESENTATION"],
+        "item",
+        2,
+        Some(("CHARACTERIZED_ITEM_WITHIN_REPRESENTATION", 0)),
+    ),
+    // Saved views (Creo): a product's presentation set, through its
+    // presentation areas, holds views of the product's draughting model.
+    // Each set, area and view belongs to one product.
+    owned(
+        &["PRESENTED_ITEM_REPRESENTATION"],
+        "item",
+        1,
+        Some(("PRESENTED_ITEM_REPRESENTATION", 1)),
+    ),
+    owned(&["AREA_IN_SET"], "in_set", 1, Some(("AREA_IN_SET", 1))),
+    owned(
+        &["PRESENTATION_SIZE"],
+        "unit",
+        0,
+        Some(("PRESENTATION_SIZE", 0)),
+    ),
+    // Supplemental geometry (datum planes, axes, sketches) of a shape.
+    owned(
+        &["CONSTRUCTIVE_GEOMETRY_REPRESENTATION_RELATIONSHIP"],
+        "rep_1",
+        2,
+        Some(("REPRESENTATION_RELATIONSHIP", 2)),
+    ),
     // PMI: shape aspects, dimensions, tolerances and their associations.
     owned(SHAPE_ASPECTS, "of_shape", 2, Some(("SHAPE_ASPECT", 2))),
     owned(
@@ -228,6 +323,19 @@ pub const RULES: &[Rule] = &[
         0,
         Some(("DIMENSIONAL_CHARACTERISTIC_REPRESENTATION", 0)),
     ),
+    // How a PMI value is displayed (decimal places, format).
+    owned(
+        &["MEASURE_QUALIFICATION"],
+        "qualified_measure",
+        2,
+        Some(("MEASURE_QUALIFICATION", 2)),
+    ),
+    owned(
+        &["DRAUGHTING_CALLOUT_RELATIONSHIP"],
+        "relating_draughting_callout",
+        2,
+        Some(("DRAUGHTING_CALLOUT_RELATIONSHIP", 2)),
+    ),
     // Metadata owned by what it describes.
     owned(
         &["NAME_ATTRIBUTE"],
@@ -248,6 +356,19 @@ pub const RULES: &[Rule] = &[
         "described_item",
         1,
         Some(("DESCRIPTION_ATTRIBUTE", 1)),
+    ),
+    // An address belongs to the people or organizations it lists.
+    owned(
+        &["PERSONAL_ADDRESS"],
+        "people",
+        12,
+        Some(("PERSONAL_ADDRESS", 0)),
+    ),
+    owned(
+        &["ORGANIZATIONAL_ADDRESS"],
+        "organizations",
+        12,
+        Some(("ORGANIZATIONAL_ADDRESS", 0)),
     ),
     owned(
         &["APPROVAL_DATE_TIME"],
@@ -273,13 +394,46 @@ pub const RULES: &[Rule] = &[
         1,
         Some(("PLUS_MINUS_TOLERANCE", 1)),
     ),
+    // Composite tolerances and projected or runout tolerance zones.
+    owned(
+        &["GEOMETRIC_TOLERANCE_RELATIONSHIP"],
+        "relating_geometric_tolerance",
+        2,
+        Some(("GEOMETRIC_TOLERANCE_RELATIONSHIP", 2)),
+    ),
     owned(
         &[
-            "ITEM_IDENTIFIED_REPRESENTATION_USAGE",
-            "DRAUGHTING_MODEL_ITEM_ASSOCIATION",
-            "DRAUGHTING_MODEL_ITEM_ASSOCIATION_WITH_PLACEHOLDER",
-            "GEOMETRIC_ITEM_SPECIFIC_USAGE",
+            "TOLERANCE_ZONE_DEFINITION",
+            "PROJECTED_ZONE_DEFINITION",
+            "NON_UNIFORM_ZONE_DEFINITION",
+            "RUNOUT_ZONE_DEFINITION",
         ],
+        "zone",
+        0,
+        Some(("TOLERANCE_ZONE_DEFINITION", 0)),
+    ),
+    // Standards a product refers to, as documents (External References
+    // recommended practice, "document as product").
+    owned(
+        &["PRODUCT_DEFINITION_CONTEXT_ASSOCIATION"],
+        "definition",
+        0,
+        Some(("PRODUCT_DEFINITION_CONTEXT_ASSOCIATION", 0)),
+    ),
+    owned(
+        &["ROLE_ASSOCIATION"],
+        "item_with_role",
+        1,
+        Some(("ROLE_ASSOCIATION", 1)),
+    ),
+    owned(
+        &["DOCUMENT_PRODUCT_EQUIVALENCE"],
+        "relating_document",
+        2,
+        Some(("DOCUMENT_PRODUCT_ASSOCIATION", 2)),
+    ),
+    owned(
+        ASSOCIATIONS,
         "definition",
         2,
         Some(("ITEM_IDENTIFIED_REPRESENTATION_USAGE", 2)),
@@ -311,13 +465,34 @@ pub const RULES: &[Rule] = &[
         Some(("PRESENTATION_LAYER_ASSIGNMENT", 2)),
     ),
     shared(
-        &[
-            "MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION",
-            "DRAUGHTING_MODEL",
-        ],
+        &["MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION"],
         "items",
         1,
         Some(("REPRESENTATION", 1)),
+    ),
+    // A draughting model lists the presentation of many PMI elements, but
+    // its saved views (cameras), the shapes shown in them (mapped items) and
+    // its notes exist only as its items. Annotation planes whose elements
+    // are associated with semantic PMI are left to that PMI's product.
+    shared_following(
+        &["DRAUGHTING_MODEL"],
+        "items",
+        1,
+        Some(("REPRESENTATION", 1)),
+        &[
+            "CAMERA_MODEL_D2",
+            "CAMERA_MODEL_D3",
+            "CAMERA_MODEL_D3_MULTI_CLIPPING",
+            "CAMERA_MODEL_D3_WITH_HLHSR",
+            "MAPPED_ITEM",
+            "ANNOTATION_PLANE",
+        ],
+    ),
+    shared(
+        &["APPLIED_PRESENTED_ITEM"],
+        "items",
+        0,
+        Some(("APPLIED_PRESENTED_ITEM", 0)),
     ),
     shared(
         &["INVISIBILITY"],
@@ -440,6 +615,7 @@ pub fn extract_excluding(graph: &Graph<'_>, seeds: &[usize], excluded: &[usize])
             State::Shared(rule) => {
                 targets.clear();
                 references_outside(exchange, instance, rule, &mut targets);
+                followed_items(graph, instance, rule, &mut targets);
                 for &id in &targets {
                     if let Some(target) = graph.node(id) {
                         take(target, &mut state, &mut queue);
@@ -498,6 +674,45 @@ pub fn orphans(graph: &Graph<'_>, extractions: &[Extraction]) -> Vec<usize> {
         }
     }
     (0..graph.len()).filter(|&node| !taken[node]).collect()
+}
+
+/// The `orphans` that no other instance refers to, directly or through
+/// other orphans: data nothing uses, such as colours no style refers to.
+/// The other orphans are left behind — something outside the orphans still
+/// refers to them, for example an extracted aggregate whose list dropped
+/// them — and are the ones a new rule could place.
+///
+/// # Panics
+///
+/// Panics if an orphan is not a node of `graph`.
+pub fn unreachable(graph: &Graph<'_>, orphans: &[usize]) -> Vec<usize> {
+    let mut orphan = vec![false; graph.len()];
+    for &node in orphans {
+        orphan[node] = true;
+    }
+    let mut reached = vec![false; graph.len()];
+    let mut queue = VecDeque::new();
+    let reach = |target: usize, reached: &mut [bool], queue: &mut VecDeque<usize>| {
+        if orphan[target] && !reached[target] {
+            reached[target] = true;
+            queue.push_back(target);
+        }
+    };
+    for node in (0..graph.len()).filter(|&node| !orphan[node]) {
+        for &target in graph.references(node) {
+            reach(target, &mut reached, &mut queue);
+        }
+    }
+    while let Some(node) = queue.pop_front() {
+        for &target in graph.references(node) {
+            reach(target, &mut reached, &mut queue);
+        }
+    }
+    orphans
+        .iter()
+        .copied()
+        .filter(|&node| !reached[node])
+        .collect()
 }
 
 /// The rule under which `instance` would join an extraction containing
@@ -577,6 +792,52 @@ fn references_outside(
             if !skipped {
                 collect_references(&param, out);
             }
+        }
+    }
+}
+
+/// The items of a shared aggregate's list that its rule follows: items of a
+/// `follow` type, except annotation planes whose elements semantic PMI is
+/// associated with.
+fn followed_items(graph: &Graph<'_>, instance: &Instance, rule: &Rule, out: &mut Vec<u64>) {
+    if rule.follow.is_empty() {
+        return;
+    }
+    let exchange = graph.exchange();
+    let Some(list) = rule_param(exchange, instance, rule) else {
+        return;
+    };
+    let mut items = Vec::new();
+    collect_references(&list, &mut items);
+    let is_association = |node: usize| {
+        exchange.records(graph.instance(node)).any(|record| {
+            ASSOCIATIONS
+                .iter()
+                .any(|association| record.is(association))
+        })
+    };
+    for id in items {
+        let Some(node) = graph.node(id) else {
+            continue;
+        };
+        let mut records = exchange.records(graph.instance(node));
+        if !records
+            .clone()
+            .any(|record| rule.follow.iter().any(|entity| record.is(entity)))
+        {
+            continue;
+        }
+        let plane = records.any(|record| record.is("ANNOTATION_PLANE"));
+        let associated = || {
+            graph.references(node).iter().any(|&element| {
+                graph
+                    .referenced_by(element)
+                    .iter()
+                    .any(|&referrer| is_association(referrer))
+            })
+        };
+        if !plane || !associated() {
+            out.push(id);
         }
     }
 }
@@ -715,11 +976,123 @@ ENDSEC;END-ISO-10303-21;";
     }
 
     #[test]
+    fn saved_views_and_addresses_go_with_their_product() {
+        // Part C with a saved view (presentation set, area) and a person
+        // with an address assigned to it; colour #400 is used by nothing.
+        let src = "ISO-10303-21;HEADER;FILE_SCHEMA(('AP214'));ENDSEC;DATA;
+#1=APPLICATION_CONTEXT('design');
+#3=PRODUCT_CONTEXT('',#1,'mechanical');
+#4=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');
+#31=PRODUCT('C','bolt','',(#3));
+#32=PRODUCT_DEFINITION_FORMATION('1','',#31);
+#30=PRODUCT_DEFINITION('c','',#32,#4);
+#90=GEOMETRIC_REPRESENTATION_CONTEXT(2);
+#200=APPLIED_PRESENTED_ITEM((#30));
+#201=PRESENTATION_SET();
+#202=PRESENTED_ITEM_REPRESENTATION(#201,#200);
+#203=PRESENTATION_AREA('',(#205),#90);
+#204=AREA_IN_SET(#203,#201);
+#205=PLANAR_BOX('',1.,1.,#206);
+#206=AXIS2_PLACEMENT_2D('',#207,$);
+#207=CARTESIAN_POINT('',(0.,0.));
+#300=PERSON('p','Smith',$,$,$,$);
+#301=PERSONAL_ADDRESS($,$,$,$,$,$,$,'US',$,$,$,$,(#300),$);
+#302=ORGANIZATION('o','Org',$);
+#303=PERSON_AND_ORGANIZATION(#300,#302);
+#304=PERSON_AND_ORGANIZATION_ROLE('creator');
+#305=APPLIED_PERSON_AND_ORGANIZATION_ASSIGNMENT(#303,#304,(#30));
+#400=COLOUR_RGB('',0.,0.,1.);
+ENDSEC;END-ISO-10303-21;";
+        let graph = Graph::new(parse(src.as_bytes()).unwrap()).unwrap();
+        let extraction = extract(&graph, &[graph.node(30).unwrap()]);
+        assert_eq!(
+            ids(&graph, extraction.nodes()),
+            [
+                1, 3, 4, 30, 31, 32, 90, 200, 201, 202, 203, 204, 205, 206, 207, 300, 301, 302,
+                303, 304, 305
+            ]
+        );
+        assert_eq!(ids(&graph, extraction.pruned()), [200, 305]);
+        assert_eq!(ids(&graph, &orphans(&graph, &[extraction])), [400]);
+    }
+
+    #[test]
+    fn a_draughting_model_brings_views_and_notes_but_not_other_products_pmi() {
+        // Parts C and D share draughting model #500. C owns face #400 with
+        // callout #531; D owns face #402 with callout #541. The model also
+        // holds a camera, a mapped item of C's shape and a plane of notes
+        // no PMI is associated with.
+        let src = "ISO-10303-21;HEADER;FILE_SCHEMA(('AP242'));ENDSEC;DATA;
+#1=APPLICATION_CONTEXT('design');
+#3=PRODUCT_CONTEXT('',#1,'mechanical');
+#4=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');
+#31=PRODUCT('C','bolt','',(#3));
+#32=PRODUCT_DEFINITION_FORMATION('1','',#31);
+#30=PRODUCT_DEFINITION('c','',#32,#4);
+#34=PRODUCT('D','nut','',(#3));
+#35=PRODUCT_DEFINITION_FORMATION('1','',#34);
+#33=PRODUCT_DEFINITION('d','',#35,#4);
+#52=SHAPE_REPRESENTATION('c',(#60),#90);
+#60=AXIS2_PLACEMENT_3D('',#61,$,$);
+#61=CARTESIAN_POINT('',(0.,0.,0.));
+#72=PRODUCT_DEFINITION_SHAPE('','',#30);
+#73=PRODUCT_DEFINITION_SHAPE('','',#33);
+#82=SHAPE_DEFINITION_REPRESENTATION(#72,#52);
+#90=GEOMETRIC_REPRESENTATION_CONTEXT(3);
+#400=SHAPE_ASPECT('face','',#72,.F.);
+#401=DRAUGHTING_MODEL_ITEM_ASSOCIATION('a','',#400,#500,#531);
+#402=SHAPE_ASPECT('face','',#73,.F.);
+#403=DRAUGHTING_MODEL_ITEM_ASSOCIATION('b','',#402,#500,#541);
+#500=DRAUGHTING_MODEL('MBD',(#501,#510,#520,#530,#540),#90);
+#501=CAMERA_MODEL_D3('view',#60,#502);
+#502=VIEW_VOLUME(.PARALLEL.,#61,1.,0.,.F.,0.,.F.,.T.,#503);
+#503=PLANAR_BOX('',1.,1.,#60);
+#510=MAPPED_ITEM('',#511,#60);
+#511=REPRESENTATION_MAP(#60,#52);
+#520=ANNOTATION_PLANE('notes',(),#521,(#522));
+#521=PLANE('',#60);
+#522=ANNOTATION_OCCURRENCE('note',(),#523);
+#523=GEOMETRIC_CURVE_SET('',(#61));
+#530=ANNOTATION_PLANE('pmi c',(),#521,(#531));
+#531=DRAUGHTING_CALLOUT('c',(#532));
+#532=ANNOTATION_OCCURRENCE('dim c',(),#523);
+#540=ANNOTATION_PLANE('pmi d',(),#521,(#541));
+#541=DRAUGHTING_CALLOUT('d',(#542));
+#542=ANNOTATION_OCCURRENCE('dim d',(),#543);
+#543=GEOMETRIC_CURVE_SET('',(#61));
+ENDSEC;END-ISO-10303-21;";
+        let graph = Graph::new(parse(src.as_bytes()).unwrap()).unwrap();
+        let c = extract(&graph, &[graph.node(30).unwrap()]);
+        assert_eq!(
+            ids(&graph, c.nodes()),
+            [
+                1, 3, 4, 30, 31, 32, 52, 60, 61, 72, 82, 90, 400, 401, 500, 501, 502, 503, 510,
+                511, 520, 521, 522, 523, 530, 531, 532
+            ]
+        );
+        assert_eq!(ids(&graph, c.pruned()), [500]);
+        let d = extract(&graph, &[graph.node(33).unwrap()]);
+        for taken in [402, 403, 540, 541, 542, 543, 520, 501] {
+            assert!(d.contains(graph.node(taken).unwrap()), "#{taken}");
+        }
+        assert!(!d.contains(graph.node(530).unwrap()));
+    }
+
+    #[test]
     fn orphans_are_what_no_extraction_takes() {
         let graph = graph();
         let part = extract(&graph, &[graph.node(30).unwrap()]);
-        let orphaned = ids(&graph, &orphans(&graph, &[part]));
-        assert_eq!(orphaned, [10, 11, 12, 50, 70, 80, 100, 101, 102, 103, 104]);
+        let orphaned = orphans(&graph, &[part]);
+        assert_eq!(
+            ids(&graph, &orphaned),
+            [10, 11, 12, 50, 70, 80, 100, 101, 102, 103, 104]
+        );
+        // Only product A is still referred to from outside, by the category
+        // C was extracted with; the rest of A's side nothing extracted uses.
+        assert_eq!(
+            ids(&graph, &unreachable(&graph, &orphaned)),
+            [10, 12, 50, 70, 80, 100, 101, 102, 103, 104]
+        );
     }
 
     #[test]

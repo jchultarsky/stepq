@@ -2208,18 +2208,33 @@ fn split(
         extractions.push(extraction);
     }
 
-    let orphans: Vec<(String, usize)> = if report_orphans {
-        orphan_types(&graph, &stepq::model::orphans(&graph, &extractions))
-    } else {
-        Vec::new()
-    };
+    let orphans = report_orphans.then(|| Orphans::of(&graph, &extractions));
+    write_split_report(dir, format, &written, orphans.as_ref())
+}
 
-    write_split_report(
-        dir,
-        format,
-        &written,
-        report_orphans.then_some(orphans.as_slice()),
-    )
+/// The instances no split output holds, as entity types with counts: all
+/// of them, those something still refers to, and those nothing does.
+struct Orphans {
+    all: Vec<(String, usize)>,
+    left_behind: Vec<(String, usize)>,
+    unreferenced: Vec<(String, usize)>,
+}
+
+impl Orphans {
+    fn of(graph: &Graph<'_>, extractions: &[stepq::model::Extraction]) -> Self {
+        let nodes = stepq::model::orphans(graph, extractions);
+        let unreferenced = stepq::model::unreachable(graph, &nodes);
+        let left_behind: Vec<usize> = nodes
+            .iter()
+            .copied()
+            .filter(|node| unreferenced.binary_search(node).is_err())
+            .collect();
+        Self {
+            all: orphan_types(graph, &nodes),
+            left_behind: orphan_types(graph, &left_behind),
+            unreferenced: orphan_types(graph, &unreferenced),
+        }
+    }
 }
 
 /// Prints what `stepq split` wrote, and the orphans when asked for.
@@ -2227,7 +2242,7 @@ fn write_split_report(
     dir: &Path,
     format: Format,
     written: &[SplitFile<'_>],
-    orphans: Option<&[(String, usize)]>,
+    orphans: Option<&Orphans>,
 ) -> anyhow::Result<()> {
     let mut out = BufWriter::new(io::stdout().lock());
     match format {
@@ -2250,15 +2265,27 @@ fn write_split_report(
             writeln!(out)?;
             writeln!(out, "wrote {} files to {}", written.len(), dir.display())?;
             if let Some(orphans) = orphans {
-                let total: usize = orphans.iter().map(|(_, count)| count).sum();
-                let (noun, verb) = if total == 1 {
+                let total = |types: &[(String, usize)]| -> usize {
+                    types.iter().map(|(_, count)| count).sum()
+                };
+                let all = total(&orphans.all);
+                let (noun, verb) = if all == 1 {
                     ("instance", "is")
                 } else {
                     ("instances", "are")
                 };
-                writeln!(out, "{} {noun} {verb} in no output", grouped(total))?;
-                for (entity, count) in orphans {
-                    writeln!(out, "{:>10}  {entity}", grouped(*count))?;
+                writeln!(out, "{} {noun} {verb} in no output", grouped(all))?;
+                for (heading, types) in [
+                    ("left behind", &orphans.left_behind),
+                    ("referenced by nothing", &orphans.unreferenced),
+                ] {
+                    if types.is_empty() {
+                        continue;
+                    }
+                    writeln!(out, "  {heading}: {}", grouped(total(types)))?;
+                    for (entity, count) in types {
+                        writeln!(out, "{:>10}  {entity}", grouped(*count))?;
+                    }
                 }
             }
         }
@@ -2269,13 +2296,18 @@ fn write_split_report(
                 files: &'a [SplitFile<'a>],
                 #[serde(skip_serializing_if = "Option::is_none")]
                 orphans: Option<&'a [(String, usize)]>,
+                /// The orphans nothing refers to, directly or through other
+                /// orphans.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                unreferenced: Option<&'a [(String, usize)]>,
             }
             serde_json::to_writer_pretty(
                 &mut out,
                 &Report {
                     directory: dir.display().to_string(),
                     files: written,
-                    orphans,
+                    orphans: orphans.map(|o| o.all.as_slice()),
+                    unreferenced: orphans.map(|o| o.unreferenced.as_slice()),
                 },
             )?;
             writeln!(out)?;

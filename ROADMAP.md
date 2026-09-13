@@ -53,15 +53,13 @@ persistent identifiers in 0.2.0, `split --bodies` in 0.3.0; see
 - [x] `stepq split --bodies` — multi-body products into one file per solid.
 - [x] `--report-orphans`: list the entity types, with counts, of every
       instance left outside all outputs.
-- [ ] Grow the rule table from the orphan reports. Persistent identifiers
-      are done (orphaned `id_attribute`s on the core fixtures: 3,298 → 55).
-      On every fixture under 16 MB, `split --report-orphans` leaves 43,534
-      instances in no output, none of them solids: PMI presentation on NIST
-      AP242 and AP203 (annotation planes, camera models, tessellated and
-      polyline annotation, 1,164 `coordinates_list`), saved views on the
-      Creo Open Rack files (`draughting_model`, `camera_usage`,
-      `constructive_geometry_representation`, their points and
-      directions), and moon buggy's 186 `personal_address`es.
+- [x] Grow the rule table from the orphan reports: PMI presentation, saved
+      views, supplemental geometry, notes, tolerance zones, composite
+      tolerances, documents, addresses. Instances in no output on the
+      fixtures under 16 MB: 43,534 → 1,559; on all 55 fixtures 2,969 remain,
+      none of them left behind: all are data nothing refers to (unused
+      colours and units), which the report now lists apart
+      (`docs/ARCHITECTURE.md`, "What the rule table covers").
 - [x] `tools/verify-occt.py`: Σ volume(outputs) == volume(input subtree),
       equal solid counts, no lost names or colours. Run in CI on every
       core fixture rewritten by stepq (`tools/verify-rewrite.sh`) and split
