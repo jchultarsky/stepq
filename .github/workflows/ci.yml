@@ -91,10 +91,13 @@ jobs:
         with:
           tool: cargo-fuzz
       # rust-toolchain.toml pins stable; `+nightly` overrides it for cargo-fuzz.
+      # The prebuilt cargo-fuzz defaults to the musl target it was built for,
+      # and AddressSanitizer cannot link against static musl, so name the
+      # glibc target explicitly.
       - name: Fuzz the lexer
-        run: cargo +nightly fuzz run lex -- -max_total_time=60 -dict=${{ github.workspace }}/fuzz/p21.dict
+        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu lex -- -max_total_time=60 -dict=${{ github.workspace }}/fuzz/p21.dict
       - name: Fuzz the parser
-        run: cargo +nightly fuzz run parse -- -max_total_time=60 -dict=${{ github.workspace }}/fuzz/p21.dict
+        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse -- -max_total_time=60 -dict=${{ github.workspace }}/fuzz/p21.dict
       - name: Upload crashing inputs
         if: failure()
         uses: actions/upload-artifact@v4
