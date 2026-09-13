@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use stepq::diff::{ChangeKind, Diff};
 use stepq::express::Schema;
 use stepq::info::Info;
 use stepq::lint::{Check, Report};
@@ -215,6 +216,36 @@ enum Command {
         #[arg(long = "kind", value_enum)]
         kinds: Vec<PropsKind>,
     },
+    /// Compare two STEP files by what they describe.
+    ///
+    /// Instance names differ between exports, so the files are compared by
+    /// header fields and units, entity-type counts, products (matched by
+    /// product id), component quantities per assembly and property values.
+    /// Exits with status 1 if the files differ, 0 if they do not.
+    Diff {
+        /// The first file, or `-` for standard input.
+        old: PathBuf,
+        /// The second file, or `-` for standard input.
+        new: PathBuf,
+        /// Only compare this section. Repeatable.
+        #[arg(long = "section", value_enum)]
+        sections: Vec<DiffSection>,
+    },
+}
+
+/// The sections `stepq diff --section` selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DiffSection {
+    /// Header fields, units and the instance count.
+    Header,
+    /// Instance counts per entity type.
+    Types,
+    /// Products added, removed or changed.
+    Products,
+    /// Component quantities per assembly.
+    Components,
+    /// Property values.
+    Properties,
 }
 
 /// The kinds `stepq props --kind` selects.
@@ -343,6 +374,9 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             cli.format,
         ),
         Command::Props { file, kinds } => props(file, kinds, cli.format),
+        Command::Diff { old, new, sections } => {
+            return diff_files(old, new, sections, cli.format);
+        }
     };
     done.map(|()| ExitCode::SUCCESS)
 }
@@ -414,6 +448,241 @@ fn info(path: &Path, format: Format, top: usize) -> anyhow::Result<()> {
         }
     }
     out.flush()?;
+    Ok(())
+}
+
+fn diff_files(
+    old_path: &Path,
+    new_path: &Path,
+    sections: &[DiffSection],
+    format: Format,
+) -> anyhow::Result<ExitCode> {
+    if old_path == Path::new("-") && new_path == Path::new("-") {
+        bail!("only one of the two files can be standard input");
+    }
+    let (old_name, new_name) = (display_name(old_path), display_name(new_path));
+    let old_src = read_input(old_path)?;
+    let new_src = read_input(new_path)?;
+    let old = Graph::build(parse(&old_src).with_context(|| format!("parsing {old_name}"))?);
+    let new = Graph::build(parse(&new_src).with_context(|| format!("parsing {new_name}"))?);
+
+    let mut diff = stepq::diff::diff(&old, &new);
+    let wants = |section: DiffSection| sections.is_empty() || sections.contains(&section);
+    if !wants(DiffSection::Header) {
+        diff.header.clear();
+    }
+    if !wants(DiffSection::Types) {
+        diff.entity_types.clear();
+    }
+    if !wants(DiffSection::Products) {
+        diff.products.clear();
+    }
+    if !wants(DiffSection::Components) {
+        diff.components.clear();
+    }
+    if !wants(DiffSection::Properties) {
+        diff.properties.clear();
+    }
+
+    let mut out = BufWriter::new(io::stdout().lock());
+    match format {
+        Format::Table | Format::Tree => write_diff_table(&mut out, &old_name, &new_name, &diff)?,
+        Format::Json => {
+            #[derive(serde::Serialize)]
+            struct Document<'a> {
+                old: &'a str,
+                new: &'a str,
+                differences: usize,
+                #[serde(flatten)]
+                diff: &'a Diff,
+            }
+            serde_json::to_writer_pretty(
+                &mut out,
+                &Document {
+                    old: &old_name,
+                    new: &new_name,
+                    differences: diff.len(),
+                    diff: &diff,
+                },
+            )?;
+            writeln!(out)?;
+        }
+        Format::Csv => write_diff_csv(&mut out, &diff)?,
+    }
+    out.flush()?;
+    Ok(if diff.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn change_mark(kind: ChangeKind) -> char {
+    match kind {
+        ChangeKind::Added => '+',
+        ChangeKind::Removed => '-',
+        ChangeKind::Changed => '~',
+    }
+}
+
+fn change_name(kind: ChangeKind) -> &'static str {
+    match kind {
+        ChangeKind::Added => "added",
+        ChangeKind::Removed => "removed",
+        ChangeKind::Changed => "changed",
+    }
+}
+
+fn or_none(value: Option<&String>) -> &str {
+    value.map_or("(none)", String::as_str)
+}
+
+fn write_diff_table(out: &mut impl Write, old: &str, new: &str, diff: &Diff) -> io::Result<()> {
+    writeln!(out, "--- {old}")?;
+    writeln!(out, "+++ {new}")?;
+    writeln!(out)?;
+    if diff.is_empty() {
+        return writeln!(out, "no differences");
+    }
+    if !diff.header.is_empty() {
+        writeln!(out, "Header")?;
+        for change in &diff.header {
+            writeln!(
+                out,
+                "  {}: {} → {}",
+                change.field,
+                or_none(change.old.as_ref()),
+                or_none(change.new.as_ref())
+            )?;
+        }
+    }
+    if !diff.entity_types.is_empty() {
+        writeln!(out, "Entity types")?;
+        for change in &diff.entity_types {
+            let delta = i128::try_from(change.new).unwrap_or(i128::MAX)
+                - i128::try_from(change.old).unwrap_or(i128::MAX);
+            writeln!(
+                out,
+                "  {}: {} → {} ({delta:+})",
+                change.entity_type,
+                grouped(change.old),
+                grouped(change.new)
+            )?;
+        }
+    }
+    if !diff.products.is_empty() {
+        writeln!(out, "Products")?;
+        for change in &diff.products {
+            let mark = change_mark(change.kind);
+            if change.fields.is_empty() {
+                writeln!(out, "  {mark} {}", change.product)?;
+            }
+            for field in &change.fields {
+                writeln!(
+                    out,
+                    "  {mark} {}: {}: {} → {}",
+                    change.product,
+                    field.field,
+                    or_none(field.old.as_ref()),
+                    or_none(field.new.as_ref())
+                )?;
+            }
+        }
+    }
+    if !diff.components.is_empty() {
+        writeln!(out, "Components")?;
+        for change in &diff.components {
+            writeln!(
+                out,
+                "  {} → {}: {} → {}",
+                change.parent, change.child, change.old, change.new
+            )?;
+        }
+    }
+    if !diff.properties.is_empty() {
+        writeln!(out, "Properties")?;
+        for change in &diff.properties {
+            let product = if change.product.is_empty() {
+                "(no product)"
+            } else {
+                &change.product
+            };
+            writeln!(
+                out,
+                "  {} {product}: {}: {} → {}",
+                change_mark(change.kind),
+                change.property,
+                or_none(change.old.as_ref()),
+                or_none(change.new.as_ref())
+            )?;
+        }
+    }
+    writeln!(out)?;
+    let count = diff.len();
+    writeln!(
+        out,
+        "{} difference{}",
+        grouped(count),
+        if count == 1 { "" } else { "s" }
+    )
+}
+
+fn write_diff_csv(out: &mut impl Write, diff: &Diff) -> io::Result<()> {
+    writeln!(out, "section,change,subject,field,old,new")?;
+    let cell = |value: Option<&String>| csv_field(value.map_or("", String::as_str));
+    for change in &diff.header {
+        writeln!(
+            out,
+            "header,changed,,{},{},{}",
+            csv_field(&change.field),
+            cell(change.old.as_ref()),
+            cell(change.new.as_ref())
+        )?;
+    }
+    for change in &diff.entity_types {
+        writeln!(
+            out,
+            "entity_types,changed,{},count,{},{}",
+            change.entity_type, change.old, change.new
+        )?;
+    }
+    for change in &diff.products {
+        let kind = change_name(change.kind);
+        if change.fields.is_empty() {
+            writeln!(out, "products,{kind},{},,,", csv_field(&change.product))?;
+        }
+        for field in &change.fields {
+            writeln!(
+                out,
+                "products,{kind},{},{},{},{}",
+                csv_field(&change.product),
+                csv_field(&field.field),
+                cell(field.old.as_ref()),
+                cell(field.new.as_ref())
+            )?;
+        }
+    }
+    for change in &diff.components {
+        writeln!(
+            out,
+            "components,changed,{},{},{},{}",
+            csv_field(&change.parent),
+            csv_field(&change.child),
+            change.old,
+            change.new
+        )?;
+    }
+    for change in &diff.properties {
+        writeln!(
+            out,
+            "properties,{},{},{},{},{}",
+            change_name(change.kind),
+            csv_field(&change.product),
+            csv_field(&change.property),
+            cell(change.old.as_ref()),
+            cell(change.new.as_ref())
+        )?;
+    }
     Ok(())
 }
 

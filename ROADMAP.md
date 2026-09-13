@@ -60,7 +60,7 @@ milestones below; the open items in them carry over.
 - [x] `stepq query` / `stepq refs`: entity search and reverse lookup.
 - [x] `stepq props`: user-defined attributes, validation properties,
       persistent IDs.
-- [ ] `stepq diff`: structural diff of two files.
+- [x] `stepq diff`: structural diff of two files.
 
 ## Later
 
