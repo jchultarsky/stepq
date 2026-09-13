@@ -108,6 +108,7 @@ const SHAPE_ASPECTS: &[&str] = &[
     "PLACED_DATUM_TARGET_FEATURE",
     "SYMMETRIC_SHAPE_ASPECT",
     "TANGENT",
+    "TOLERANCE_ZONE",
 ];
 
 const SHAPE_ASPECT_RELATIONSHIPS: &[&str] = &[
@@ -196,6 +197,59 @@ pub const RULES: &[Rule] = &[
         2,
         Some(("STYLED_ITEM", 1)),
     ),
+    // PMI presentation: the plane an annotation is placed on belongs to the
+    // callouts it holds, and a saved view (camera) and the draughting model
+    // that links presentation to semantic PMI belong to the draughting model
+    // those callouts are extracted with.
+    owned(
+        &["ANNOTATION_PLANE"],
+        "elements",
+        3,
+        Some(("ANNOTATION_PLANE", 0)),
+    ),
+    owned(
+        &["MECHANICAL_DESIGN_AND_DRAUGHTING_RELATIONSHIP"],
+        "rep_2",
+        3,
+        Some(("REPRESENTATION_RELATIONSHIP", 3)),
+    ),
+    owned(
+        &["MODEL_GEOMETRIC_VIEW"],
+        "rep",
+        3,
+        Some(("CHARACTERIZED_ITEM_WITHIN_REPRESENTATION", 1)),
+    ),
+    // Validation properties of one annotation (AP242: its text, curve
+    // length, number of points) hang off this link to the callout.
+    owned(
+        &["CHARACTERIZED_ITEM_WITHIN_REPRESENTATION"],
+        "item",
+        2,
+        Some(("CHARACTERIZED_ITEM_WITHIN_REPRESENTATION", 0)),
+    ),
+    // Saved views (Creo): a product's presentation set, through its
+    // presentation areas, holds views of the product's draughting model.
+    // Each set, area and view belongs to one product.
+    owned(
+        &["PRESENTED_ITEM_REPRESENTATION"],
+        "item",
+        1,
+        Some(("PRESENTED_ITEM_REPRESENTATION", 1)),
+    ),
+    owned(&["AREA_IN_SET"], "in_set", 1, Some(("AREA_IN_SET", 1))),
+    owned(
+        &["PRESENTATION_SIZE"],
+        "unit",
+        0,
+        Some(("PRESENTATION_SIZE", 0)),
+    ),
+    // Supplemental geometry (datum planes, axes, sketches) of a shape.
+    owned(
+        &["CONSTRUCTIVE_GEOMETRY_REPRESENTATION_RELATIONSHIP"],
+        "rep_1",
+        2,
+        Some(("REPRESENTATION_RELATIONSHIP", 2)),
+    ),
     // PMI: shape aspects, dimensions, tolerances and their associations.
     owned(SHAPE_ASPECTS, "of_shape", 2, Some(("SHAPE_ASPECT", 2))),
     owned(
@@ -228,6 +282,19 @@ pub const RULES: &[Rule] = &[
         0,
         Some(("DIMENSIONAL_CHARACTERISTIC_REPRESENTATION", 0)),
     ),
+    // How a PMI value is displayed (decimal places, format).
+    owned(
+        &["MEASURE_QUALIFICATION"],
+        "qualified_measure",
+        2,
+        Some(("MEASURE_QUALIFICATION", 2)),
+    ),
+    owned(
+        &["DRAUGHTING_CALLOUT_RELATIONSHIP"],
+        "relating_draughting_callout",
+        2,
+        Some(("DRAUGHTING_CALLOUT_RELATIONSHIP", 2)),
+    ),
     // Metadata owned by what it describes.
     owned(
         &["NAME_ATTRIBUTE"],
@@ -248,6 +315,19 @@ pub const RULES: &[Rule] = &[
         "described_item",
         1,
         Some(("DESCRIPTION_ATTRIBUTE", 1)),
+    ),
+    // An address belongs to the people or organizations it lists.
+    owned(
+        &["PERSONAL_ADDRESS"],
+        "people",
+        12,
+        Some(("PERSONAL_ADDRESS", 0)),
+    ),
+    owned(
+        &["ORGANIZATIONAL_ADDRESS"],
+        "organizations",
+        12,
+        Some(("ORGANIZATIONAL_ADDRESS", 0)),
     ),
     owned(
         &["APPROVAL_DATE_TIME"],
@@ -318,6 +398,12 @@ pub const RULES: &[Rule] = &[
         "items",
         1,
         Some(("REPRESENTATION", 1)),
+    ),
+    shared(
+        &["APPLIED_PRESENTED_ITEM"],
+        "items",
+        0,
+        Some(("APPLIED_PRESENTED_ITEM", 0)),
     ),
     shared(
         &["INVISIBILITY"],
@@ -712,6 +798,47 @@ ENDSEC;END-ISO-10303-21;";
         let extraction = extract(&graph, &[graph.node(30).unwrap()]);
         assert!(extraction.contains(graph.node(40).unwrap()));
         assert!(!extraction.contains(graph.node(11).unwrap()));
+    }
+
+    #[test]
+    fn saved_views_and_addresses_go_with_their_product() {
+        // Part C with a saved view (presentation set, area) and a person
+        // with an address assigned to it; colour #400 is used by nothing.
+        let src = "ISO-10303-21;HEADER;FILE_SCHEMA(('AP214'));ENDSEC;DATA;
+#1=APPLICATION_CONTEXT('design');
+#3=PRODUCT_CONTEXT('',#1,'mechanical');
+#4=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');
+#31=PRODUCT('C','bolt','',(#3));
+#32=PRODUCT_DEFINITION_FORMATION('1','',#31);
+#30=PRODUCT_DEFINITION('c','',#32,#4);
+#90=GEOMETRIC_REPRESENTATION_CONTEXT(2);
+#200=APPLIED_PRESENTED_ITEM((#30));
+#201=PRESENTATION_SET();
+#202=PRESENTED_ITEM_REPRESENTATION(#201,#200);
+#203=PRESENTATION_AREA('',(#205),#90);
+#204=AREA_IN_SET(#203,#201);
+#205=PLANAR_BOX('',1.,1.,#206);
+#206=AXIS2_PLACEMENT_2D('',#207,$);
+#207=CARTESIAN_POINT('',(0.,0.));
+#300=PERSON('p','Smith',$,$,$,$);
+#301=PERSONAL_ADDRESS($,$,$,$,$,$,$,'US',$,$,$,$,(#300),$);
+#302=ORGANIZATION('o','Org',$);
+#303=PERSON_AND_ORGANIZATION(#300,#302);
+#304=PERSON_AND_ORGANIZATION_ROLE('creator');
+#305=APPLIED_PERSON_AND_ORGANIZATION_ASSIGNMENT(#303,#304,(#30));
+#400=COLOUR_RGB('',0.,0.,1.);
+ENDSEC;END-ISO-10303-21;";
+        let graph = Graph::new(parse(src.as_bytes()).unwrap()).unwrap();
+        let extraction = extract(&graph, &[graph.node(30).unwrap()]);
+        assert_eq!(
+            ids(&graph, extraction.nodes()),
+            [
+                1, 3, 4, 30, 31, 32, 90, 200, 201, 202, 203, 204, 205, 206, 207, 300, 301, 302,
+                303, 304, 305
+            ]
+        );
+        assert_eq!(ids(&graph, extraction.pruned()), [200, 305]);
+        assert_eq!(ids(&graph, &orphans(&graph, &[extraction])), [400]);
     }
 
     #[test]
