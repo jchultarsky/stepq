@@ -36,7 +36,10 @@ fetch rather than copy), and checks each download against a pinned
 SHA-256. The Open Compute set is large (~130 MB download, ~860 MB
 unpacked, files up to 3.5 million instances); fetch only the small set
 with `tools/fetch-fixtures.sh core`. Tests that need a fixture skip
-themselves if it is missing.
+themselves if it is missing, and skip fixtures over 16 MB unless
+`STEPQ_LARGE_FIXTURES=1` is set; with it, run the tests in release mode
+(`cargo test --release --all-features`), which takes about a minute and
+up to 8 GB of memory instead of six minutes in a debug build.
 
 The EXPRESS schemas are not vendored either. They are ISO copyright: ISO
 permits using them unmodified for the purposes of the standard, but does

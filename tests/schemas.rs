@@ -2,7 +2,10 @@
 //!
 //! Schemas come from `tools/fetch-schemas.sh` (checksum-pinned) and
 //! fixtures from `tools/fetch-fixtures.sh`; neither is in git, and each
-//! test skips what is missing.
+//! test skips what is missing. Fixtures over 16 MB are skipped unless
+//! `STEPQ_LARGE_FIXTURES=1` is set.
+
+mod common;
 
 use std::borrow::Cow;
 use std::fs;
@@ -91,9 +94,7 @@ fn fixture_records_match_their_schemas() {
         eprintln!("skipping: no schemas (run tools/fetch-schemas.sh)");
         return;
     }
-    let mut files = Vec::new();
-    collect_step_files(&root().join("fixtures"), &mut files);
-    files.sort();
+    let files = common::step_files();
 
     let mut failures = Vec::new();
     for path in files {
@@ -137,22 +138,4 @@ fn fixture_records_match_their_schemas() {
         failures.len(),
         failures.join("\n")
     );
-}
-
-fn collect_step_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_step_files(&path, out);
-        } else if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("stp") || ext.eq_ignore_ascii_case("step"))
-        {
-            out.push(path);
-        }
-    }
 }
