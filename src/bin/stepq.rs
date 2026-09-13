@@ -1,5 +1,6 @@
 //! Command-line front end for the `stepq` library.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -8,7 +9,7 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use stepq::info::Info;
-use stepq::model::Graph;
+use stepq::model::{Definition, Graph, ProductStructure, Usage};
 use stepq::p21::parse;
 
 /// Query, inspect, split and reshape STEP (ISO 10303-21) files.
@@ -46,13 +47,21 @@ enum Command {
         top: usize,
     },
     /// Print the assembly hierarchy.
+    ///
+    /// Components used several times by the same assembly are shown once with
+    /// a count. With --format json, prints every definition and usage; with
+    /// --format csv, one row per usage.
     Tree {
-        /// STEP file to inspect.
+        /// STEP file to inspect, or `-` for standard input.
         file: PathBuf,
+        /// List every usage separately, with the entities that place it.
+        #[arg(long)]
+        usages: bool,
     },
-    /// Emit a bill of materials.
+    /// Emit a bill of materials: each component under each top-level
+    /// assembly, with its total quantity.
     Bom {
-        /// STEP file to inspect.
+        /// STEP file to inspect, or `-` for standard input.
         file: PathBuf,
     },
     /// Explode an assembly into one file per sub-assembly and part.
@@ -86,8 +95,8 @@ fn main() -> ExitCode {
 fn run(cli: &Cli) -> anyhow::Result<()> {
     match &cli.command {
         Command::Info { file, top } => info(file, cli.format, *top),
-        Command::Tree { .. } => not_implemented("tree"),
-        Command::Bom { .. } => not_implemented("bom"),
+        Command::Tree { file, usages } => tree(file, cli.format, *usages),
+        Command::Bom { file } => bom(file, cli.format),
         Command::Split { .. } => not_implemented("split"),
         Command::Lint { .. } => not_implemented("lint"),
     }
@@ -264,6 +273,310 @@ fn write_info_table(out: &mut impl Write, name: &str, info: &Info, top: usize) -
         writeln!(out, "{:>10}  … {hidden} more (--top 0 lists all)", "")?;
     }
     Ok(())
+}
+
+/// Reads and parses `path` into its product structure.
+fn with_structure<T>(
+    path: &Path,
+    run: impl FnOnce(&ProductStructure) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let exchange = parse(&src).with_context(|| format!("parsing {name}"))?;
+    let structure = ProductStructure::new(&Graph::build(exchange));
+    run(&structure)
+}
+
+fn tree(path: &Path, format: Format, usages: bool) -> anyhow::Result<()> {
+    with_structure(path, |structure| {
+        let mut out = BufWriter::new(io::stdout().lock());
+        match format {
+            Format::Table => write_tree(&mut out, structure, usages)?,
+            Format::Json => {
+                serde_json::to_writer_pretty(&mut out, structure)?;
+                writeln!(out)?;
+            }
+            Format::Csv => write_usages_csv(&mut out, structure)?,
+        }
+        out.flush()?;
+        Ok(())
+    })
+}
+
+fn write_tree(out: &mut impl Write, structure: &ProductStructure, usages: bool) -> io::Result<()> {
+    let definitions = structure.definitions();
+    for (i, &root) in structure.roots().iter().enumerate() {
+        if i > 0 {
+            writeln!(out)?;
+        }
+        writeln!(out, "{}", definition_label(&definitions[root]))?;
+        let mut path = vec![root];
+        write_children(out, structure, root, "", usages, &mut path)?;
+    }
+    if structure.roots().is_empty() && !definitions.is_empty() {
+        writeln!(
+            out,
+            "(no top-level definition: the assembly structure is cyclic)"
+        )?;
+    }
+
+    writeln!(out)?;
+    writeln!(
+        out,
+        "{} product definitions, {} assembly usages, {} top-level",
+        grouped(definitions.len()),
+        grouped(structure.usages().len()),
+        grouped(structure.roots().len()),
+    )?;
+    let reversed = structure
+        .usages()
+        .iter()
+        .filter(|u| u.placement.as_ref().and_then(|p| p.reversed) == Some(true))
+        .count();
+    if reversed > 0 {
+        writeln!(
+            out,
+            "note: {reversed} placements name the assembly's shape as rep_1; \
+             the assembly usage, not the shape relationship, decides which side is the parent"
+        )?;
+    }
+    Ok(())
+}
+
+/// Deeper trees are cut off in the table, so crafted input cannot exhaust
+/// the stack.
+const MAX_TREE_DEPTH: usize = 256;
+
+fn write_children(
+    out: &mut impl Write,
+    structure: &ProductStructure,
+    definition: usize,
+    prefix: &str,
+    usages: bool,
+    path: &mut Vec<usize>,
+) -> io::Result<()> {
+    let rows: Vec<(usize, Vec<&Usage>)> = if usages {
+        structure
+            .children(definition)
+            .map(|usage| (usage.child, vec![usage]))
+            .collect()
+    } else {
+        structure.components(definition)
+    };
+    for (i, (child, group)) in rows.iter().enumerate() {
+        let (branch, indent) = if i + 1 == rows.len() {
+            ("└── ", "    ")
+        } else {
+            ("├── ", "│   ")
+        };
+        let mut line = format!(
+            "{prefix}{branch}{}",
+            definition_label(&structure.definitions()[*child])
+        );
+        if usages {
+            line.push_str(&usage_detail(group[0]));
+        } else {
+            let quantity: f64 = group.iter().map(|u| u.quantity.unwrap_or(1.0)).sum();
+            if (quantity - 1.0).abs() > f64::EPSILON {
+                let _ = write!(line, "  ×{quantity}");
+            }
+        }
+        if path.contains(child) {
+            writeln!(out, "{line}  (cycle)")?;
+            continue;
+        }
+        if path.len() >= MAX_TREE_DEPTH {
+            writeln!(out, "{line}  (too deep; not expanded)")?;
+            continue;
+        }
+        writeln!(out, "{line}")?;
+        path.push(*child);
+        write_children(
+            out,
+            structure,
+            *child,
+            &format!("{prefix}{indent}"),
+            usages,
+            path,
+        )?;
+        path.pop();
+    }
+    Ok(())
+}
+
+/// The product name, with its id when that differs.
+fn definition_label(definition: &Definition) -> String {
+    let product = definition.product.as_ref();
+    let id = product.and_then(|p| p.id.as_deref());
+    let name = product
+        .and_then(|p| p.name.as_deref())
+        .or(id)
+        .or(definition.id.as_deref());
+    match (name, id) {
+        (Some(name), Some(id)) if name != id => format!("{name} [{id}]"),
+        (Some(name), _) => name.to_owned(),
+        (None, _) => format!("#{}", definition.instance),
+    }
+}
+
+fn usage_detail(usage: &Usage) -> String {
+    let mut detail = format!("  #{}", usage.instance);
+    // Writing to a String cannot fail.
+    if let Some(name) = &usage.name {
+        let _ = write!(detail, " '{name}'");
+    }
+    if let Some(designator) = &usage.reference_designator {
+        let _ = write!(detail, " {designator}");
+    }
+    if let Some(quantity) = usage.quantity {
+        let _ = write!(detail, " ×{quantity}");
+    }
+    match &usage.placement {
+        Some(placement) => {
+            let _ = write!(
+                detail,
+                "  placed by #{} → #{}",
+                placement.context_dependent_shape_representation, placement.relationship
+            );
+            if let Some(transformation) = placement.transformation {
+                let _ = write!(detail, " (#{transformation})");
+            }
+            if placement.reversed == Some(true) {
+                detail.push_str(" [rep_1/rep_2 reversed]");
+            }
+        }
+        None => detail.push_str("  (no placement)"),
+    }
+    detail
+}
+
+fn write_usages_csv(out: &mut impl Write, structure: &ProductStructure) -> io::Result<()> {
+    writeln!(
+        out,
+        "usage,usage_id,parent,parent_product,child,child_product,quantity,reference_designator,relationship,transformation,reversed"
+    )?;
+    let definitions = structure.definitions();
+    for usage in structure.usages() {
+        let parent = &definitions[usage.parent];
+        let child = &definitions[usage.child];
+        let placement = usage.placement.as_ref();
+        writeln!(
+            out,
+            "{},{},{},{},{},{},{},{},{},{},{}",
+            usage.instance,
+            csv_field(usage.id.as_deref().unwrap_or_default()),
+            parent.instance,
+            csv_field(&definition_label(parent)),
+            child.instance,
+            csv_field(&definition_label(child)),
+            usage.quantity.unwrap_or(1.0),
+            csv_field(usage.reference_designator.as_deref().unwrap_or_default()),
+            placement.map_or_else(String::new, |p| p.relationship.to_string()),
+            placement
+                .and_then(|p| p.transformation)
+                .map_or_else(String::new, |t| t.to_string()),
+            placement
+                .and_then(|p| p.reversed)
+                .map_or_else(String::new, |r| r.to_string()),
+        )?;
+    }
+    Ok(())
+}
+
+fn bom(path: &Path, format: Format) -> anyhow::Result<()> {
+    with_structure(path, |structure| {
+        let definitions = structure.definitions();
+        let mut out = BufWriter::new(io::stdout().lock());
+        match format {
+            Format::Table => {
+                for (i, &root) in structure.roots().iter().enumerate() {
+                    if i > 0 {
+                        writeln!(out)?;
+                    }
+                    writeln!(out, "{}", definition_label(&definitions[root]))?;
+                    let lines = structure.bill_of_materials(root);
+                    if lines.is_empty() {
+                        writeln!(out, "  (no components)")?;
+                        continue;
+                    }
+                    writeln!(out, "{:>10}  {:<8}  PRODUCT", "QUANTITY", "TYPE")?;
+                    for line in lines {
+                        writeln!(
+                            out,
+                            "{:>10}  {:<8}  {}",
+                            line.quantity,
+                            kind(line.is_assembly),
+                            definition_label(&definitions[line.definition])
+                        )?;
+                    }
+                }
+            }
+            Format::Json => {
+                #[derive(serde::Serialize)]
+                struct Line<'a> {
+                    quantity: f64,
+                    kind: &'static str,
+                    definition: &'a Definition,
+                }
+                #[derive(serde::Serialize)]
+                struct Bom<'a> {
+                    root: &'a Definition,
+                    lines: Vec<Line<'a>>,
+                }
+                let boms: Vec<Bom<'_>> = structure
+                    .roots()
+                    .iter()
+                    .map(|&root| Bom {
+                        root: &definitions[root],
+                        lines: structure
+                            .bill_of_materials(root)
+                            .into_iter()
+                            .map(|line| Line {
+                                quantity: line.quantity,
+                                kind: kind(line.is_assembly),
+                                definition: &definitions[line.definition],
+                            })
+                            .collect(),
+                    })
+                    .collect();
+                serde_json::to_writer_pretty(&mut out, &boms)?;
+                writeln!(out)?;
+            }
+            Format::Csv => {
+                writeln!(out, "root,product_id,product_name,type,quantity")?;
+                for &root in structure.roots() {
+                    let root_label = definition_label(&definitions[root]);
+                    for line in structure.bill_of_materials(root) {
+                        let product = definitions[line.definition].product.as_ref();
+                        writeln!(
+                            out,
+                            "{},{},{},{},{}",
+                            csv_field(&root_label),
+                            csv_field(product.and_then(|p| p.id.as_deref()).unwrap_or_default()),
+                            csv_field(product.and_then(|p| p.name.as_deref()).unwrap_or_default()),
+                            kind(line.is_assembly),
+                            line.quantity
+                        )?;
+                    }
+                }
+            }
+        }
+        out.flush()?;
+        Ok(())
+    })
+}
+
+fn kind(is_assembly: bool) -> &'static str {
+    if is_assembly { "assembly" } else { "part" }
+}
+
+/// Quotes a CSV field when it contains a comma, quote or line break.
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_owned()
+    }
 }
 
 /// `1234567` as `1,234,567`.

@@ -18,6 +18,8 @@
 //! parsed [`Exchange`](crate::p21::Exchange); schema checking is not
 //! started. See `ROADMAP.md`.
 
+mod assembly;
 mod graph;
 
+pub use assembly::{BomLine, Definition, Placement, Product, ProductStructure, Usage, UsageKind};
 pub use graph::Graph;
