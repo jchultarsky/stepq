@@ -71,6 +71,14 @@ Two measured caveats, both about OCCT rather than stepq
   and no assembly structure, OCCT does not transfer every definition's
   shape (NIST FTC-09), so outputs there are bounded by the input rather
   than summed.
+* Volume integration over a compound is not additive. The Creo Open Rack
+  files write a surface model (`shell_based_surface_model` with open
+  shells) next to each solid: one housing's solid integrates to 22,933.83,
+  its open shells to 0, and the two together to 23,063.60. Placed in its
+  assembly with 22 other solids, whose every one matches its own file to
+  1e-15, the assembly integrates to 27,122.62 against components summing to
+  27,096.39, a 1e-3 difference that is all Open CASCADE's. Volumes are
+  therefore summed solid by solid.
 
 ## Entities stay untyped
 
