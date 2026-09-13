@@ -80,9 +80,11 @@ a struct per type buys compile time, API churn on every schema edition,
 and nothing the graph operations need.
 
 Instances are stored as `(type name(s), attribute token list, original
-byte range)`. The EXPRESS schema is loaded as data and used for exactly
-two things: attribute-count validation and aggregate cardinality
-(`SET[1:?]` must not be emptied by filtering).
+byte range)`. The EXPRESS schema is loaded as data, at run time, and used
+only for validation: `stepq lint --schema` checks entity types, attribute
+counts and aggregate lower bounds (an empty `SET[1:?]`), and the test
+suite checks every attribute position in the closure rule table against
+it. Nothing else reads the schema; `split` needs none.
 
 ## Verbatim output
 

@@ -4,8 +4,10 @@ Ordered by leverage per line of code. Nothing here needs a geometry
 kernel; that is the constraint that keeps the project finishable.
 
 0.1.0 contains the parser, structure and split milestones below; 0.2.0
-adds the inspect milestone and 0.3.0 the reshape milestone. Open items
-carry over.
+adds the inspect milestone and 0.3.0 the reshape milestone. A few items
+in the earlier milestones shipped later — the multi-level `bom` and
+persistent identifiers in 0.2.0, `split --bodies` in 0.3.0; see
+[CHANGELOG.md](CHANGELOG.md). Open items carry over.
 
 ## Parser
 
@@ -49,7 +51,8 @@ carry over.
       split output (`docs/ARCHITECTURE.md`).
 - [x] `stepq split` — self-contained mode.
 - [x] `stepq split --bodies` — multi-body products into one file per solid.
-- [x] `--report-orphans`: print everything left outside the closure.
+- [x] `--report-orphans`: list the entity types, with counts, of every
+      instance left outside all outputs.
 - [ ] Grow the rule table from the orphan reports. Persistent identifiers
       are done (orphaned `id_attribute`s on the core fixtures: 3,298 → 55).
       On every fixture under 16 MB, `split --report-orphans` leaves 43,534
@@ -60,8 +63,9 @@ carry over.
       `constructive_geometry_representation`, their points and
       directions), and moon buggy's 186 `personal_address`es.
 - [x] `tools/verify-occt.py`: Σ volume(outputs) == volume(input subtree),
-      equal solid counts, no lost names or colours. Already run in CI on
-      every fixture rewritten by stepq (`tools/verify-rewrite.sh`).
+      equal solid counts, no lost names or colours. Run in CI on every
+      core fixture rewritten by stepq (`tools/verify-rewrite.sh`) and split
+      by it (`tools/verify-split.py`).
 
 ## Inspect (0.2.0)
 
