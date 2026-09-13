@@ -819,6 +819,97 @@ fn query_matches_complex_instances_and_counts() {
     );
 }
 
+/// Writes `contents` to a file in the temporary directory, unique to this
+/// test process.
+fn temp_file(name: &str, contents: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("stepq-cli-{}-{name}", std::process::id()));
+    std::fs::write(&path, contents).unwrap();
+    path
+}
+
+#[test]
+fn diff_of_identical_files_is_empty() {
+    let copy = temp_file("diff-same.stp", ASSEMBLY);
+    let assert = stepq()
+        .args(["diff", "-"])
+        .arg(&copy)
+        .write_stdin(ASSEMBLY)
+        .assert();
+    std::fs::remove_file(&copy).unwrap();
+    assert
+        .success()
+        .stdout(predicate::str::ends_with("\n\nno differences\n"));
+}
+
+#[test]
+fn diff_reports_each_section_and_exits_one() {
+    // C is renamed and one of B's three C usages is gone.
+    let changed = ASSEMBLY
+        .replace("PRODUCT('C','bolt'", "PRODUCT('C','hex bolt'")
+        .replace(
+            "#104=NEXT_ASSEMBLY_USAGE_OCCURRENCE('u5','C3','',#20,#30,'X3');\n",
+            "",
+        );
+    let new = temp_file("diff-new.stp", &changed);
+    let table = stepq()
+        .args(["diff", "-"])
+        .arg(&new)
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .code(1);
+    let stdout = String::from_utf8(table.get_output().stdout.clone()).unwrap();
+    let only_products = stepq()
+        .args(["diff", "-", "--section", "products"])
+        .arg(&new)
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .code(1);
+    let products = String::from_utf8(only_products.get_output().stdout.clone()).unwrap();
+    let csv = stepq()
+        .args(["diff", "-", "--section", "components", "--format", "csv"])
+        .arg(&new)
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .code(1);
+    let csv = String::from_utf8(csv.get_output().stdout.clone()).unwrap();
+    std::fs::remove_file(&new).unwrap();
+
+    assert!(stdout.starts_with("--- <stdin>\n+++ "), "{stdout}");
+    assert!(
+        stdout.contains("Header\n  instances: 40 → 39\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Entity types\n  NEXT_ASSEMBLY_USAGE_OCCURRENCE: 6 → 5 (-1)\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Products\n  ~ C: name: bolt → hex bolt\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Components\n  B → C: 3 → 2\n"), "{stdout}");
+    assert!(stdout.ends_with("\n4 differences\n"), "{stdout}");
+
+    assert!(
+        products.ends_with("Products\n  ~ C: name: bolt → hex bolt\n\n1 difference\n"),
+        "{products}"
+    );
+    assert_eq!(
+        csv,
+        "section,change,subject,field,old,new\ncomponents,changed,B,C,3,2\n"
+    );
+}
+
+#[test]
+fn diff_takes_at_most_one_standard_input() {
+    stepq()
+        .args(["diff", "-", "-"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("only one of the two files"));
+}
+
 /// A part with a validated volume on a shape aspect, a user-defined
 /// attribute with three values, a property of nothing product-shaped, and a
 /// persistent identifier.

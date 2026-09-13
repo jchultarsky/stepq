@@ -10,6 +10,12 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- `stepq diff OLD NEW`: compares two files by what they describe, not by
+  instance names: header fields, units and instance count, entity-type
+  counts, products (matched by `product.id`), component quantities per
+  assembly and property values (with `#id`s in labels ignored).
+  `--section` selects sections; exits 1 if the files differ; table, JSON
+  or CSV. Also available as `diff::diff`.
 - `stepq props`: user-defined attributes, geometric validation properties,
   other properties and persistent identifiers (`id_attribute`), grouped by
   the product definition they belong to, with values as written in the
