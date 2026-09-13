@@ -47,7 +47,7 @@ adds the inspect milestone. Open items carry over.
       its own sub-tree; declared volumes match Open CASCADE in every AS1
       split output (`docs/ARCHITECTURE.md`).
 - [x] `stepq split` — self-contained mode.
-- [ ] `stepq split --bodies` — multi-body products into one file per solid.
+- [x] `stepq split --bodies` — multi-body products into one file per solid.
 - [x] `--report-orphans`: print everything left outside the closure.
 - [ ] Grow the rule table from the orphan reports. Persistent identifiers
       are done (orphaned `id_attribute`s on the core fixtures: 3,298 → 55);

@@ -389,6 +389,7 @@ enum State {
     Out,
     Owned,
     Shared(&'static Rule),
+    Excluded,
 }
 
 /// Extracts `seeds` — usually one product definition — with everything that
@@ -398,8 +399,28 @@ enum State {
 ///
 /// Panics if a seed is not a node of `graph`.
 pub fn extract(graph: &Graph<'_>, seeds: &[usize]) -> Extraction {
+    extract_excluding(graph, seeds, &[])
+}
+
+/// Like [`extract`], but never takes the `excluded` nodes, and so nothing
+/// that only they would bring in. Every extracted instance that refers to an
+/// excluded node is pruned as well, so that
+/// [`Writer::write_pruned`](crate::p21::Writer::write_pruned) drops those
+/// list items; a reference to an excluded node that is not a list item makes
+/// that write fail rather than leave the output dangling.
+///
+/// `stepq split --bodies` writes one solid of a multi-body part this way:
+/// the part, with its other solids excluded.
+///
+/// # Panics
+///
+/// Panics if a seed or an excluded node is not a node of `graph`.
+pub fn extract_excluding(graph: &Graph<'_>, seeds: &[usize], excluded: &[usize]) -> Extraction {
     let exchange = graph.exchange();
     let mut state = vec![State::Out; graph.len()];
+    for &node in excluded {
+        state[node] = State::Excluded;
+    }
     let mut queue = VecDeque::new();
     let take = |node: usize, state: &mut [State], queue: &mut VecDeque<usize>| {
         if state[node] == State::Out {
@@ -442,10 +463,22 @@ pub fn extract(graph: &Graph<'_>, seeds: &[usize]) -> Extraction {
 
     let mut nodes = Vec::new();
     let mut pruned = Vec::new();
+    let state_of = &state;
     for (node, state) in state.iter().enumerate() {
         match state {
-            State::Out => {}
-            State::Owned => nodes.push(node),
+            State::Out | State::Excluded => {}
+            State::Owned => {
+                nodes.push(node);
+                let lists_excluded = || {
+                    graph
+                        .references(node)
+                        .iter()
+                        .any(|&target| state_of[target] == State::Excluded)
+                };
+                if !excluded.is_empty() && lists_excluded() {
+                    pruned.push(node);
+                }
+            }
             State::Shared(_) => {
                 nodes.push(node);
                 pruned.push(node);
@@ -646,6 +679,30 @@ ENDSEC;END-ISO-10303-21;";
         everything.sort_unstable();
         assert_eq!(ids(&graph, extraction.nodes()), everything);
         assert!(orphans(&graph, &[extraction]).is_empty());
+    }
+
+    #[test]
+    fn excluded_nodes_and_what_only_they_bring_are_left_out() {
+        let graph = graph();
+        let part = graph.node(30).unwrap();
+        let solid = graph.node(53).unwrap();
+        let extraction = extract_excluding(&graph, &[part], &[solid]);
+        // The solid, its shell and its style are gone …
+        for gone in [53, 54, 110, 111] {
+            assert!(!extraction.contains(graph.node(gone).unwrap()), "#{gone}");
+        }
+        // … as is the presentation list #130, reached only through that
+        // style. The representation that listed the solid stays, pruned, as
+        // does the layer, whose other item is still extracted.
+        assert_eq!(
+            ids(&graph, extraction.nodes()),
+            [1, 2, 3, 4, 30, 31, 32, 40, 52, 60, 61, 72, 82, 90, 120]
+        );
+        assert_eq!(ids(&graph, extraction.pruned()), [40, 52, 120]);
+        assert_eq!(
+            extract_excluding(&graph, &[part], &[]),
+            extract(&graph, &[part])
+        );
     }
 
     #[test]

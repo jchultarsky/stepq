@@ -8,6 +8,14 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- `stepq split --bodies`: a part whose shape holds several solids also gets
+  one file per solid, `<part>.body-<n>.stp`, holding the part with its
+  other solids and everything only they bring (faces, styles) left out.
+  Library: `model::extract_excluding`.
+- Releases publish a Homebrew formula to `jchultarsky/homebrew-tap`.
+
 ## [0.2.0] - 2026-09-13
 
 Inspection commands: `lint`, `refs`, `query`, `props`, `diff` and
