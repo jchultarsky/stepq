@@ -147,7 +147,10 @@ enum Command {
         /// Overwrite output files that already exist.
         #[arg(long)]
         force: bool,
-        /// Also list the entity types that no output contains.
+        /// Also list the entity types that no output contains, in two groups:
+        /// left behind (something outside them still refers to them) and
+        /// referenced by nothing. JSON lists all of them as `orphans` and the
+        /// second group as `unreferenced`.
         #[arg(long)]
         report_orphans: bool,
         /// Also write one file per solid of every part with several.
@@ -2263,7 +2266,8 @@ fn write_split_report(
                 )?;
             }
             writeln!(out)?;
-            writeln!(out, "wrote {} files to {}", written.len(), dir.display())?;
+            let files = if written.len() == 1 { "file" } else { "files" };
+            writeln!(out, "wrote {} {files} to {}", written.len(), dir.display())?;
             if let Some(orphans) = orphans {
                 let total = |types: &[(String, usize)]| -> usize {
                     types.iter().map(|(_, count)| count).sum()

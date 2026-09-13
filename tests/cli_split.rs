@@ -99,6 +99,19 @@ fn split_refuses_to_overwrite_without_force() {
 }
 
 #[test]
+fn split_says_file_for_a_single_output() {
+    let dir = scratch("split-one-file");
+    stepq()
+        .args(["split", "-", "--out"])
+        .arg(&dir)
+        .write_stdin(BODIES)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\nwrote 1 file to "));
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn split_reports_orphans() {
     let dir = scratch("split-orphans");
     let with_orphan = ASSEMBLY.replace(

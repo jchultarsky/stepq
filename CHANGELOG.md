@@ -8,6 +8,12 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- `split` says "wrote 1 file" rather than "wrote 1 files".
+- `split --help` describes the two groups `--report-orphans` lists (left
+  behind, referenced by nothing) and the JSON `unreferenced` field.
+
 ## [0.4.0] - 2026-09-13
 
 Extraction coverage: the rule table grown from orphan reports on every
