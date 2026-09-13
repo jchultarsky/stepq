@@ -21,10 +21,12 @@ kernel; that is the constraint that keeps the project finishable.
 
 ## 0.2 — structure
 
-- [ ] Product tree: `product` → `product_definition_formation` →
-      `product_definition`, NAUO, CDSR / RRWT / IDT, and `mapped_item`.
-- [ ] Trust the NAUO over the SRR direction (real files reverse it).
-- [ ] `stepq tree`, `stepq bom` (quantities via NAUO count and
+- [x] Product tree: `product` → `product_definition_formation` →
+      `product_definition`, NAUO, CDSR / RRWT / IDT.
+- [ ] Placements expressed only through `mapped_item` /
+      `representation_map`.
+- [x] Trust the NAUO over the SRR direction (real files reverse it).
+- [x] `stepq tree`, `stepq bom` (quantities via NAUO count and
       `quantified_assembly_component_usage`).
 
 ## 0.3 — split

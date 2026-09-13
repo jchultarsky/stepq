@@ -46,6 +46,15 @@ Until 1.0, minor versions may contain breaking changes.
 - `tools/fetch-schemas.sh`: downloads the AP242 ed. 4, AP214 ed. 3 and
   AP203 ed. 1 and 2 schemas, checksum-pinned. Schemas are ISO copyright
   and are not committed or shipped.
+- `model::ProductStructure`: product definitions (with product, version
+  and shape representations), assembly usages (NAUO and quantified usages,
+  simple or complex), and the entities that place each usage, flagging
+  shape relationships whose `rep_1`/`rep_2` are reversed. Parent and child
+  always come from the usage. Includes a rolled-up bill of materials.
+- `stepq tree`: the assembly hierarchy with repeated components grouped
+  (`--usages` lists each usage and its placement), as a table, JSON or CSV.
+- `stepq bom`: total quantity of every component under each top-level
+  assembly, as a table, JSON or CSV.
 
 ### Changed
 
