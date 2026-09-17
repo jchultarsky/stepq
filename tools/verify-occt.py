@@ -104,11 +104,20 @@ def read(path: Path) -> Summary:
         return name.Get().ToExtString()
 
     def volume_of(shape) -> float:
+        # The sum over the shape's solids, each integrated on its own. One
+        # integration over a whole compound is not additive: a compound that
+        # also holds open shells (the surface models Creo writes next to a
+        # solid) integrates to more than its solid, although each shell
+        # alone integrates to 0, and differently once placed in an assembly.
         # Adaptive integration with an error bound: the default quadrature
         # differs by up to ~1e-6 relative between runs of the same geometry.
-        properties = GProp_GProps()
-        BRepGProp.VolumeProperties_s(shape, properties, VOLUME_EPS)
-        return properties.Mass()
+        total, explorer = 0.0, TopExp_Explorer(shape, TopAbs_SOLID)
+        while explorer.More():
+            properties = GProp_GProps()
+            BRepGProp.VolumeProperties_s(explorer.Current(), properties, VOLUME_EPS)
+            total += properties.Mass()
+            explorer.Next()
+        return total
 
     def solids_of(shape) -> int:
         count, explorer = 0, TopExp_Explorer(shape, TopAbs_SOLID)

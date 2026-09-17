@@ -71,6 +71,14 @@ Two measured caveats, both about OCCT rather than stepq
   and no assembly structure, OCCT does not transfer every definition's
   shape (NIST FTC-09), so outputs there are bounded by the input rather
   than summed.
+* Volume integration over a compound is not additive. The Creo Open Rack
+  files write a surface model (`shell_based_surface_model` with open
+  shells) next to each solid: one housing's solid integrates to 22,933.83,
+  its open shells to 0, and the two together to 23,063.60. Placed in its
+  assembly with 22 other solids, whose every one matches its own file to
+  1e-15, the assembly integrates to 27,122.62 against components summing to
+  27,096.39, a 1e-3 difference that is all Open CASCADE's. Volumes are
+  therefore summed solid by solid.
 
 ## Entities stay untyped
 
@@ -80,9 +88,11 @@ a struct per type buys compile time, API churn on every schema edition,
 and nothing the graph operations need.
 
 Instances are stored as `(type name(s), attribute token list, original
-byte range)`. The EXPRESS schema is loaded as data and used for exactly
-two things: attribute-count validation and aggregate cardinality
-(`SET[1:?]` must not be emptied by filtering).
+byte range)`. The EXPRESS schema is loaded as data, at run time, and used
+only for validation: `stepq lint --schema` checks entity types, attribute
+counts and aggregate lower bounds (an empty `SET[1:?]`), and the test
+suite checks every attribute position in the closure rule table against
+it. Nothing else reads the schema; `split` needs none.
 
 ## Verbatim output
 
@@ -129,6 +139,50 @@ wholesale they dangle; dropped they lose colours or categories. The
 list is rewritten to the retained subset, and the entity is dropped only
 if the subset is empty.
 
+A filtered list is not followed, with one exception. A `draughting_model`
+lists the presentation of many PMI elements, but its saved views
+(`camera_model_d3` and relatives), the shapes shown in them (`mapped_item`)
+and its notes exist only as its items; nothing else refers to them. So the
+rule for `draughting_model` follows items of those types, except an
+`annotation_plane` whose elements semantic PMI is associated with
+(`draughting_model_item_association` and relatives): that plane belongs to
+the PMI's product and comes with it. Following every plane copied the
+callouts of three top-level definitions into each other's files in NIST
+FTC-09.
+
+## What the rule table covers
+
+`split --report-orphans` reports what no output holds. The table was grown
+from those reports on every fixture, the CAx-IF recommended practices (PMI
+Representation and Presentation, PMI Polyline Presentation, External
+References, Tessellated Geometry) and the schemas, and no rule was added
+without checking its position in AP242 ed. 4, AP214 and AP203 ed. 2.
+
+On the 48 fixtures under 16 MB, instances in no output went from 43,534 to
+1,559; on all 55 fixtures, including the Open Compute assemblies up to
+207 MB, 2,969 remain, and no entity type grew along the way. What the
+growth brought in, by family: PMI presentation (annotation planes, draughting
+relationships, per-annotation validation properties, callout
+relationships, display formats), saved views (AP242 cameras, Creo
+presentation sets, areas and views), supplemental geometry, notes and
+polyline or tessellated annotation reached through draughting models,
+tolerance zones, composite tolerances, referenced standards documents,
+addresses, and two subtypes the table had missed
+(`directed_dimensional_location`, `default_model_geometric_view`, whose
+`of_shape` is its seventh attribute). The 45 core fixtures still split to
+Open CASCADE's solid counts and volumes.
+
+None of what remains is left behind: all 2,969 instances are data nothing
+refers to, directly or through other such data (`model::unreachable`) —
+1,827 colours no style uses, 639 unused `dimensional_exponents`, 69
+pre-defined colours, 40 product categories, dates, and the saved views of
+the NIST FTC-09 draughting model no product reaches. No product can own
+those, so the report lists them apart from what is left behind. Not handled on purpose: a plain
+`representation_relationship` between AP203 draughting models (a rule on it
+would also match other relationships), and the Creo saved views' mapped
+items as back references, which would pull a parent's placements into a
+child placed through `mapped_item` (the NIST moon buggy).
+
 ## Things that must not be merged
 
 `representation_relationship_with_transformation` has a WHERE rule:
@@ -155,6 +209,65 @@ Not handled, and refused rather than guessed: disconnected lumps inside a
 single (schema-illegal) shell, which would need union-find over shared
 `edge_curve` references, and a `brep_with_voids` whose outer shell is
 disconnected, which needs point-in-solid to assign its voids.
+
+## Master files
+
+`split --master` writes each assembly as a master file that refers to its
+components' files, following the CAx-IF Recommended Practices for
+External (Element) References 3.1, §6.1. Attribute order comes from the
+schema, not the document: two of its own examples are wrong
+(`applied_document_reference` has three attributes, and one example
+reverses them).
+
+A master keeps its own instances and, of each component, a stub: the
+product, formation and definition, the shape definition, and its shape
+representations reduced to their placements. It is `extract_excluding`
+from the assembly with every component definition, every non-placement
+item of their shape representations, and every simple
+`shape_representation_relationship` to those representations excluded.
+That last exclusion is not optional: exporters such as Unigraphics tie a
+placement-only representation to the one holding the solid with such a
+relationship, and without it the rule table pulls the geometry back in.
+Per component the file gains, numbered after its highest instance name:
+`document_type`, `document_file` (id = file name),
+`document_representation_type('digital')`, `identification_role('external
+document id and location')`, `external_source` (empty: same folder),
+`applied_external_identification_assignment` (the file name, which Open
+CASCADE reads first), `applied_document_reference` to the component
+definition, `object_role('mandatory')` with its `role_association`, and the
+'external definition' property linking the document to the stub shape.
+
+Open CASCADE reads the top master of the AS1 assembly from three exporters
+(Unigraphics, CADDS, Pro/ENGINEER), nested masters included, with exactly
+the original solid count and volume, and every master file holds no
+solid. It does not attach external files to components placed through
+`mapped_item`s (the NIST moon buggy): its reader ties an external file to
+the component definition, which mapped items bypass.
+
+## Assembling
+
+`assemble` is the inverse of a master. Each `applied_document_reference`
+to a `document_file` names a file (the external identification's
+`assigned_id`, else the document id, as Open CASCADE reads it) and the stub
+definition it stands for. The stub's product, formation, definition, shape
+definition, its link to a shape and its shape representations are paired
+with the same instances of the file's definition with that product id;
+references to them are rewritten with `p21::Replacements`, and the stub
+and the reference entities are dropped. Component files are written after
+the master with `Numbering::Offset`, past every name already used, so
+nothing but the redirected tokens changes.
+
+A file is merged once, however many masters name it: the AS1 nut is used
+by the rod assembly and by the nut-and-bolt assembly, and assembling
+nested masters one file at a time brought it back twice. Merged files are
+therefore remembered by name, and a file that refers back to one being
+merged is an error rather than a loop.
+
+Measured on the AS1 assembly from four exporters (Unigraphics, CADDS,
+Pro/ENGINEER, and NIST's `as1_pe`): splitting into masters and assembling
+the top master gives the original products and component quantities
+(`stepq diff`), and Open CASCADE reads the same solid count, volume,
+names and colours as from the original file.
 
 ## Validation properties
 

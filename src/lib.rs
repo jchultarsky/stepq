@@ -55,6 +55,32 @@
 //! # Ok::<(), stepq::Error>(())
 //! ```
 //!
+//! ## Commands and modules
+//!
+//! Each `stepq` command is a thin front end over a library function:
+//!
+//! | Command | Library |
+//! |---|---|
+//! | `info` | [`info::Info::new`] |
+//! | `tree`, `bom` | [`model::ProductStructure`] |
+//! | `split` | [`model::extract`], [`model::extract_excluding`], [`model::orphans`] |
+//! | `assemble` | [`assemble::assemble`] |
+//! | `lint` | [`lint::lint`], with schemas from [`express::Schema::parse`] |
+//! | `refs` | [`model::Graph::references`], [`model::Graph::referenced_by`] |
+//! | `query` | [`p21::Exchange::instances_of`] |
+//! | `props` | [`props::properties`] |
+//! | `diff` | [`diff::diff`] |
+//! | `strip` | [`strip::strip`], applied by [`p21::Writer::replacements`] |
+//! | `pmi` | [`pmi::pmi`] |
+//!
+//! `docs/COMMANDS.md` in the repository documents every command and option.
+//!
+//! ## Features
+//!
+//! - `cli` (default): the `stepq` binary. Implies `serde`.
+//! - `serde`: `serde::Serialize` for the result types, such as
+//!   [`info::Info`], [`lint::Report`] and [`diff::Diff`].
+//!
 //! ## Status
 //!
 //! Pre-1.0. The public API will change. See `ROADMAP.md` in the
@@ -63,6 +89,7 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod assemble;
 pub mod diff;
 pub mod error;
 pub mod express;
@@ -70,6 +97,7 @@ pub mod info;
 pub mod lint;
 pub mod model;
 pub mod p21;
+pub mod pmi;
 pub mod props;
 pub mod strip;
 

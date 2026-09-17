@@ -8,8 +8,101 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- `split` says "wrote 1 file" rather than "wrote 1 files".
+- `split --help` describes the two groups `--report-orphans` lists (left
+  behind, referenced by nothing) and the JSON `unreferenced` field.
+
+## [0.4.0] - 2026-09-13
+
+Extraction coverage: the rule table grown from orphan reports on every
+fixture, so `split` keeps PMI presentation, saved views, notes, documents
+and more with their products; the orphan report tells what is left behind
+from what nothing refers to; a command reference (`docs/COMMANDS.md`); and
+small CLI output fixes.
+
 ### Added
 
+- `split` and `model::extract` keep much more of what belongs to a
+  product: PMI presentation (annotation planes, draughting model
+  relationships, per-annotation validation properties, callout
+  relationships, display formats of PMI values), saved views (AP242
+  cameras and Creo presentation sets, areas and views), supplemental
+  geometry, notes and polyline or tessellated annotation in a draughting
+  model, tolerance zones, composite tolerances, referenced standards
+  documents and addresses; `directed_dimensional_location` and
+  `default_model_geometric_view` now match. On the fixtures under 16 MB,
+  instances in no output went from 43,534 to 1,559. Shared rules can follow
+  list items of given types (`model::Rule::follow`).
+- `split --report-orphans` lists orphans left behind apart from those
+  nothing refers to; JSON adds `unreferenced`. Library:
+  `model::unreachable`.
+
+### Changed
+
+- `props --format json` writes the property kind as `user`, the name
+  `props --kind` and the table use, instead of `user_defined` (also the
+  `serde` serialization of `props::PropertyKind::UserDefined`).
+
+### Fixed
+
+- `split --report-orphans` says "1 instance is in no output" rather than
+  "1 instances are".
+- `split`, `strip` and `assemble` word a refused overwrite the same way:
+  "… already exists; pass --force to overwrite it".
+- `split --bodies` checks whether the `<part>.body-<n>.stp` files exist
+  before writing anything, instead of stopping part-way through.
+- `props` and `diff` tables print a value whose text spans lines (such as
+  a centroid point) on one line.
+- `props` shows a property with no name as `(unnamed)` in the table.
+- `bom --depth` says when its summary line counts levels the tree leaves
+  out.
+- `pmi` lists datums, then tolerances, then dimensions under each product
+  definition, each in instance order, instead of mixing them.
+- `tools/verify-occt.py` sums volumes solid by solid. Open CASCADE's volume
+  of a compound that also holds open shells (Creo surface models) is not
+  the sum of its parts, which failed the assembly check on three Open Rack
+  fixtures although every placed solid matched its component to 1e-15.
+
+## [0.3.0] - 2026-09-13
+
+Reshaping and PMI: `split --bodies`, `split --master` and its inverse
+`assemble`, semantic GD&T with `pmi`, Part 21 edition 3, and a Homebrew
+formula.
+
+### Added
+
+- `stepq assemble MASTER -o OUT`: the inverse of `split --master`. Every
+  component stub with a CAx-IF external reference is replaced by the
+  instances of the file it names (read relative to the master), renamed
+  after the master's; references to the stub are pointed at the
+  component's own instances and the reference entities are dropped. Nested
+  masters are merged first. Library: `assemble::assemble`, with
+  `p21::Numbering::Offset` and `p21::Writer::write_instances`.
+- `stepq split --master`: assemblies are written as master files. Each
+  component keeps its product, definition, placements and a shape without
+  geometry, and refers to its own file through CAx-IF external references
+  (Recommended Practices for External References 3.1: `document_file`,
+  `applied_external_identification_assignment`,
+  `applied_document_reference`). Open CASCADE reads the top master of the
+  AS1 assembly from three exporters, nested masters included, with the
+  original solid count and volume; it does not attach external files to
+  components placed through `mapped_item`s. `p21::Writer::append` writes instances the source does
+  not have.
+- Part 21 edition 3 anchors and references: `Exchange::anchors`,
+  `Exchange::external_references` and `Exchange::is_external`. Instance
+  names a `REFERENCE` section defines no longer count as dangling. The
+  writer keeps `ANCHOR`, `REFERENCE` and `SIGNATURE` sections verbatim
+  when the output is unchanged; when renumbering or selecting, it renames
+  anchor and reference entries, drops those that no longer apply, and
+  drops the signature.
+- `stepq pmi`: semantic GD&T of AP242 files — datums, geometric
+  tolerances (characteristic, magnitude, datum reference frame with
+  modifiers, tolerance modifiers, unit size, toleranced feature) and size
+  and location dimensions (nominal values, plus-minus bounds, features) —
+  grouped by product definition, with values as written; table, JSON or
+  CSV. Library: `pmi::pmi`.
 - `stepq split --bodies`: a part whose shape holds several solids also gets
   one file per solid, `<part>.body-<n>.stp`, holding the part with its
   other solids and everything only they bring (faces, styles) left out.
@@ -159,6 +252,8 @@ First release.
 
 - License is now MIT only (previously MIT OR Apache-2.0).
 
-[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jchultarsky/stepq/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/jchultarsky/stepq/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jchultarsky/stepq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jchultarsky/stepq/releases/tag/v0.1.0

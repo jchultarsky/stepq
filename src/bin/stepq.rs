@@ -16,6 +16,7 @@ use stepq::model::{
     BomNode, BomTreeOptions, Definition, Graph, Placement, ProductStructure, Usage,
 };
 use stepq::p21::{Exchange, Instance, parse};
+use stepq::pmi::{Dimension, DimensionKind, Pmi, Tolerance};
 use stepq::props::{Identifier, Property, PropertyKind, Subject, Value};
 
 /// Query, inspect, split and reshape STEP (ISO 10303-21) files.
@@ -97,13 +98,17 @@ enum Command {
     /// repeated sub-assemblies expanded once and marked (*); as CSV, one row
     /// per line with its level and item number; as JSON, nested. With
     /// --flat, one line per distinct component with its total quantity.
+    ///
+    /// The summary line under the tree always counts the whole BOM, including
+    /// levels that --depth leaves out.
     Bom {
         /// STEP file to inspect, or `-` for standard input.
         file: PathBuf,
         /// One line per distinct component with its total quantity.
         #[arg(long)]
         flat: bool,
-        /// List at most this many levels below each top-level assembly.
+        /// List at most this many levels below each top-level assembly. The
+        /// summary line still counts every level.
         #[arg(long)]
         depth: Option<usize>,
         /// In the tree, expand repeated sub-assemblies every time. CSV and
@@ -127,6 +132,12 @@ enum Command {
     /// With --bodies, a part whose shape holds several solids also gets one
     /// file per solid, `<part>.body-<n>.stp`: the part with its other solids
     /// left out.
+    ///
+    /// With --master, every assembly is written as a master file instead:
+    /// its components keep their products, placements and a shape with no
+    /// geometry, and refer to their own files through CAx-IF external
+    /// references (`document_file`, `applied_document_reference`). Parts are
+    /// written as usual.
     Split {
         /// STEP file to split, or `-` for standard input.
         file: PathBuf,
@@ -136,12 +147,19 @@ enum Command {
         /// Overwrite output files that already exist.
         #[arg(long)]
         force: bool,
-        /// Also list the entity types that no output contains.
+        /// Also list the entity types that no output contains, in two groups:
+        /// left behind (something outside them still refers to them) and
+        /// referenced by nothing. JSON lists all of them as `orphans` and the
+        /// second group as `unreferenced`.
         #[arg(long)]
         report_orphans: bool,
         /// Also write one file per solid of every part with several.
         #[arg(long)]
         bodies: bool,
+        /// Write assemblies as master files that refer to their components'
+        /// files instead of copying their geometry.
+        #[arg(long)]
+        master: bool,
     },
     /// Check a file for structural problems, without a geometry kernel.
     ///
@@ -261,6 +279,37 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Merge a master file and the files it refers to into one file.
+    ///
+    /// The inverse of `split --master`: every component stub with a CAx-IF
+    /// external reference (`document_file`, `applied_document_reference`) is
+    /// replaced by the instances of the file it names, read relative to the
+    /// master's folder, and the reference entities are dropped. Component
+    /// files that are masters themselves are merged first. Instances are
+    /// copied as written, renamed after the master's.
+    Assemble {
+        /// Master STEP file, or `-` for standard input (references are then
+        /// read relative to the current directory).
+        file: PathBuf,
+        /// Where to write the result, or `-` for standard output (the report
+        /// then goes to standard error).
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Overwrite the output file if it exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List semantic PMI: geometric tolerances, dimensions and datums.
+    ///
+    /// Reads the machine-readable GD&T of AP242 files, not the annotation
+    /// graphics, grouped under the product definition it belongs to. Values
+    /// are printed as written in the file. With --format json, one document
+    /// with datums, tolerances and dimensions; with --format csv, one row per
+    /// item.
+    Pmi {
+        /// STEP file to inspect, or `-` for standard input.
+        file: PathBuf,
+    },
 }
 
 /// The sections `stepq diff --section` selects.
@@ -368,7 +417,18 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             force,
             report_orphans,
             bodies,
-        } => split(file, out, cli.format, *force, *report_orphans, *bodies),
+            master,
+        } => split(
+            file,
+            out,
+            cli.format,
+            *force,
+            *report_orphans,
+            SplitMode {
+                bodies: *bodies,
+                master: *master,
+            },
+        ),
         Command::Lint { file, schemas, all } => return lint(file, schemas, cli.format, *all),
         Command::Refs {
             file,
@@ -414,6 +474,8 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             anonymize,
             force,
         } => strip(file, out, *anonymize, *force, cli.format),
+        Command::Assemble { file, out, force } => assemble(file, out, *force, cli.format),
+        Command::Pmi { file } => pmi(file, cli.format),
     };
     done.map(|()| ExitCode::SUCCESS)
 }
@@ -488,6 +550,273 @@ fn info(path: &Path, format: Format, top: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn pmi(path: &Path, format: Format) -> anyhow::Result<()> {
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let exchange = parse(&src).with_context(|| format!("parsing {name}"))?;
+    let graph = Graph::build(exchange);
+    let structure = ProductStructure::new(&graph);
+    let found = stepq::pmi::pmi(&graph, &structure);
+
+    let mut out = BufWriter::new(io::stdout().lock());
+    match format {
+        Format::Table | Format::Tree => write_pmi_table(&mut out, &structure, &found)?,
+        Format::Json => {
+            #[derive(serde::Serialize)]
+            struct Document<'a> {
+                file: &'a str,
+                #[serde(flatten)]
+                pmi: &'a Pmi,
+            }
+            serde_json::to_writer_pretty(
+                &mut out,
+                &Document {
+                    file: &name,
+                    pmi: &found,
+                },
+            )?;
+            writeln!(out)?;
+        }
+        Format::Csv => write_pmi_csv(&mut out, &structure, &found)?,
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// `position 0.75 (modifier) | A | B (modifier)  name`.
+fn tolerance_text(tolerance: &Tolerance) -> String {
+    let mut text = tolerance.kind.clone();
+    if let Some(magnitude) = &tolerance.magnitude {
+        let _ = write!(text, " {}", magnitude.value);
+    }
+    if !tolerance.modifiers.is_empty() {
+        let _ = write!(text, " ({})", tolerance.modifiers.join(", "));
+    }
+    for datum in &tolerance.datums {
+        let _ = write!(text, " | {}", datum.label);
+        if !datum.modifiers.is_empty() {
+            let _ = write!(text, " ({})", datum.modifiers.join(", "));
+        }
+    }
+    if let Some(name) = tolerance.name.as_deref().filter(|name| !name.is_empty()) {
+        let _ = write!(text, "  {name}");
+    }
+    text
+}
+
+/// `diameter 35. (-0.2 .. 0.)`.
+fn dimension_text(dimension: &Dimension) -> String {
+    let kind = match dimension.kind {
+        DimensionKind::Size => "size",
+        _ => "location",
+    };
+    let mut text = dimension
+        .name
+        .clone()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| kind.to_owned());
+    for value in &dimension.values {
+        match value.name.as_deref() {
+            Some(name) if !name.is_empty() && name != "nominal value" => {
+                let _ = write!(text, " {name} {}", value.value);
+            }
+            _ => {
+                let _ = write!(text, " {}", value.value);
+            }
+        }
+    }
+    if let Some(bounds) = &dimension.tolerance {
+        let bound = |value: Option<&Value>| value.map_or("?", |v| v.value.as_str()).to_owned();
+        let _ = write!(
+            text,
+            " ({} .. {})",
+            bound(bounds.lower.as_ref()),
+            bound(bounds.upper.as_ref())
+        );
+    }
+    text
+}
+
+fn write_pmi_table(
+    out: &mut impl Write,
+    structure: &ProductStructure,
+    found: &Pmi,
+) -> io::Result<()> {
+    if found.is_empty() {
+        return writeln!(out, "no semantic PMI");
+    }
+    let on = |subject: &Subject| format!("[on {} #{}]", subject.entity, subject.instance);
+    // (group, kind, instance, line), printed by product definition, then
+    // datums, tolerances and dimensions, each in instance order.
+    let mut rows: Vec<(usize, u8, u64, String)> = Vec::new();
+    for datum in &found.datums {
+        rows.push((
+            props_group(structure, datum.subject.product_definition),
+            0,
+            datum.instance,
+            format!("  {:<10}  {}", "datum", datum.label),
+        ));
+    }
+    for tolerance in &found.tolerances {
+        rows.push((
+            props_group(structure, tolerance.target.product_definition),
+            1,
+            tolerance.instance,
+            format!(
+                "  {:<10}  {}  {}",
+                "tolerance",
+                tolerance_text(tolerance),
+                on(&tolerance.target)
+            ),
+        ));
+    }
+    for dimension in &found.dimensions {
+        let target = &dimension.target;
+        let features = match &dimension.related {
+            Some(related) => format!(
+                "[from {} #{} to {} #{}]",
+                target.entity, target.instance, related.entity, related.instance
+            ),
+            None => on(target),
+        };
+        rows.push((
+            props_group(structure, target.product_definition),
+            2,
+            dimension.instance,
+            format!(
+                "  {:<10}  {}  {features}",
+                "dimension",
+                dimension_text(dimension)
+            ),
+        ));
+    }
+    rows.sort_by_key(|(group, kind, instance, _)| (*group, *kind, *instance));
+
+    let mut current = None;
+    for (group, _, _, line) in &rows {
+        if current != Some(*group) {
+            if current.is_some() {
+                writeln!(out)?;
+            }
+            match structure.definitions().get(*group) {
+                Some(definition) => writeln!(
+                    out,
+                    "{}  #{}",
+                    definition_label(definition),
+                    definition.instance
+                )?,
+                None => writeln!(out, "(not attached to a product definition)")?,
+            }
+            current = Some(*group);
+        }
+        writeln!(out, "{line}")?;
+    }
+    writeln!(out)?;
+    let plural =
+        |n: usize, word: &str| format!("{} {word}{}", grouped(n), if n == 1 { "" } else { "s" });
+    writeln!(
+        out,
+        "{}, {}, {}",
+        plural(found.datums.len(), "datum"),
+        plural(found.tolerances.len(), "tolerance"),
+        plural(found.dimensions.len(), "dimension")
+    )
+}
+
+fn write_pmi_csv(
+    out: &mut impl Write,
+    structure: &ProductStructure,
+    found: &Pmi,
+) -> io::Result<()> {
+    let product = |definition: Option<u64>| {
+        definition
+            .and_then(|id| structure.definitions().iter().find(|d| d.instance == id))
+            .map(definition_label)
+            .unwrap_or_default()
+    };
+    let id = |instance: Option<u64>| instance.map(|id| format!("#{id}")).unwrap_or_default();
+    writeln!(
+        out,
+        "category,product_definition,product,instance,type,name,value,lower,upper,datums,modifiers,target,target_type"
+    )?;
+    // Datums, tolerances, then dimensions, each in instance order.
+    let mut datums: Vec<_> = found.datums.iter().collect();
+    datums.sort_by_key(|datum| datum.instance);
+    let mut tolerances: Vec<_> = found.tolerances.iter().collect();
+    tolerances.sort_by_key(|tolerance| tolerance.instance);
+    let mut dimensions: Vec<_> = found.dimensions.iter().collect();
+    dimensions.sort_by_key(|dimension| dimension.instance);
+    for datum in datums {
+        let subject = &datum.subject;
+        writeln!(
+            out,
+            "datum,{},{},#{},,{},,,,,,#{},{}",
+            id(subject.product_definition),
+            csv_field(&product(subject.product_definition)),
+            datum.instance,
+            csv_field(&datum.label),
+            subject.instance,
+            csv_field(&subject.entity)
+        )?;
+    }
+    for tolerance in tolerances {
+        let target = &tolerance.target;
+        let datums: Vec<String> = tolerance
+            .datums
+            .iter()
+            .map(|datum| {
+                if datum.modifiers.is_empty() {
+                    datum.label.clone()
+                } else {
+                    format!("{}({})", datum.label, datum.modifiers.join(" "))
+                }
+            })
+            .collect();
+        writeln!(
+            out,
+            "tolerance,{},{},#{},{},{},{},,,{},{},#{},{}",
+            id(target.product_definition),
+            csv_field(&product(target.product_definition)),
+            tolerance.instance,
+            csv_field(&tolerance.kind),
+            csv_field(tolerance.name.as_deref().unwrap_or_default()),
+            csv_field(
+                tolerance
+                    .magnitude
+                    .as_ref()
+                    .map_or("", |m| m.value.as_str())
+            ),
+            csv_field(&datums.join("|")),
+            csv_field(&tolerance.modifiers.join(" ")),
+            target.instance,
+            csv_field(&target.entity)
+        )?;
+    }
+    for dimension in dimensions {
+        let target = &dimension.target;
+        let bound = |value: Option<&Value>| value.map_or(String::new(), |v| csv_field(&v.value));
+        let nominal: Vec<&str> = dimension.values.iter().map(|v| v.value.as_str()).collect();
+        writeln!(
+            out,
+            "dimension,{},{},#{},{},{},{},{},{},,,#{},{}",
+            id(target.product_definition),
+            csv_field(&product(target.product_definition)),
+            dimension.instance,
+            match dimension.kind {
+                DimensionKind::Size => "size",
+                _ => "location",
+            },
+            csv_field(dimension.name.as_deref().unwrap_or_default()),
+            csv_field(&nominal.join(" ")),
+            bound(dimension.tolerance.as_ref().and_then(|b| b.lower.as_ref())),
+            bound(dimension.tolerance.as_ref().and_then(|b| b.upper.as_ref())),
+            target.instance,
+            csv_field(&target.entity)
+        )?;
+    }
+    Ok(())
+}
+
 fn strip(
     path: &Path,
     out_path: &Path,
@@ -508,12 +837,7 @@ fn strip(
             .with_context(|| format!("writing {name}"))?;
         "<stdout>".to_owned()
     } else {
-        if out_path.exists() && !force {
-            bail!(
-                "{} already exists; pass --force to overwrite it",
-                out_path.display()
-            );
-        }
+        refuse_existing(out_path, force)?;
         let file = fs::File::create(out_path)
             .with_context(|| format!("creating {}", out_path.display()))?;
         writer
@@ -549,6 +873,72 @@ fn strip(
             csv_field(&output),
             plan.instances
         ),
+    };
+    if to_stdout {
+        eprint!("{report}");
+    } else {
+        print!("{report}");
+    }
+    Ok(())
+}
+
+fn assemble(path: &Path, out_path: &Path, force: bool, format: Format) -> anyhow::Result<()> {
+    let src = read_input(path)?;
+    let name = display_name(path);
+    let base = if path == Path::new("-") {
+        PathBuf::from(".")
+    } else {
+        path.parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    };
+    // A nested master's references are relative to the folder of the file
+    // that names them; `split --master` writes them all to one folder.
+    let mut load = |file: &str| fs::read(base.join(file));
+    let assembled =
+        stepq::assemble::assemble(&src, &mut load).with_context(|| format!("assembling {name}"))?;
+
+    let to_stdout = out_path == Path::new("-");
+    let output = if to_stdout {
+        io::stdout().lock().write_all(&assembled.text)?;
+        "<stdout>".to_owned()
+    } else {
+        refuse_existing(out_path, force)?;
+        fs::write(out_path, &assembled.text)
+            .with_context(|| format!("writing {}", out_path.display()))?;
+        out_path.display().to_string()
+    };
+
+    let files = &assembled.files;
+    let report = match format {
+        Format::Table | Format::Tree => {
+            let mut report = format!(
+                "{output}: merged {} file{}\n",
+                grouped(files.len()),
+                if files.len() == 1 { "" } else { "s" }
+            );
+            report.extend(files.iter().map(|file| format!("  {file}\n")));
+            report
+        }
+        Format::Json => {
+            let document = serde_json::json!({
+                "file": name,
+                "output": output,
+                "files": files,
+            });
+            format!("{}\n", serde_json::to_string_pretty(&document)?)
+        }
+        Format::Csv => {
+            let mut report = String::from("file,output,merged\n");
+            report.extend(files.iter().map(|file| {
+                format!(
+                    "{},{},{}\n",
+                    csv_field(&name),
+                    csv_field(&output),
+                    csv_field(file)
+                )
+            }));
+            report
+        }
     };
     if to_stdout {
         eprint!("{report}");
@@ -640,8 +1030,9 @@ fn change_name(kind: ChangeKind) -> &'static str {
     }
 }
 
-fn or_none(value: Option<&String>) -> &str {
-    value.map_or("(none)", String::as_str)
+/// A value for the diff table, on one line; `(none)` where it is missing.
+fn or_none(value: Option<&String>) -> String {
+    value.map_or_else(|| "(none)".to_owned(), |value| one_line(value))
 }
 
 fn write_diff_table(out: &mut impl Write, old: &str, new: &str, diff: &Diff) -> io::Result<()> {
@@ -710,15 +1101,15 @@ fn write_diff_table(out: &mut impl Write, old: &str, new: &str, diff: &Diff) -> 
         writeln!(out, "Properties")?;
         for change in &diff.properties {
             let product = if change.product.is_empty() {
-                "(no product)"
+                "(no product)".to_owned()
             } else {
-                &change.product
+                one_line(&change.product)
             };
             writeln!(
                 out,
                 "  {} {product}: {}: {} → {}",
                 change_mark(change.kind),
-                change.property,
+                one_line(&change.property),
                 or_none(change.old.as_ref()),
                 or_none(change.new.as_ref())
             )?;
@@ -865,9 +1256,9 @@ fn value_text(label: &str, value: &Value) -> String {
         .as_deref()
         .filter(|n| !n.is_empty() && *n != label)
     {
-        let _ = write!(text, " / {name}");
+        let _ = write!(text, " / {}", one_line(name));
     }
-    let _ = write!(text, " = {}", value.value);
+    let _ = write!(text, " = {}", one_line(&value.value));
     let suffix = match (&value.measure, value.unit) {
         _ if value.value.starts_with('#') => None,
         (Some(measure), Some(unit)) => Some(format!("{measure}, unit #{unit}")),
@@ -900,12 +1291,17 @@ fn write_props_table(
     for property in properties {
         let group = props_group(structure, property.subject.product_definition);
         let label = property.label();
+        let shown = if label.trim().is_empty() {
+            "(unnamed)".to_owned()
+        } else {
+            one_line(label)
+        };
         let kind = PropsKind::of(property).name();
         if property.values.is_empty() {
             rows.push((
                 group,
                 property.instance,
-                format!("  {kind:<10}  {label}{}", on(&property.subject)),
+                format!("  {kind:<10}  {shown}{}", on(&property.subject)),
             ));
         }
         for value in &property.values {
@@ -914,7 +1310,7 @@ fn write_props_table(
                 group,
                 property.instance,
                 format!(
-                    "  {kind:<10}  {label}{}{}",
+                    "  {kind:<10}  {shown}{}{}",
                     value_text(label, value),
                     on(&property.subject)
                 ),
@@ -928,7 +1324,7 @@ fn write_props_table(
             format!(
                 "  {:<10}  {}{}",
                 "id",
-                identifier.id,
+                one_line(&identifier.id),
                 on(&identifier.subject)
             ),
         ));
@@ -1050,11 +1446,16 @@ fn entity_types(exchange: &Exchange<'_>, instance: &Instance) -> Vec<String> {
         .collect()
 }
 
+/// `text` on one line for a table: every run of whitespace, line breaks
+/// included, collapsed to one space, and none at either end.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// An instance's text on one line: whitespace runs collapsed and, unless
 /// `full`, cut to [`TEXT_LIMIT`] characters.
 fn instance_line(exchange: &Exchange<'_>, instance: &Instance, full: bool) -> String {
-    let text = String::from_utf8_lossy(exchange.text(instance));
-    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = one_line(&String::from_utf8_lossy(exchange.text(instance)));
     if full || line.chars().count() <= TEXT_LIMIT {
         line
     } else {
@@ -1701,13 +2102,22 @@ struct SplitFile<'a> {
     pruned: usize,
 }
 
+/// What `stepq split` writes besides one file per definition.
+#[derive(Debug, Clone, Copy)]
+struct SplitMode {
+    /// One file per solid of multi-body parts.
+    bodies: bool,
+    /// Assemblies as master files with external references.
+    master: bool,
+}
+
 fn split(
     path: &Path,
     dir: &Path,
     format: Format,
     force: bool,
     report_orphans: bool,
-    bodies: bool,
+    mode: SplitMode,
 ) -> anyhow::Result<()> {
     let src = read_input(path)?;
     let name = display_name(path);
@@ -1721,6 +2131,8 @@ fn split(
         bail!("{name} has no product definitions to split");
     }
 
+    // Plan every output, body files included, before writing any: an
+    // existing file must stop the split before it has written anything.
     let mut used = std::collections::HashSet::new();
     let mut plans = Vec::with_capacity(definitions.len());
     for (index, definition) in definitions.iter().enumerate() {
@@ -1729,41 +2141,10 @@ fn split(
             .context("product definition missing from the graph")?;
         let file = output_name(definition, &mut used);
         let target = dir.join(&file);
-        if target.exists() && !force {
-            bail!(
-                "{} already exists; use --force to overwrite",
-                target.display()
-            );
-        }
-        plans.push((index, node, file, target));
-    }
-
-    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let mut extractions = Vec::with_capacity(plans.len());
-    let mut written = Vec::with_capacity(plans.len());
-    for (index, node, file, target) in plans {
+        refuse_existing(&target, force)?;
         let extraction = stepq::model::extract(&graph, &[node]);
-        let output =
-            fs::File::create(&target).with_context(|| format!("creating {}", target.display()))?;
-        stepq::p21::Writer::new(graph.exchange())
-            .numbering(stepq::p21::Numbering::Dense)
-            .write_pruned(
-                extraction.nodes().iter().copied(),
-                extraction.pruned().iter().copied(),
-                output,
-            )
-            .with_context(|| format!("writing {}", target.display()))?;
         let is_assembly = structure.children(index).len() > 0;
-        let stem = file.trim_end_matches(".stp").to_owned();
-        written.push(SplitFile {
-            file,
-            kind: kind(is_assembly),
-            definition: &definitions[index],
-            instances: extraction.nodes().len(),
-            pruned: extraction.pruned().len(),
-        });
-
-        let solids: Vec<usize> = if bodies && !is_assembly {
+        let solids: Vec<usize> = if mode.bodies && !is_assembly {
             extraction
                 .nodes()
                 .iter()
@@ -1774,31 +2155,89 @@ fn split(
             Vec::new()
         };
         if solids.len() > 1 {
+            let stem = file.trim_end_matches(".stp");
+            for number in 1..=solids.len() {
+                refuse_existing(&dir.join(body_file_name(stem, number)), force)?;
+            }
+        }
+        plans.push((index, node, file, target, extraction, is_assembly, solids));
+    }
+
+    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let files: Vec<String> = plans.iter().map(|plan| plan.2.clone()).collect();
+    let mut extractions = Vec::with_capacity(plans.len());
+    let mut written = Vec::with_capacity(plans.len());
+    for (index, node, file, target, extraction, is_assembly, solids) in plans {
+        let output =
+            fs::File::create(&target).with_context(|| format!("creating {}", target.display()))?;
+        let (file_kind, instances, pruned) = if mode.master && is_assembly {
+            let (instances, pruned) = write_master(&graph, &structure, index, node, &files, output)
+                .with_context(|| format!("writing {}", target.display()))?;
+            ("master", instances, pruned)
+        } else {
+            stepq::p21::Writer::new(graph.exchange())
+                .numbering(stepq::p21::Numbering::Dense)
+                .write_pruned(
+                    extraction.nodes().iter().copied(),
+                    extraction.pruned().iter().copied(),
+                    output,
+                )
+                .with_context(|| format!("writing {}", target.display()))?;
+            (
+                kind(is_assembly),
+                extraction.nodes().len(),
+                extraction.pruned().len(),
+            )
+        };
+        let stem = file.trim_end_matches(".stp").to_owned();
+        written.push(SplitFile {
+            file,
+            kind: file_kind,
+            definition: &definitions[index],
+            instances,
+            pruned,
+        });
+
+        if solids.len() > 1 {
             written.extend(write_bodies(
                 &graph,
                 node,
                 &solids,
                 &stem,
                 dir,
-                force,
                 &definitions[index],
             )?);
         }
         extractions.push(extraction);
     }
 
-    let orphans: Vec<(String, usize)> = if report_orphans {
-        orphan_types(&graph, &stepq::model::orphans(&graph, &extractions))
-    } else {
-        Vec::new()
-    };
+    let orphans = report_orphans.then(|| Orphans::of(&graph, &extractions));
+    write_split_report(dir, format, &written, orphans.as_ref())
+}
 
-    write_split_report(
-        dir,
-        format,
-        &written,
-        report_orphans.then_some(orphans.as_slice()),
-    )
+/// The instances no split output holds, as entity types with counts: all
+/// of them, those something still refers to, and those nothing does.
+struct Orphans {
+    all: Vec<(String, usize)>,
+    left_behind: Vec<(String, usize)>,
+    unreferenced: Vec<(String, usize)>,
+}
+
+impl Orphans {
+    fn of(graph: &Graph<'_>, extractions: &[stepq::model::Extraction]) -> Self {
+        let nodes = stepq::model::orphans(graph, extractions);
+        let unreferenced = stepq::model::unreachable(graph, &nodes);
+        let left_behind: Vec<usize> = nodes
+            .iter()
+            .copied()
+            .filter(|node| unreferenced.binary_search(node).is_err())
+            .collect();
+        Self {
+            all: orphan_types(graph, &nodes),
+            left_behind: orphan_types(graph, &left_behind),
+            unreferenced: orphan_types(graph, &unreferenced),
+        }
+    }
 }
 
 /// Prints what `stepq split` wrote, and the orphans when asked for.
@@ -1806,7 +2245,7 @@ fn write_split_report(
     dir: &Path,
     format: Format,
     written: &[SplitFile<'_>],
-    orphans: Option<&[(String, usize)]>,
+    orphans: Option<&Orphans>,
 ) -> anyhow::Result<()> {
     let mut out = BufWriter::new(io::stdout().lock());
     match format {
@@ -1827,12 +2266,30 @@ fn write_split_report(
                 )?;
             }
             writeln!(out)?;
-            writeln!(out, "wrote {} files to {}", written.len(), dir.display())?;
+            let files = if written.len() == 1 { "file" } else { "files" };
+            writeln!(out, "wrote {} {files} to {}", written.len(), dir.display())?;
             if let Some(orphans) = orphans {
-                let total: usize = orphans.iter().map(|(_, count)| count).sum();
-                writeln!(out, "{} instances are in no output", grouped(total))?;
-                for (entity, count) in orphans {
-                    writeln!(out, "{:>10}  {entity}", grouped(*count))?;
+                let total = |types: &[(String, usize)]| -> usize {
+                    types.iter().map(|(_, count)| count).sum()
+                };
+                let all = total(&orphans.all);
+                let (noun, verb) = if all == 1 {
+                    ("instance", "is")
+                } else {
+                    ("instances", "are")
+                };
+                writeln!(out, "{} {noun} {verb} in no output", grouped(all))?;
+                for (heading, types) in [
+                    ("left behind", &orphans.left_behind),
+                    ("referenced by nothing", &orphans.unreferenced),
+                ] {
+                    if types.is_empty() {
+                        continue;
+                    }
+                    writeln!(out, "  {heading}: {}", grouped(total(types)))?;
+                    for (entity, count) in types {
+                        writeln!(out, "{:>10}  {entity}", grouped(*count))?;
+                    }
                 }
             }
         }
@@ -1843,13 +2300,18 @@ fn write_split_report(
                 files: &'a [SplitFile<'a>],
                 #[serde(skip_serializing_if = "Option::is_none")]
                 orphans: Option<&'a [(String, usize)]>,
+                /// The orphans nothing refers to, directly or through other
+                /// orphans.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                unreferenced: Option<&'a [(String, usize)]>,
             }
             serde_json::to_writer_pretty(
                 &mut out,
                 &Report {
                     directory: dir.display().to_string(),
                     files: written,
-                    orphans,
+                    orphans: orphans.map(|o| o.all.as_slice()),
+                    unreferenced: orphans.map(|o| o.unreferenced.as_slice()),
                 },
             )?;
             writeln!(out)?;
@@ -1911,29 +2373,39 @@ fn output_name(definition: &Definition, used: &mut std::collections::HashSet<Str
     file
 }
 
+/// Fails if `target` exists and `force` was not given.
+fn refuse_existing(target: &Path, force: bool) -> anyhow::Result<()> {
+    if target.exists() && !force {
+        bail!(
+            "{} already exists; pass --force to overwrite it",
+            target.display()
+        );
+    }
+    Ok(())
+}
+
+/// `<stem>.body-<number>.stp`, numbered from 1.
+fn body_file_name(stem: &str, number: usize) -> String {
+    format!("{stem}.body-{number}.stp")
+}
+
 /// Writes `<stem>.body-<n>.stp` into `dir` for each of a part's `solids`:
 /// the part definition at `node`, extracted with its other solids left out.
+/// The caller has checked that the files may be written.
 fn write_bodies<'d>(
     graph: &Graph<'_>,
     node: usize,
     solids: &[usize],
     stem: &str,
     dir: &Path,
-    force: bool,
     definition: &'d Definition,
 ) -> anyhow::Result<Vec<SplitFile<'d>>> {
     let mut written = Vec::with_capacity(solids.len());
-    for (number, &solid) in solids.iter().enumerate() {
+    for (index, &solid) in solids.iter().enumerate() {
         let others: Vec<usize> = solids.iter().copied().filter(|&s| s != solid).collect();
         let body = stepq::model::extract_excluding(graph, &[node], &others);
-        let file = format!("{stem}.body-{}.stp", number + 1);
+        let file = body_file_name(stem, index + 1);
         let target = dir.join(&file);
-        if target.exists() && !force {
-            bail!(
-                "{} already exists; use --force to overwrite",
-                target.display()
-            );
-        }
         let output =
             fs::File::create(&target).with_context(|| format!("creating {}", target.display()))?;
         stepq::p21::Writer::new(graph.exchange())
@@ -1959,6 +2431,231 @@ fn write_bodies<'d>(
         });
     }
     Ok(written)
+}
+
+/// Writes the assembly `definitions[index]`, at `node`, as a master file.
+///
+/// The assembly's own instances are written as `split` writes them. Of each
+/// component only a stub is kept — its product, definition, shape definition
+/// and shape representations, holding their placements but no geometry —
+/// with a CAx-IF external reference (Recommended Practices for External
+/// References 3.1, §6.1) to the component's file in `files`. The
+/// component's own components are left to that file. Instance names are
+/// kept, and the reference entities are numbered after the file's highest.
+/// Returns how many instances were written, and how many pruned.
+fn write_master(
+    graph: &Graph<'_>,
+    structure: &ProductStructure,
+    index: usize,
+    node: usize,
+    files: &[String],
+    output: fs::File,
+) -> anyhow::Result<(usize, usize)> {
+    let (nodes, pruned, stubs) = master_selection(graph, structure, index, node);
+    let (text, appended) = external_reference_text(graph, structure, &stubs, files);
+    stepq::p21::Writer::new(graph.exchange())
+        .append(text.as_bytes())
+        .write_pruned(nodes.iter().copied(), pruned.iter().copied(), output)?;
+    Ok((nodes.len() + appended, pruned.len()))
+}
+
+/// The instances of a master file, the ones to prune, and each component as
+/// `(definition index, node)`.
+fn master_selection(
+    graph: &Graph<'_>,
+    structure: &ProductStructure,
+    index: usize,
+    node: usize,
+) -> (Vec<usize>, Vec<usize>, Vec<(usize, usize)>) {
+    let exchange = graph.exchange();
+    let definitions = structure.definitions();
+    let mut components: Vec<usize> = structure.children(index).map(|usage| usage.child).collect();
+    components.sort_unstable();
+    components.dedup();
+
+    // Leave out each component and every item of its shape representations
+    // but placements: with them, its geometry and its own components.
+    let mut excluded = Vec::new();
+    let mut stubs = Vec::new();
+    for &component in &components {
+        let definition = &definitions[component];
+        let Some(child) = graph.node(definition.instance) else {
+            continue;
+        };
+        excluded.push(child);
+        stubs.push((component, child));
+        for &rep in &definition.shape_representations {
+            let Some(rep_node) = graph.node(rep) else {
+                continue;
+            };
+            // A shape spread over several representations: a simple
+            // shape_representation_relationship would bring the geometry
+            // back. (Complex ones are the placements the master keeps.)
+            excluded.extend(
+                graph
+                    .referenced_by(rep_node)
+                    .iter()
+                    .copied()
+                    .filter(|&link| {
+                        let instance = graph.instance(link);
+                        !instance.is_complex()
+                            && exchange.records(instance).next().is_some_and(|record| {
+                                record.is("SHAPE_REPRESENTATION_RELATIONSHIP")
+                            })
+                    }),
+            );
+            let items = exchange
+                .records(graph.instance(rep_node))
+                .find(|r| r.params().count() >= 3)
+                .and_then(|record| record.param(1))
+                .and_then(|items| items.list());
+            for item in items.into_iter().flatten().filter_map(|p| p.reference()) {
+                let Some(item) = graph.node(item) else {
+                    continue;
+                };
+                let placement = exchange
+                    .records(graph.instance(item))
+                    .any(|record| record.is("AXIS2_PLACEMENT_3D"));
+                if !placement {
+                    excluded.push(item);
+                }
+            }
+        }
+    }
+    excluded.sort_unstable();
+    excluded.dedup();
+    let base = stepq::model::extract_excluding(graph, &[node], &excluded);
+
+    // Add each component's stub: its definition, shape definition and shape
+    // definition representations, and what they refer to, short of the
+    // excluded items.
+    let mut selected = vec![false; graph.len()];
+    for &taken in base.nodes() {
+        selected[taken] = true;
+    }
+    for &(_, child) in &stubs {
+        let mut stack = vec![child];
+        for &shape in graph.referenced_by(child) {
+            if refers_as(graph, shape, "PRODUCT_DEFINITION_SHAPE", 2, child) {
+                stack.push(shape);
+                stack.extend(graph.referenced_by(shape).iter().copied().filter(|&sdr| {
+                    refers_as(graph, sdr, "SHAPE_DEFINITION_REPRESENTATION", 0, shape)
+                }));
+            }
+        }
+        while let Some(next) = stack.pop() {
+            if selected[next] {
+                continue;
+            }
+            selected[next] = true;
+            stack.extend(
+                graph
+                    .references(next)
+                    .iter()
+                    .copied()
+                    .filter(|target| !selected[*target] && excluded.binary_search(target).is_err()),
+            );
+        }
+    }
+    let nodes: Vec<usize> = (0..graph.len()).filter(|&n| selected[n]).collect();
+    let mut pruned: Vec<usize> = base.pruned().to_vec();
+    pruned.extend(
+        nodes
+            .iter()
+            .copied()
+            .filter(|&n| graph.references(n).iter().any(|&target| !selected[target])),
+    );
+    pruned.sort_unstable();
+    pruned.dedup();
+    (nodes, pruned, stubs)
+}
+
+/// The external reference entities for each of `stubs`, numbered after the
+/// file's highest instance name, and how many there are.
+fn external_reference_text(
+    graph: &Graph<'_>,
+    structure: &ProductStructure,
+    stubs: &[(usize, usize)],
+    files: &[String],
+) -> (String, usize) {
+    let exchange = graph.exchange();
+    let definitions = structure.definitions();
+    let mut next = exchange.instances().iter().map(|i| i.id).max().unwrap_or(0);
+    let mut id = || {
+        next += 1;
+        next
+    };
+    let mut text = String::new();
+    let mut appended = 0;
+    for &(component, child) in stubs {
+        let file = &files[component];
+        let child = graph.instance(child).id;
+        let [
+            kind,
+            document,
+            representation,
+            role,
+            source,
+            assignment,
+            reference,
+            object_role,
+            association,
+        ] = [(); 9].map(|()| id());
+        let _ = writeln!(text, "#{kind}=DOCUMENT_TYPE('geometry');");
+        let _ = writeln!(
+            text,
+            "#{document}=DOCUMENT_FILE('{file}','',$,#{kind},'',$);"
+        );
+        let _ = writeln!(
+            text,
+            "#{representation}=DOCUMENT_REPRESENTATION_TYPE('digital',#{document});"
+        );
+        let _ = writeln!(
+            text,
+            "#{role}=IDENTIFICATION_ROLE('external document id and location',$);"
+        );
+        let _ = writeln!(text, "#{source}=EXTERNAL_SOURCE(IDENTIFIER(''));");
+        let _ = writeln!(
+            text,
+            "#{assignment}=APPLIED_EXTERNAL_IDENTIFICATION_ASSIGNMENT('{file}',#{role},#{source},(#{document}));"
+        );
+        let _ = writeln!(
+            text,
+            "#{reference}=APPLIED_DOCUMENT_REFERENCE(#{document},'',(#{child}));"
+        );
+        let _ = writeln!(text, "#{object_role}=OBJECT_ROLE('mandatory',$);");
+        let _ = writeln!(
+            text,
+            "#{association}=ROLE_ASSOCIATION(#{object_role},#{reference});"
+        );
+        appended += 9;
+        if let Some(&shape) = definitions[component].shape_representations.first() {
+            let [property, link] = [(); 2].map(|()| id());
+            let _ = writeln!(
+                text,
+                "#{property}=PROPERTY_DEFINITION('external definition',$,#{document});"
+            );
+            let _ = writeln!(
+                text,
+                "#{link}=PROPERTY_DEFINITION_REPRESENTATION(#{property},#{shape});"
+            );
+            appended += 2;
+        }
+    }
+    (text, appended)
+}
+
+/// True if `node` is an `entity` whose attribute `index` is `target`.
+fn refers_as(graph: &Graph<'_>, node: usize, entity: &str, index: usize, target: usize) -> bool {
+    graph
+        .exchange()
+        .records(graph.instance(node))
+        .next()
+        .is_some_and(|record| {
+            record.is(entity)
+                && record.param(index).and_then(|p| p.reference())
+                    == Some(graph.instance(target).id)
+        })
 }
 
 /// True if `node` is a solid body: a `manifold_solid_brep`, including a
@@ -2424,10 +3121,17 @@ fn write_bom_tree(
             .filter(|line| !line.is_assembly)
             .map(|line| line.quantity)
             .sum();
+        // The counts are of the whole BOM; say so when the tree hides levels.
+        let hidden = match options.depth {
+            Some(depth) if has_truncated(&tree) => {
+                format!(", including levels below --depth {depth}")
+            }
+            _ => String::new(),
+        };
         writeln!(out)?;
         writeln!(
             out,
-            "{assemblies} {}, {parts} {}, {total} {} in total",
+            "{assemblies} {}, {parts} {}, {total} {} in total{hidden}",
             if assemblies == 1 {
                 "sub-assembly"
             } else {
@@ -2452,6 +3156,11 @@ fn write_bom_tree(
         )?;
     }
     Ok(())
+}
+
+/// True if `node` or anything below it has components that were cut off.
+fn has_truncated(node: &BomNode) -> bool {
+    node.truncated || node.components.iter().any(has_truncated)
 }
 
 /// One row per line of the multi-level BOM, with level and item number.

@@ -33,6 +33,15 @@ pub enum Error {
     #[error("entity #{0} is defined more than once")]
     DuplicateId(u64),
 
+    /// An external reference to another file could not be resolved.
+    #[error("external reference to {file}: {message}")]
+    ExternalReference {
+        /// The file referred to.
+        file: String,
+        /// What went wrong.
+        message: String,
+    },
+
     /// An I/O failure while reading or writing a file.
     #[error(transparent)]
     Io(#[from] std::io::Error),

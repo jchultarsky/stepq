@@ -8,13 +8,15 @@
 //!
 //! * the header may hold any number of entities, not exactly three;
 //! * section keywords are matched ignoring ASCII case;
-//! * edition 3 `ANCHOR`, `REFERENCE` and `SIGNATURE` sections are skipped;
+//! * edition 3 `ANCHOR` and `REFERENCE` entries are kept as written, one
+//!   token list each, and not checked further; `SIGNATURE` sections are
+//!   kept as text;
 //! * anything after `END-ISO-10303-21;` is ignored.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use super::exchange::{DataSection, Exchange, Instance};
+use super::exchange::{DataSection, Exchange, ExtraKind, ExtraSection, Instance};
 use super::lexer::{Lexer, Span, Token, TokenKind};
 use crate::error::{Error, Result};
 
@@ -102,18 +104,24 @@ impl<'a> Parser<'a> {
         };
 
         let mut sections = Vec::new();
+        let mut extra = Vec::new();
         let mut instances = Vec::new();
         let mut index = HashMap::new();
         loop {
             let token = self.next(AFTER_HEADER)?;
+            let extra_kind = [
+                ("ANCHOR", ExtraKind::Anchor),
+                ("REFERENCE", ExtraKind::Reference),
+                ("SIGNATURE", ExtraKind::Signature),
+            ]
+            .into_iter()
+            .find(|(keyword, _)| self.is_keyword(token, keyword))
+            .map(|(_, kind)| kind);
             if self.is_keyword(token, "DATA") {
                 let section = self.data_section(&mut instances, &mut index)?;
                 sections.push(section);
-            } else if ["ANCHOR", "REFERENCE", "SIGNATURE"]
-                .iter()
-                .any(|keyword| self.is_keyword(token, keyword))
-            {
-                self.skip_section()?;
+            } else if let Some(kind) = extra_kind {
+                extra.push(self.extra_section(token, kind)?);
             } else if self.is_keyword(token, "END-ISO-10303-21") {
                 self.expect(TokenKind::Semicolon, "';'")?;
                 break;
@@ -130,7 +138,8 @@ impl<'a> Parser<'a> {
             sections,
             instances,
             index,
-        ))
+        )
+        .with_extra_sections(extra))
     }
 
     fn data_section(
@@ -312,12 +321,43 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn skip_section(&mut self) -> Result<()> {
-        while self.eat_keyword("ENDSEC")?.is_none() {
-            self.next("ENDSEC")?;
-        }
+    /// An `ANCHOR`, `REFERENCE` or `SIGNATURE` section after its keyword:
+    /// each entry up to its `;` is kept as one token list. A signature's
+    /// content is not tokenised into entries.
+    fn extra_section(&mut self, keyword: Token, kind: ExtraKind) -> Result<ExtraSection> {
         self.expect(TokenKind::Semicolon, "';'")?;
-        Ok(())
+        let mut entries = Vec::new();
+        let end = loop {
+            if self.eat_keyword("ENDSEC")?.is_some() {
+                break self.expect(TokenKind::Semicolon, "';'")?.span.end;
+            }
+            let first = self.next("an entry or ENDSEC")?;
+            if kind == ExtraKind::Signature {
+                continue;
+            }
+            let start = self.tokens.len();
+            self.keep(first);
+            loop {
+                let token = self.next("';'")?;
+                if token.kind == TokenKind::Semicolon {
+                    let span = Span {
+                        start: first.span.start,
+                        end: token.span.end,
+                    };
+                    entries.push((span, start..self.tokens.len()));
+                    break;
+                }
+                self.keep(token);
+            }
+        };
+        Ok(ExtraSection {
+            kind,
+            span: Span {
+                start: keyword.span.start,
+                end,
+            },
+            entries,
+        })
     }
 
     fn keep(&mut self, token: Token) {
@@ -499,6 +539,57 @@ END-ISO-10303-21;
         assert!(matches!(params[10], Param::ConstantReference(_)));
         assert!(matches!(params[11], Param::ValueReference(_)));
         assert!(matches!(params[12], Param::Resource(_)));
+    }
+
+    #[test]
+    fn edition_3_anchors_and_references() {
+        use crate::p21::{Anchor, ExternalReference, ReferenceName};
+
+        let src = "ISO-10303-21;HEADER;FILE_SCHEMA(('A'));ENDSEC;\
+                   ANCHOR;<origin>=#1;<frame>=(#1,#2);ENDSEC;\
+                   REFERENCE;#9=<bolt.stp#shape>;#LIB=<lib.stp#x>;@v=<values.stp>;ENDSEC;\
+                   DATA;#1=X(#2,#9);#2=Y();ENDSEC;\
+                   SIGNATURE;'c2lnbmVk';ENDSEC;\
+                   END-ISO-10303-21;";
+        let exchange = parse(src.as_bytes()).unwrap();
+        assert_eq!(
+            exchange.anchors(),
+            [
+                Anchor {
+                    name: "origin",
+                    target: Some(1),
+                    text: b"<origin>=#1;",
+                },
+                Anchor {
+                    name: "frame",
+                    target: None,
+                    text: b"<frame>=(#1,#2);",
+                },
+            ]
+        );
+        assert_eq!(
+            exchange.external_references(),
+            [
+                ExternalReference {
+                    name: ReferenceName::Instance(9),
+                    uri: "bolt.stp#shape",
+                },
+                ExternalReference {
+                    name: ReferenceName::Constant("LIB"),
+                    uri: "lib.stp#x",
+                },
+                ExternalReference {
+                    name: ReferenceName::Value("v"),
+                    uri: "values.stp",
+                },
+            ]
+        );
+        assert!(exchange.is_external(9));
+        assert!(!exchange.is_external(2));
+        // #9 is defined by another file, not dangling.
+        let graph = crate::model::Graph::new(exchange).unwrap();
+        assert!(graph.unresolved().is_empty());
+        assert_eq!(graph.references(0), [1]);
     }
 
     #[test]

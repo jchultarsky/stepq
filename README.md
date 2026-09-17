@@ -15,9 +15,10 @@ That constraint is the point: every entity that describes your geometry
 comes out exactly as it went in, byte for byte, with its original names,
 colours, layers, properties and PMI attached.
 
-> **Status: 0.2, early.** The Part 21 parser, reference graph, writer and
+> **Status: 0.4, early.** The Part 21 parser, reference graph, writer and
 > EXPRESS schema reader are in place, and `stepq info`, `tree`, `bom`,
-> `split`, `lint`, `refs`, `query`, `props`, `diff` and `strip` work. The
+> `split` (with `--bodies` and `--master`), `assemble`, `lint`, `refs`,
+> `query`, `props`, `diff`, `strip` and `pmi` work. The
 > library API and the CLI output will still change before 1.0; see
 > [ROADMAP.md](ROADMAP.md).
 
@@ -28,21 +29,27 @@ $ stepq info  assembly.stp                # header, schema, units, entity histog
 $ stepq tree  assembly.stp --usages       # assembly hierarchy and placements
 $ stepq bom   assembly.stp                # multi-level bill of materials as a tree
 $ stepq bom   assembly.stp --format csv   # the same as an indented CSV
-$ stepq split assembly.stp --out parts/   # one file per sub-assembly and part
+$ stepq split assembly.stp --out parts/   # one file per sub-assembly and part (--bodies: per solid)
+$ stepq split assembly.stp --master --out parts/  # assemblies refer to component files (CAx-IF)
+$ stepq assemble parts/assembly.stp -o whole.stp  # merge a master and its files into one
 $ stepq lint  assembly.stp --schema schemas/   # structural problems; exit 1 on errors
 $ stepq refs  assembly.stp 1234 --depth 2      # what #1234 refers to, and what refers to it
 $ stepq query assembly.stp --type product      # instances by entity type or text
 $ stepq props assembly.stp --kind user         # user-defined attributes, validation properties, IDs
 $ stepq diff  old.stp new.stp                  # what changed: products, quantities, properties
 $ stepq strip assembly.stp --anonymize -o shareable.stp  # remove names before sharing a file
+$ stepq pmi   part.stp --format json           # semantic GD&T: tolerances, datums, dimensions
 ```
 
 Every command reads `-` as standard input and prints a table, JSON
 (`--format json`) or CSV (`--format csv`).
 
+**Commands:** [docs/COMMANDS.md](docs/COMMANDS.md) documents every command
+and option, with real example output and the library function behind each.
+
 ```console
-$ stepq bom as1-ac-214.stp
-AS1-AC-214
+$ stepq bom assembly.stp
+ASSEMBLY
 ├── PLATE
 ├── L-BRACKET ASSEMBLY  ×2
 │   ├── L-BRACKET  (2 total)
@@ -61,9 +68,9 @@ STEP files for every sub-assembly and part, preserving nested structure,
 instance placement, colours and names — without a CAD seat and without
 regenerating a single surface. As far as we can tell nothing open-source
 does this today; the usual answer is "open it in SolidWorks and Save As".
-
-Planned beyond that: `pmi` extraction to JSON and `assemble` (the inverse of
-`split`). See [ROADMAP.md](ROADMAP.md) for the tiers.
+Its inverse, `assemble`, merges a master file and the component files it
+refers to back into one file. See [ROADMAP.md](ROADMAP.md) for what comes
+next.
 
 ## What it will not do
 
@@ -85,6 +92,12 @@ macOS and Linux:
 $ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/jchultarsky/stepq/releases/latest/download/stepq-installer.sh | sh
 ```
 
+Homebrew (macOS and Linux, from 0.3.0):
+
+```console
+$ brew install jchultarsky/tap/stepq
+```
+
 Windows (PowerShell):
 
 ```console
@@ -102,15 +115,17 @@ As a library, without the CLI dependencies:
 
 ```toml
 [dependencies]
-stepq = { version = "0.2", default-features = false }
+stepq = { version = "0.4", default-features = false }
 ```
 
 ## Supported input
 
 ISO 10303-21 editions 1 and 2 (`implementation_level '2;1'`), which is what
 every mainstream CAD system writes. Application protocols AP203, AP214 and
-AP242 (all editions). Part 21 edition 3 features (anchors, references,
-multiple data sections) are parsed leniently but not interpreted.
+AP242 (all editions). Part 21 edition 3 files are read too: multiple data
+sections, anchors and external references (a name another file defines is
+not a dangling reference), all kept when a file is rewritten. Scope
+structures (`&SCOPE`) are rejected.
 
 ## Design
 
@@ -130,8 +145,9 @@ short version:
   file every tool reads happily with zero solids and no warning. The test
   oracle is therefore geometric: every output is read back through Open
   CASCADE and checked against volume and solid-count invariants of the
-  input (`tools/verify-occt.py`). CI already uses it to check that
-  rewriting every sample file through stepq changes no geometry.
+  input (`tools/verify-occt.py`). CI uses it on the core sample files to
+  check that rewriting through stepq changes no geometry, and that `split`
+  outputs reproduce the input (`tools/verify-split.py`).
 
 ## Contributing
 

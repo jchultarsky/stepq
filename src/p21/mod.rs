@@ -26,7 +26,8 @@ mod string;
 mod writer;
 
 pub use exchange::{
-    Exchange, Instance, Literal, Param, Params, Record, Records, References, Section,
+    Anchor, Exchange, ExternalReference, Instance, Literal, Param, Params, Record, Records,
+    ReferenceName, References, Section,
 };
 pub use lexer::{Lexer, Span, Token, TokenKind};
 pub use parser::parse;

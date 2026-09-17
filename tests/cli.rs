@@ -374,12 +374,20 @@ fn bom_tree_prefix_and_depth() {
         .write_stdin(ASSEMBLY)
         .assert()
         .success()
-        .stdout(predicate::str::diff(format!(
+        .stdout(predicate::str::diff(
             "assembly [A]\n\
              ├── bracket assembly [B]  ×2\n\
              └── plate [D]  ×4\n\
-             \n{BOM_SUMMARY}"
-        )));
+             \n\
+             1 sub-assembly, 2 distinct parts, 10 parts in total, including levels below --depth 1\n",
+        ));
+    // A depth that hides nothing leaves the summary as it is.
+    stepq()
+        .args(["bom", "-", "--depth", "2", "--charset", "utf8"])
+        .write_stdin(ASSEMBLY)
+        .assert()
+        .success()
+        .stdout(predicate::str::ends_with(format!("\n\n{BOM_SUMMARY}")));
 }
 
 /// A uses B and E; E uses B too; B uses part C.
@@ -1065,11 +1073,102 @@ fn props_csv_and_json() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["definitions"][0]["instance"], 12);
     let material = &json["properties"][1];
-    assert_eq!(material["kind"], "user_defined");
+    assert_eq!(json["properties"][0]["kind"], "validation");
+    assert_eq!(material["kind"], "user", "the name --kind uses");
+    assert_eq!(json["properties"][2]["kind"], "other");
     assert_eq!(material["subject"]["product_definition"], 12);
     assert_eq!(material["values"][0]["value"], "Steel 'S235'");
     assert_eq!(material["values"][1]["measure"], "LENGTH_MEASURE");
     assert_eq!(json["identifiers"][0]["id"], "aspect.1");
+}
+
+/// A part with a centroid written over several lines and a user attribute
+/// with neither name nor description on a shape aspect. (Line breaks inside
+/// a Part 21 string are not part of it, so only instance text spans lines.)
+const MULTILINE_PROPERTIES: &str = "ISO-10303-21;HEADER;FILE_SCHEMA(('AP242'));ENDSEC;DATA;
+#1=APPLICATION_CONTEXT('');
+#10=PRODUCT('P1','bracket','',());
+#11=PRODUCT_DEFINITION_FORMATION('','',#10);
+#12=PRODUCT_DEFINITION('design','',#11,#13);
+#13=PRODUCT_DEFINITION_CONTEXT('',#1,'design');
+#20=PRODUCT_DEFINITION_SHAPE('','',#12);
+#21=SHAPE_ASPECT('','face',#20,.F.);
+#30=PROPERTY_DEFINITION('geometric validation property','centroid of part',#20);
+#31=PROPERTY_DEFINITION_REPRESENTATION(#30,#32);
+#32=REPRESENTATION('',(#33),#1);
+#33=CARTESIAN_POINT('centre point',
+  (1.,
+   2.,  3.));
+#40=PROPERTY_DEFINITION('','',#21);
+#41=GENERAL_PROPERTY('','','');
+#42=GENERAL_PROPERTY_ASSOCIATION('','',#41,#40);
+#43=PROPERTY_DEFINITION_REPRESENTATION(#40,#44);
+#44=REPRESENTATION('',(#45),#1);
+#45=DESCRIPTIVE_REPRESENTATION_ITEM('','B');
+ENDSEC;END-ISO-10303-21;";
+
+#[test]
+fn props_table_puts_each_value_on_one_line_and_names_unnamed_properties() {
+    stepq()
+        .args(["props", "-"])
+        .write_stdin(MULTILINE_PROPERTIES)
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "bracket [P1]  #12\n  \
+             validation  centroid of part / centre point = #33=CARTESIAN_POINT('centre point', (1., 2., 3.));  [on PRODUCT_DEFINITION_SHAPE #20]\n  \
+             user        (unnamed) = B  [on SHAPE_ASPECT #21]\n\
+             \n\
+             2 properties, 2 values, 0 identifiers\n",
+        ));
+
+    // CSV quotes the line breaks and keeps the text exact; the unnamed
+    // property's name stays empty there and in JSON.
+    let csv = stepq()
+        .args(["props", "-", "--format", "csv"])
+        .write_stdin(MULTILINE_PROPERTIES)
+        .output()
+        .unwrap();
+    let csv = String::from_utf8(csv.stdout).unwrap();
+    assert!(
+        csv.contains(",\"#33=CARTESIAN_POINT('centre point',\n  (1.,\n   2.,  3.));\","),
+        "{csv}"
+    );
+    assert!(
+        csv.contains("\n#12,bracket [P1],user,#40,,,#21,SHAPE_ASPECT,#45,"),
+        "{csv}"
+    );
+
+    let output = stepq()
+        .args(["--format", "json", "props", "-"])
+        .write_stdin(MULTILINE_PROPERTIES)
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["properties"][1]["name"], "");
+    assert_eq!(json["properties"][1]["kind"], "user");
+}
+
+#[test]
+fn diff_table_puts_property_values_on_one_line() {
+    let changed = MULTILINE_PROPERTIES.replace("   2.,  3.));", "   2.,  4.));");
+    let new = temp_file("diff-multiline.stp", &changed);
+    let table = stepq()
+        .args(["diff", "-", "--section", "properties"])
+        .arg(&new)
+        .write_stdin(MULTILINE_PROPERTIES)
+        .assert()
+        .code(1);
+    let stdout = String::from_utf8(table.get_output().stdout.clone()).unwrap();
+    std::fs::remove_file(&new).unwrap();
+    assert!(
+        stdout.contains(
+            "Properties\n  ~ P1: centroid of part / centre point: \
+             #=CARTESIAN_POINT('centre point', (1., 2., 3.)); → \
+             #=CARTESIAN_POINT('centre point', (1., 2., 4.));\n"
+        ),
+        "{stdout}"
+    );
 }
 
 #[test]

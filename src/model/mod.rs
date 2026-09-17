@@ -27,5 +27,7 @@ pub use assembly::{
     BomLine, BomNode, BomTreeOptions, Definition, Placement, Product, ProductStructure, Usage,
     UsageKind,
 };
-pub use extract::{Extraction, RULES, Rule, RuleKind, extract, extract_excluding, orphans};
+pub use extract::{
+    Extraction, RULES, Rule, RuleKind, extract, extract_excluding, orphans, unreachable,
+};
 pub use graph::Graph;

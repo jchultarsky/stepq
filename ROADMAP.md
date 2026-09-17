@@ -4,7 +4,11 @@ Ordered by leverage per line of code. Nothing here needs a geometry
 kernel; that is the constraint that keeps the project finishable.
 
 0.1.0 contains the parser, structure and split milestones below; 0.2.0
-adds the inspect milestone. Open items carry over.
+adds the inspect milestone and 0.3.0 the reshape milestone. A few items
+in the earlier milestones shipped later — the multi-level `bom` and
+persistent identifiers in 0.2.0, `split --bodies` in 0.3.0, and the grown
+rule table, which completes the split milestone, in 0.4.0; see
+[CHANGELOG.md](CHANGELOG.md). Open items carry over.
 
 ## Parser
 
@@ -48,15 +52,19 @@ adds the inspect milestone. Open items carry over.
       split output (`docs/ARCHITECTURE.md`).
 - [x] `stepq split` — self-contained mode.
 - [x] `stepq split --bodies` — multi-body products into one file per solid.
-- [x] `--report-orphans`: print everything left outside the closure.
-- [ ] Grow the rule table from the orphan reports. Persistent identifiers
-      are done (orphaned `id_attribute`s on the core fixtures: 3,298 → 55);
-      what remains is dates, persons and organizations on some exporters,
-      and PMI presentation on NIST AP242 (annotation planes, camera
-      models, styled annotation).
+- [x] `--report-orphans`: list the entity types, with counts, of every
+      instance left outside all outputs.
+- [x] Grow the rule table from the orphan reports: PMI presentation, saved
+      views, supplemental geometry, notes, tolerance zones, composite
+      tolerances, documents, addresses. Instances in no output on the
+      fixtures under 16 MB: 43,534 → 1,559; on all 55 fixtures 2,969 remain,
+      none of them left behind: all are data nothing refers to (unused
+      colours and units), which the report now lists apart
+      (`docs/ARCHITECTURE.md`, "What the rule table covers").
 - [x] `tools/verify-occt.py`: Σ volume(outputs) == volume(input subtree),
-      equal solid counts, no lost names or colours. Already run in CI on
-      every fixture rewritten by stepq (`tools/verify-rewrite.sh`).
+      equal solid counts, no lost names or colours. Run in CI on every
+      core fixture rewritten by stepq (`tools/verify-rewrite.sh`) and split
+      by it (`tools/verify-split.py`).
 
 ## Inspect (0.2.0)
 
@@ -68,13 +76,14 @@ adds the inspect milestone. Open items carry over.
       persistent IDs.
 - [x] `stepq diff`: structural diff of two files.
 
-## Later
+## Reshape (0.3.0)
 
-- [ ] `stepq pmi`: semantic GD&T to JSON.
+- [x] `stepq pmi`: semantic GD&T to JSON.
 - [x] `stepq strip` / `--anonymize`.
-- [ ] `stepq split --master`: CAx-IF external references instead of copies.
-- [ ] `stepq assemble`: the inverse of split, from a manifest.
-- [ ] Part 21 edition 3 anchors/references.
+- [x] `stepq split --master`: CAx-IF external references instead of copies.
+- [x] `stepq assemble`: the inverse of `split --master`, from the CAx-IF
+      external references themselves rather than a separate manifest.
+- [x] Part 21 edition 3 anchors/references.
 
 ## Not planned
 

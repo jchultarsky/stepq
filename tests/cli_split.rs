@@ -86,13 +86,28 @@ fn split_refuses_to_overwrite_without_force() {
         .write_stdin(ASSEMBLY)
         .assert()
         .failure()
-        .stderr(predicate::str::contains("already exists; use --force"));
+        .stderr(predicate::str::contains(
+            "already exists; pass --force to overwrite it",
+        ));
     stepq()
         .args(["split", "-", "--force", "--out"])
         .arg(&dir)
         .write_stdin(ASSEMBLY)
         .assert()
         .success();
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn split_says_file_for_a_single_output() {
+    let dir = scratch("split-one-file");
+    stepq()
+        .args(["split", "-", "--out"])
+        .arg(&dir)
+        .write_stdin(BODIES)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\nwrote 1 file to "));
     fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -109,8 +124,98 @@ fn split_reports_orphans() {
         .write_stdin(with_orphan)
         .assert()
         .success()
-        .stdout(predicate::str::contains("1 instances are in no output"))
-        .stdout(predicate::str::contains("DRAUGHTING_PRE_DEFINED_COLOUR"));
+        .stdout(predicate::str::contains(
+            "\n1 instance is in no output\n  referenced by nothing: 1\n         1  DRAUGHTING_PRE_DEFINED_COLOUR\n",
+        ))
+        .stdout(predicate::str::contains("left behind").not());
+    fs::remove_dir_all(&dir).unwrap();
+
+    // A colour a layer lists is left behind: the layer is extracted with
+    // product A, but its list keeps only what is extracted.
+    let left_behind = ASSEMBLY.replace(
+        "ENDSEC;END",
+        "#900=DRAUGHTING_PRE_DEFINED_COLOUR('red');\n\
+         #902=PRESENTATION_LAYER_ASSIGNMENT('layer','',(#11,#900));\nENDSEC;END",
+    );
+    stepq()
+        .args(["split", "-", "--report-orphans", "--out"])
+        .arg(&dir)
+        .write_stdin(left_behind.as_str())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\n1 instance is in no output\n  left behind: 1\n         1  DRAUGHTING_PRE_DEFINED_COLOUR\n",
+        ))
+        .stdout(predicate::str::contains("referenced by nothing").not());
+    fs::remove_dir_all(&dir).unwrap();
+    stepq()
+        .args([
+            "split",
+            "-",
+            "--report-orphans",
+            "--format",
+            "json",
+            "--out",
+        ])
+        .arg(&dir)
+        .write_stdin(left_behind)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""unreferenced": []"#));
+    fs::remove_dir_all(&dir).unwrap();
+
+    let with_orphans = ASSEMBLY.replace(
+        "ENDSEC;END",
+        "#900=DRAUGHTING_PRE_DEFINED_COLOUR('red');\n\
+         #901=DRAUGHTING_PRE_DEFINED_COLOUR('blue');\nENDSEC;END",
+    );
+    stepq()
+        .args(["split", "-", "--report-orphans", "--out"])
+        .arg(&dir)
+        .write_stdin(with_orphans)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\n2 instances are in no output\n"));
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn split_bodies_checks_body_files_before_writing_anything() {
+    let dir = scratch("split-bodies-exists");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("P.body-2.stp"), "keep me").unwrap();
+    stepq()
+        .args(["split", "-", "--bodies", "--out"])
+        .arg(&dir)
+        .write_stdin(BODIES)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "P.body-2.stp already exists; pass --force to overwrite it",
+        ));
+    let mut names: Vec<String> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["P.body-2.stp"], "nothing else is written");
+    assert_eq!(
+        fs::read_to_string(dir.join("P.body-2.stp")).unwrap(),
+        "keep me"
+    );
+
+    stepq()
+        .args(["split", "-", "--bodies", "--force", "--out"])
+        .arg(&dir)
+        .write_stdin(BODIES)
+        .assert()
+        .success();
+    assert!(dir.join("P.body-1.stp").exists());
+    assert!(
+        fs::read_to_string(dir.join("P.body-2.stp"))
+            .unwrap()
+            .contains("MANIFOLD_SOLID_BREP('right'")
+    );
     fs::remove_dir_all(&dir).unwrap();
 }
 

@@ -8,10 +8,10 @@
 //! instance are copied as they are, so a comment that mentions an old
 //! `#id` keeps the old number.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufWriter, Write};
 
-use super::exchange::{Exchange, Instance};
+use super::exchange::{Exchange, ExtraKind, ExtraSection, Instance, ReferenceName};
 use super::lexer::{Span, Token, TokenKind};
 use crate::error::{Error, Result};
 
@@ -70,6 +70,9 @@ pub enum Numbering {
     Preserve,
     /// Number the written instances `#1`, `#2`, … in file order.
     Dense,
+    /// Keep every instance's name, increased by this much: `#12` becomes
+    /// `#1012` with an offset of 1000. For merging files whose names clash.
+    Offset(u64),
 }
 
 /// Writes all or part of an [`Exchange`] back out as Part 21.
@@ -95,6 +98,7 @@ pub struct Writer<'e, 'a> {
     header: Option<&'e [u8]>,
     numbering: Numbering,
     replacements: Option<&'e Replacements>,
+    appended: Option<&'e [u8]>,
 }
 
 impl<'e, 'a> Writer<'e, 'a> {
@@ -106,6 +110,19 @@ impl<'e, 'a> Writer<'e, 'a> {
             header: None,
             numbering: Numbering::Preserve,
             replacements: None,
+            appended: None,
+        }
+    }
+
+    /// Appends `instances` to the last data section: complete instance
+    /// records, each ending in `;`, written exactly as given. They are not
+    /// checked: their names must not clash with the written instances', and
+    /// what they refer to must be written too.
+    #[must_use]
+    pub fn append(self, instances: &'e [u8]) -> Self {
+        Self {
+            appended: Some(instances),
+            ..self
         }
     }
 
@@ -204,7 +221,7 @@ impl<'e, 'a> Writer<'e, 'a> {
         out: W,
     ) -> Result<()> {
         let names = self.assign_names(positions);
-        let mut is_pruned = vec![false; names.len()];
+        let mut is_pruned = vec![false; names.data.len()];
         for position in pruned {
             is_pruned[position] = true;
         }
@@ -215,43 +232,78 @@ impl<'e, 'a> Writer<'e, 'a> {
         Ok(())
     }
 
-    /// The output name of every instance, by position; `None` if the
-    /// instance is not selected.
-    fn assign_names(&self, positions: impl IntoIterator<Item = usize>) -> Vec<Option<u64>> {
-        let instances = self.exchange.instances();
-        let mut names = vec![None; instances.len()];
+    /// The output name of every selected instance, and of every external
+    /// instance name (edition 3) a selected instance refers to. When
+    /// renumbering, external names follow the instances, in the order of
+    /// their `REFERENCE` entries.
+    fn assign_names(&self, positions: impl IntoIterator<Item = usize>) -> Names {
+        let exchange = self.exchange;
+        let instances = exchange.instances();
+        let mut data = vec![None; instances.len()];
         for position in positions {
-            names[position] = Some(instances[position].id);
+            data[position] = Some(instances[position].id);
         }
-        if self.numbering == Numbering::Dense {
-            let mut next = 0;
-            for name in names.iter_mut().flatten() {
-                next += 1;
-                *name = next;
+        let used: HashSet<u64> = instances
+            .iter()
+            .zip(&data)
+            .filter(|(_, name)| name.is_some())
+            .flat_map(|(instance, _)| exchange.references(instance))
+            .filter(|&id| exchange.is_external(id))
+            .collect();
+        let external_ids = exchange
+            .external_references()
+            .into_iter()
+            .filter_map(|reference| match reference.name {
+                ReferenceName::Instance(id) if used.contains(&id) => Some(id),
+                _ => None,
+            });
+
+        let mut external = HashMap::new();
+        match self.numbering {
+            Numbering::Dense => {
+                let mut next = 0;
+                for name in data.iter_mut().flatten() {
+                    next += 1;
+                    *name = next;
+                }
+                for id in external_ids {
+                    external.entry(id).or_insert_with(|| {
+                        next += 1;
+                        next
+                    });
+                }
             }
+            Numbering::Offset(offset) => {
+                for name in data.iter_mut().flatten() {
+                    *name += offset;
+                }
+                external.extend(external_ids.map(|id| (id, id + offset)));
+            }
+            Numbering::Preserve => external.extend(external_ids.map(|id| (id, id))),
         }
-        names
+        Names { data, external }
     }
 
     /// Checks that every selected instance's references resolve, and plans
     /// the list items to remove from pruned instances. Returns, by position,
     /// which of a pruned instance's tokens to drop.
-    fn check_closed(
-        &self,
-        names: &[Option<u64>],
-        pruned: &[bool],
-    ) -> Result<Vec<Option<Vec<bool>>>> {
+    fn check_closed(&self, names: &Names, pruned: &[bool]) -> Result<Vec<Option<Vec<bool>>>> {
         let exchange = self.exchange;
-        let mut plans = vec![None; names.len()];
-        for (position, (instance, name)) in exchange.instances().iter().zip(names).enumerate() {
+        let mut plans = vec![None; names.data.len()];
+        for (position, (instance, name)) in exchange.instances().iter().zip(&names.data).enumerate()
+        {
             if name.is_none() {
                 continue;
             }
             if pruned[position] {
                 plans[position] = Some(self.removal_plan(instance, names)?);
             } else {
-                for id in exchange.references(instance) {
-                    target_name(exchange, names, instance, id)?;
+                for token in exchange.instance_tokens(instance) {
+                    if let TokenKind::InstanceName(id) = token.kind {
+                        if !self.is_replaced(token.span) {
+                            target_name(exchange, names, instance, id)?;
+                        }
+                    }
                 }
             }
         }
@@ -260,7 +312,7 @@ impl<'e, 'a> Writer<'e, 'a> {
 
     /// Which tokens of `instance` to drop so that no list item refers to an
     /// unselected instance, keeping exactly one comma between the items left.
-    fn removal_plan(&self, instance: &Instance, names: &[Option<u64>]) -> Result<Vec<bool>> {
+    fn removal_plan(&self, instance: &Instance, names: &Names) -> Result<Vec<bool>> {
         let exchange = self.exchange;
         let tokens = exchange.instance_tokens(instance);
 
@@ -293,7 +345,7 @@ impl<'e, 'a> Writer<'e, 'a> {
             let TokenKind::InstanceName(id) = token.kind else {
                 continue;
             };
-            if target_name(exchange, names, instance, id).is_ok() {
+            if self.is_replaced(token.span) || target_name(exchange, names, instance, id).is_ok() {
                 continue;
             }
             let before = i.checked_sub(1).map(|j| tokens[j].kind);
@@ -331,10 +383,18 @@ impl<'e, 'a> Writer<'e, 'a> {
     fn write_file(
         &self,
         out: &mut impl Write,
-        names: &[Option<u64>],
+        names: &Names,
         plans: &[Option<Vec<bool>>],
     ) -> Result<()> {
         let exchange = self.exchange;
+        // Unchanged output keeps edition 3 sections as written, signatures
+        // included; anything else invalidates a signature.
+        let verbatim = self.numbering == Numbering::Preserve
+            && self.replacements.is_none()
+            && names.data.iter().all(Option::is_some)
+            && plans.iter().all(Option::is_none)
+            && self.appended.is_none();
+        let extra = exchange.extra_sections();
         out.write_all(b"ISO-10303-21;\nHEADER;")?;
         match (self.header, self.replacements) {
             (Some(header), _) => out.write_all(header)?,
@@ -350,12 +410,21 @@ impl<'e, 'a> Writer<'e, 'a> {
             (None, _) => out.write_all(exchange.header_text())?,
         }
         out.write_all(b"ENDSEC;\n")?;
-        for (params, positions) in exchange.data_sections() {
+        for section in extra.iter().filter(|s| s.kind != ExtraKind::Signature) {
+            if verbatim {
+                out.write_all(section.span.slice(exchange.source()))?;
+                out.write_all(b"\n")?;
+            } else {
+                self.write_extra_section(out, section, names)?;
+            }
+        }
+        let last = exchange.data_sections().count().saturating_sub(1);
+        for (section, (params, positions)) in exchange.data_sections().enumerate() {
             out.write_all(b"DATA")?;
             out.write_all(params)?;
             out.write_all(b";\n")?;
             for position in positions {
-                if let Some(name) = names[position] {
+                if let Some(name) = names.data[position] {
                     self.write_instance(
                         out,
                         &exchange.instances()[position],
@@ -366,10 +435,112 @@ impl<'e, 'a> Writer<'e, 'a> {
                     out.write_all(b"\n")?;
                 }
             }
+            if let Some(appended) = self.appended.filter(|_| section == last) {
+                out.write_all(appended)?;
+                if !appended.ends_with(b"\n") {
+                    out.write_all(b"\n")?;
+                }
+            }
             out.write_all(b"ENDSEC;\n")?;
+        }
+        if verbatim {
+            for section in extra.iter().filter(|s| s.kind == ExtraKind::Signature) {
+                out.write_all(section.span.slice(exchange.source()))?;
+                out.write_all(b"\n")?;
+            }
         }
         out.write_all(b"END-ISO-10303-21;\n")?;
         Ok(())
+    }
+
+    /// Writes the entries of an `ANCHOR` or `REFERENCE` section that still
+    /// apply, renamed: anchors whose instances are all written, and
+    /// references a written instance uses (constant and value names always).
+    fn write_extra_section(
+        &self,
+        out: &mut impl Write,
+        section: &ExtraSection,
+        names: &Names,
+    ) -> Result<()> {
+        let exchange = self.exchange;
+        let src = exchange.source();
+        let kept: Vec<_> = section
+            .entries
+            .iter()
+            .map(|(span, range)| (*span, exchange.tokens_in(range.clone())))
+            .filter(
+                |(_, tokens)| match (section.kind, tokens.first().map(|t| t.kind)) {
+                    (ExtraKind::Reference, Some(TokenKind::InstanceName(id))) => {
+                        names.external.contains_key(&id)
+                    }
+                    (ExtraKind::Reference, _) => true,
+                    _ => tokens.iter().all(|token| match token.kind {
+                        TokenKind::InstanceName(id) => names.of(exchange, id).is_some(),
+                        _ => true,
+                    }),
+                },
+            )
+            .collect();
+        if kept.is_empty() {
+            return Ok(());
+        }
+        let keyword: &[u8] = if section.kind == ExtraKind::Anchor {
+            b"ANCHOR;\n"
+        } else {
+            b"REFERENCE;\n"
+        };
+        out.write_all(keyword)?;
+        for (span, tokens) in kept {
+            let mut cursor = span.start;
+            for token in tokens {
+                if let TokenKind::InstanceName(id) = token.kind {
+                    if let Some(name) = names.of(exchange, id).filter(|&name| name != id) {
+                        out.write_all(&src[cursor..token.span.start])?;
+                        write!(out, "#{name}")?;
+                        cursor = token.span.end;
+                    }
+                }
+            }
+            out.write_all(&src[cursor..span.end])?;
+            out.write_all(b"\n")?;
+        }
+        out.write_all(b"ENDSEC;\n")?;
+        Ok(())
+    }
+
+    /// Writes the instances at `positions` alone, one per line, without a
+    /// header or sections: text to [`append`](Self::append) to another
+    /// file, usually renamed with [`Numbering::Offset`].
+    ///
+    /// # Errors
+    ///
+    /// As [`write_selection`](Self::write_selection).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a position is out of range.
+    pub fn write_instances<W: Write>(
+        &self,
+        positions: impl IntoIterator<Item = usize>,
+        out: W,
+    ) -> Result<()> {
+        let names = self.assign_names(positions);
+        let plans = self.check_closed(&names, &vec![false; names.data.len()])?;
+        let mut out = BufWriter::new(out);
+        for (position, instance) in self.exchange.instances().iter().enumerate() {
+            if let Some(name) = names.data[position] {
+                self.write_instance(&mut out, instance, name, &names, plans[position].as_deref())?;
+                out.write_all(b"\n")?;
+            }
+        }
+        out.flush()?;
+        Ok(())
+    }
+
+    /// True if the token at `span` has a replacement: the caller names its
+    /// target, so it is not checked.
+    fn is_replaced(&self, span: Span) -> bool {
+        self.replacements.is_some_and(|r| r.get(span).is_some())
     }
 
     /// Writes one instance from its source text, renaming instance names
@@ -379,12 +550,12 @@ impl<'e, 'a> Writer<'e, 'a> {
         out: &mut impl Write,
         instance: &Instance,
         name: u64,
-        names: &[Option<u64>],
+        names: &Names,
         removed: Option<&[bool]>,
     ) -> Result<()> {
         let exchange = self.exchange;
         let text = exchange.text(instance);
-        let dense = self.numbering == Numbering::Dense;
+        let dense = self.numbering != Numbering::Preserve;
         let replacements = self
             .replacements
             .filter(|replacements| replacements.any_within(instance.span));
@@ -448,20 +619,29 @@ fn write_replaced(
     out.write_all(&src[cursor..span.end])
 }
 
+/// Output names: of every instance by position (`None` if not written), and
+/// of the external instance names that are written.
+struct Names {
+    data: Vec<Option<u64>>,
+    external: HashMap<u64, u64>,
+}
+
+impl Names {
+    /// The output name of `#id`, if it is written.
+    fn of(&self, exchange: &Exchange<'_>, id: u64) -> Option<u64> {
+        match exchange.position(id) {
+            Some(position) => self.data[position],
+            None => self.external.get(&id).copied(),
+        }
+    }
+}
+
 /// The output name of the instance `from` refers to as `#id`.
-fn target_name(
-    exchange: &Exchange<'_>,
-    names: &[Option<u64>],
-    from: &Instance,
-    id: u64,
-) -> Result<u64> {
-    exchange
-        .position(id)
-        .and_then(|position| names[position])
-        .ok_or(Error::UnresolvedReference {
-            from: from.id,
-            to: id,
-        })
+fn target_name(exchange: &Exchange<'_>, names: &Names, from: &Instance, id: u64) -> Result<u64> {
+    names.of(exchange, id).ok_or(Error::UnresolvedReference {
+        from: from.id,
+        to: id,
+    })
 }
 
 #[cfg(test)]
@@ -475,6 +655,95 @@ mod tests {
         format!(
             "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\nDATA;\n{data}ENDSEC;\nEND-ISO-10303-21;\n"
         )
+    }
+
+    #[test]
+    fn offset_numbering_and_bare_instances() {
+        let src = file_with("#1=A(#2,'#2');\n#2=B();\n");
+        let exchange = parse(src.as_bytes()).unwrap();
+        let mut out = Vec::new();
+        Writer::new(&exchange)
+            .numbering(Numbering::Offset(100))
+            .write_instances(0..2, &mut out)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "#101=A(#102,'#2');\n#102=B();\n"
+        );
+    }
+
+    #[test]
+    fn replaced_references_are_the_callers_to_resolve() {
+        let src = file_with("#1=A(#9);\n");
+        let exchange = parse(src.as_bytes()).unwrap();
+        let reference = exchange.instance_tokens(&exchange.instances()[0])[2];
+        assert_eq!(reference.kind, TokenKind::InstanceName(9));
+        let mut replacements = Replacements::new();
+        replacements.replace(reference.span, "#5");
+        let mut out = Vec::new();
+        Writer::new(&exchange)
+            .replacements(&replacements)
+            .append(b"#5=B();")
+            .write_all(&mut out)
+            .unwrap();
+        assert!(
+            String::from_utf8(out)
+                .unwrap()
+                .contains("DATA;\n#1=A(#5);\n#5=B();\nENDSEC;\n")
+        );
+        // Without the replacement #9 is still dangling.
+        assert!(Writer::new(&exchange).write_all(io::sink()).is_err());
+    }
+
+    #[test]
+    fn appended_instances_end_the_last_data_section() {
+        let src = "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\n\
+                   DATA;\n#1=A();\nENDSEC;\n\
+                   SIGNATURE;'c2ln';ENDSEC;\n\
+                   END-ISO-10303-21;\n";
+        let exchange = parse(src.as_bytes()).unwrap();
+        let mut out = Vec::new();
+        Writer::new(&exchange)
+            .append(b"#2=B(#1);")
+            .write_all(&mut out)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\n\
+             DATA;\n#1=A();\n#2=B(#1);\nENDSEC;\n\
+             END-ISO-10303-21;\n",
+            "the appended instance, and no signature: the content changed"
+        );
+    }
+
+    #[test]
+    fn edition_3_sections_follow_renumbering_and_selection() {
+        let src = "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\n\
+                   ANCHOR;<origin>=#10;<tip>=#9;ENDSEC;\n\
+                   REFERENCE;#9=<bolt.stp#shape>;#LIB=<lib.stp#x>;ENDSEC;\n\
+                   DATA;\n#10=X(#20,#9);\n#20=Y();\nENDSEC;\n\
+                   SIGNATURE;'c2ln';ENDSEC;\n\
+                   END-ISO-10303-21;\n";
+        // Unchanged: every section as written, the signature included.
+        assert_eq!(write(src, Numbering::Preserve, None), src);
+
+        assert_eq!(
+            write(src, Numbering::Dense, None),
+            "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\n\
+             ANCHOR;\n<origin>=#1;\n<tip>=#3;\nENDSEC;\n\
+             REFERENCE;\n#3=<bolt.stp#shape>;\n#LIB=<lib.stp#x>;\nENDSEC;\n\
+             DATA;\n#1=X(#2,#3);\n#2=Y();\nENDSEC;\n\
+             END-ISO-10303-21;\n"
+        );
+
+        // Only #20: neither anchor nor #9 applies any more.
+        assert_eq!(
+            write(src, Numbering::Preserve, Some(&[1])),
+            "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('X'));\nENDSEC;\n\
+             REFERENCE;\n#LIB=<lib.stp#x>;\nENDSEC;\n\
+             DATA;\n#20=Y();\nENDSEC;\n\
+             END-ISO-10303-21;\n"
+        );
     }
 
     #[test]

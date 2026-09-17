@@ -12,7 +12,7 @@
 //! anything specific to one command.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Range;
 
@@ -32,6 +32,61 @@ pub struct Exchange<'a> {
     sections: Vec<DataSection>,
     instances: Vec<Instance>,
     index: HashMap<u64, usize>,
+    extra: Vec<ExtraSection>,
+    external: HashSet<u64>,
+}
+
+/// The kind of an edition 3 section other than `DATA`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExtraKind {
+    Anchor,
+    Reference,
+    Signature,
+}
+
+/// An edition 3 `ANCHOR`, `REFERENCE` or `SIGNATURE` section.
+#[derive(Debug, Clone)]
+pub(crate) struct ExtraSection {
+    pub(crate) kind: ExtraKind,
+    /// From the section keyword through its `ENDSEC;`.
+    pub(crate) span: Span,
+    /// Each entry: its source text, `;` included, and its tokens, `;`
+    /// excluded. Empty for a signature.
+    pub(crate) entries: Vec<(Span, Range<usize>)>,
+}
+
+/// An edition 3 anchor: a name under which other files can refer to part
+/// of this one, such as `<origin>=#12;`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Anchor<'e> {
+    /// The anchor name, without its angle brackets.
+    pub name: &'e str,
+    /// The instance the anchor names, if it names exactly one.
+    pub target: Option<u64>,
+    /// The whole entry as written.
+    pub text: &'e [u8],
+}
+
+/// An edition 3 external reference: a name defined by another file, such
+/// as `#12=<bolt.stp#shape>;`. Instances of this file may refer to it like
+/// any other instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalReference<'e> {
+    /// The name the reference defines.
+    pub name: ReferenceName<'e>,
+    /// The resource it stands for, without its angle brackets.
+    pub uri: &'e str,
+}
+
+/// The name an [`ExternalReference`] defines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceName<'e> {
+    /// An entity instance name, `#12`.
+    Instance(u64),
+    /// A constant instance name, `#NAME`, without the `#`.
+    Constant(&'e str),
+    /// A value instance name, `@name`, without the `@`.
+    Value(&'e str),
 }
 
 /// One entity instance from a data section.
@@ -88,7 +143,98 @@ impl<'a> Exchange<'a> {
             sections,
             instances,
             index,
+            extra: Vec::new(),
+            external: HashSet::new(),
         }
+    }
+
+    /// Adds the edition 3 sections other than `DATA`, and records the
+    /// instance names their `REFERENCE` entries define.
+    pub(crate) fn with_extra_sections(mut self, sections: Vec<ExtraSection>) -> Self {
+        self.external = sections
+            .iter()
+            .filter(|section| section.kind == ExtraKind::Reference)
+            .flat_map(|section| section.entries.iter())
+            .filter_map(|(_, tokens)| match self.tokens.get(tokens.start)?.kind {
+                TokenKind::InstanceName(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        self.extra = sections;
+        self
+    }
+
+    /// The edition 3 anchors, in file order; empty for edition 2 files.
+    pub fn anchors(&self) -> Vec<Anchor<'_>> {
+        self.extra_entries(ExtraKind::Anchor)
+            .filter_map(|(span, tokens)| {
+                let name = tokens.first().filter(|t| t.kind == TokenKind::Resource)?;
+                let target = match tokens.get(2..) {
+                    Some(
+                        [
+                            Token {
+                                kind: TokenKind::InstanceName(id),
+                                ..
+                            },
+                        ],
+                    ) => Some(*id),
+                    _ => None,
+                };
+                Some(Anchor {
+                    name: inner(name.span.slice(self.src), 1, 1),
+                    target,
+                    text: span.slice(self.src),
+                })
+            })
+            .collect()
+    }
+
+    /// The edition 3 external references, in file order; empty for edition
+    /// 2 files.
+    pub fn external_references(&self) -> Vec<ExternalReference<'_>> {
+        self.extra_entries(ExtraKind::Reference)
+            .filter_map(|(_, tokens)| {
+                let [lhs, equals, uri] = tokens else {
+                    return None;
+                };
+                if equals.kind != TokenKind::Equals || uri.kind != TokenKind::Resource {
+                    return None;
+                }
+                let text = lhs.span.slice(self.src);
+                let name = match lhs.kind {
+                    TokenKind::InstanceName(id) => ReferenceName::Instance(id),
+                    TokenKind::ConstantName => ReferenceName::Constant(inner(text, 1, 0)),
+                    TokenKind::ValueName => ReferenceName::Value(inner(text, 1, 0)),
+                    _ => return None,
+                };
+                Some(ExternalReference {
+                    name,
+                    uri: inner(uri.span.slice(self.src), 1, 1),
+                })
+            })
+            .collect()
+    }
+
+    /// True if instance name `#id` is defined by another file, in an
+    /// edition 3 `REFERENCE` section, rather than by this one.
+    pub fn is_external(&self, id: u64) -> bool {
+        self.external.contains(&id)
+    }
+
+    pub(crate) fn extra_sections(&self) -> &[ExtraSection] {
+        &self.extra
+    }
+
+    pub(crate) fn tokens_in(&self, range: Range<usize>) -> &[Token] {
+        self.tokens.get(range).unwrap_or_default()
+    }
+
+    fn extra_entries(&self, kind: ExtraKind) -> impl Iterator<Item = (Span, &[Token])> {
+        self.extra
+            .iter()
+            .filter(move |section| section.kind == kind)
+            .flat_map(|section| section.entries.iter())
+            .map(|(span, tokens)| (*span, self.tokens.get(tokens.clone()).unwrap_or_default()))
     }
 
     /// The source bytes the file was parsed from.
@@ -214,6 +360,14 @@ impl<'a> Exchange<'a> {
             (params, section.instances.clone())
         })
     }
+}
+
+/// `text` without `front` bytes at the start and `back` at the end, as a
+/// string; empty if that is not UTF-8.
+fn inner(text: &[u8], front: usize, back: usize) -> &str {
+    text.get(front..text.len().saturating_sub(back))
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .unwrap_or_default()
 }
 
 impl fmt::Debug for Exchange<'_> {
