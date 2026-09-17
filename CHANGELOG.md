@@ -8,6 +8,10 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-17
+
+Wording fixes in `split`'s output and help.
+
 ### Fixed
 
 - `split` says "wrote 1 file" rather than "wrote 1 files".
@@ -252,7 +256,8 @@ First release.
 
 - License is now MIT only (previously MIT OR Apache-2.0).
 
-[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/jchultarsky/stepq/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/jchultarsky/stepq/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jchultarsky/stepq/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jchultarsky/stepq/compare/v0.1.0...v0.2.0
