@@ -3,6 +3,13 @@
 This document records the design constraints `stepq` is built on and the
 evidence behind them. Read it before changing `src/model` or `src/p21`.
 
+It assumes familiarity with the STEP entity model: the product chain,
+shape representations, `next_assembly_usage_occurrence`, styled items
+and the rest. Those are not explained here. The companion book
+[*Inside the STEP File*](https://github.com/jchultarsky/step-book)
+covers them from first principles, with real file excerpts, and is the
+foundation this document builds on.
+
 ## One-paragraph summary
 
 A STEP file is a graph of entity instances. Everything `stepq` does is a
