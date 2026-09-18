@@ -14,9 +14,11 @@ By participating you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
   Several non-obvious constraints are documented there because they were
   learned the hard way.
 * **New to STEP?** The companion book
-  [*Inside the STEP File*](https://github.com/jchultarsky/step-book)
+  [*Inside the STEP File*](https://jchultarsky.github.io/step-book/)
   explains the entity model that `docs/ARCHITECTURE.md` and the code take
-  for granted. Its example files are a good playground for the CLI.
+  for granted. The example files in its
+  [repository](https://github.com/jchultarsky/step-book) are a good
+  playground for the CLI.
 
 ## Getting set up
 

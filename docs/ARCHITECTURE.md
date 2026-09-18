@@ -6,9 +6,10 @@ evidence behind them. Read it before changing `src/model` or `src/p21`.
 It assumes familiarity with the STEP entity model: the product chain,
 shape representations, `next_assembly_usage_occurrence`, styled items
 and the rest. Those are not explained here. The companion book
-[*Inside the STEP File*](https://github.com/jchultarsky/step-book)
+[*Inside the STEP File*](https://jchultarsky.github.io/step-book/)
 covers them from first principles, with real file excerpts, and is the
-foundation this document builds on.
+foundation this document builds on. Its source lives in the
+[step-book repository](https://github.com/jchultarsky/step-book).
 
 ## One-paragraph summary
 

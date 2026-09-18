@@ -84,16 +84,24 @@ replace it.
 
 `stepq` assumes you know what a `product_definition` is, why a shape
 representation points *at* its product, and what a
-`next_assembly_usage_occurrence` does. If you don't, or are rusty, the
-companion book [*Inside the STEP File*](https://github.com/jchultarsky/step-book)
-walks through the format one record at a time — the product chain,
-contexts and units, assemblies, boundary representation, colours,
-properties and PMI — using real files exported from Open CASCADE. It is
-the conceptual foundation this project's documentation builds on: the
-[architecture notes](docs/ARCHITECTURE.md) and the
+`next_assembly_usage_occurrence` does. If you don't, or are rusty, read
+the companion book [*Inside the STEP File*](https://jchultarsky.github.io/step-book/),
+an open-source reader's guide to ISO 10303. It walks through the format
+one record at a time — the product chain, contexts and units,
+assemblies, boundary representation, colours, properties and PMI — using
+real files exported from Open CASCADE, and every entity name and
+attribute claim in it is checked against the published EXPRESS schemas.
+It is the conceptual foundation this project's documentation builds on:
+the [architecture notes](docs/ARCHITECTURE.md) and the
 [command reference](docs/COMMANDS.md) use its vocabulary without
-re-explaining it. The book ships with its example files, which are small
-enough to explore with `stepq info`, `tree` and `refs` as you read.
+re-explaining it.
+
+The book is available as a website and as a
+[PDF](https://jchultarsky.github.io/step-book/inside-the-step-file.pdf);
+its source and the twelve example files behind its listings are in the
+[step-book repository](https://github.com/jchultarsky/step-book). Those
+files are small enough to explore with `stepq info`, `tree` and `refs`
+as you read.
 
 ## Install
 
