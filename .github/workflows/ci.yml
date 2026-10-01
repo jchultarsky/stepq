@@ -113,7 +113,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # setup-uv publishes no moving major tag, so pin the release.
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Cache fixtures
         uses: actions/cache@v6
         with:
