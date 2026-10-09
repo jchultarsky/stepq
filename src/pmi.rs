@@ -518,7 +518,7 @@ ENDSEC;END-ISO-10303-21;";
         let flatness = &found.tolerances[1];
         assert_eq!(flatness.kind, "flatness");
         assert_eq!(flatness.magnitude, Some(length(82, None, "0.05")));
-        assert!(flatness.datums.is_empty());
+        assert!(flatness.datums.is_empty(), "{:?}", flatness.datums);
         assert_eq!(flatness.target, on(61, "SHAPE_ASPECT"));
     }
 

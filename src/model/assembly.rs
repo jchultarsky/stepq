@@ -955,7 +955,8 @@ ENDSEC;END-ISO-10303-21;"
         );
         assert_eq!(product.description, None, "blank strings are omitted");
         assert_eq!(structure.definitions()[0].shape_representations, [50]);
-        assert!(structure.definitions()[3].shape_representations.is_empty());
+        let shapes = &structure.definitions()[3].shape_representations;
+        assert!(shapes.is_empty(), "{shapes:?}");
         assert_eq!(structure.roots(), [0]);
     }
 
@@ -1080,7 +1081,8 @@ ENDSEC;END-ISO-10303-21;"
                 (3, "4".to_owned(), false)
             ]
         );
-        assert!(structure.bill_of_materials(3).is_empty());
+        let bom = structure.bill_of_materials(3);
+        assert!(bom.is_empty(), "{bom:?}");
     }
 
     #[test]

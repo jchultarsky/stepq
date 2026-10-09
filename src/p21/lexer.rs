@@ -537,7 +537,8 @@ mod tests {
     fn comments_and_whitespace_are_skipped() {
         let src = "\u{FEFF}/* lead */FILE_NAME(/* name */'x',\t/* multi\nline */'y')\r\n\0";
         assert_eq!(texts(src), ["FILE_NAME", "(", "'x'", ",", "'y'", ")"]);
-        assert!(lex("  /**/ \n ").is_empty());
+        let tokens = lex("  /**/ \n ");
+        assert!(tokens.is_empty(), "{tokens:?}");
     }
 
     #[test]

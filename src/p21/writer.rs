@@ -853,7 +853,7 @@ mod tests {
             err,
             Error::UnresolvedReference { from: 10, to: 30 }
         ));
-        assert!(out.is_empty());
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
     }
 
     #[test]
