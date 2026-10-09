@@ -7,8 +7,9 @@ By participating you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Ground rules
 
-* **No geometry.** Anything that needs to evaluate a curve or surface is
-  out of scope, permanently. See `docs/ARCHITECTURE.md`.
+* **Stated, not computed.** stepq reads values a file states (points,
+  axes, radii, placements, unit factors) and never evaluates a curve or
+  surface; that is out of scope, permanently. See `docs/ARCHITECTURE.md`.
 * **No `unsafe`.** The crate forbids it.
 * **Read `docs/ARCHITECTURE.md`** before touching `src/model` or `src/p21`.
   Several non-obvious constraints are documented there because they were
@@ -84,7 +85,7 @@ $ tools/verify-split.py        # split every fixture and compare, as CI does
 
 ### Fuzzing
 
-The lexer and parser are fuzzed with
+The lexer, the parser and the readers are fuzzed with
 [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz), which needs a nightly
 toolchain. CI runs each target for 60 seconds; to fuzz for longer locally:
 
@@ -94,10 +95,12 @@ $ cargo install cargo-fuzz
 $ cargo +nightly fuzz run parse -- -dict=fuzz/p21.dict
 ```
 
-There are two targets. `lex` checks that tokens stay in order and in
+There are three targets. `lex` checks that tokens stay in order and in
 bounds and that string decoding never panics. `parse` checks that parsing,
 the graph, the query views and `info::Info` never panic, and that writer
-output parses back with the same number of instances. A crash found by
+output parses back with the same number of instances. `read` runs every
+reader of stated values (`units`, …) on every instance and checks that none
+panics and that what they return is finite. A crash found by
 fuzzing is a security issue; see [SECURITY.md](SECURITY.md).
 
 Pedantic clippy is on. If a lint is wrong for a specific line, `allow` it
@@ -125,7 +128,8 @@ src/
   model/          entity graph, product structure, extraction (semantics)
   info.rs         the summary behind `stepq info`
   bin/stepq.rs    the CLI, behind the `cli` feature
-examples/         `rewrite`, used by tools/verify-rewrite.sh
+examples/         `rewrite` and `units`, used by tools/verify-rewrite.sh and
+                  tools/verify-read.py
 fuzz/             cargo-fuzz targets
 tests/            integration tests; fixtures fetched into tests/fixtures/
 tools/            fixture and schema fetching, OCCT verification

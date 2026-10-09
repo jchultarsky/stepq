@@ -12,7 +12,8 @@ use std::collections::HashSet;
 
 use crate::model::{Graph, ProductStructure};
 use crate::p21::{Exchange, Literal, Param, Record};
-use crate::props::{Subject, Value, representation_items, subject, text, value};
+use crate::props::{Subject, Value, representation_items, subject, value};
+use crate::record::{text, upper};
 
 /// Everything [`pmi`] found, each list in file order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,10 +277,6 @@ pub fn pmi(graph: &Graph<'_>, structure: &ProductStructure) -> Pmi {
         }
     }
     found
-}
-
-fn upper(name: &[u8]) -> String {
-    String::from_utf8_lossy(name).to_ascii_uppercase()
 }
 
 /// The enumeration values in a set or list, lower case.

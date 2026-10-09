@@ -18,7 +18,7 @@ use std::io;
 use crate::error::{Error, Result};
 use crate::model::{Graph, ProductStructure};
 use crate::p21::{Exchange, Numbering, Replacements, TokenKind, Writer, parse};
-use crate::props::text;
+use crate::record::text;
 
 /// The result of [`assemble`].
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -9,11 +9,12 @@
 Query, inspect, split and reshape STEP (ISO 10303-21) files — a Rust library
 and a command-line tool.
 
-`stepq` works on the **entity graph** of a STEP file, not on its geometry.
-It never tessellates, never computes a volume, never "heals" anything.
-That constraint is the point: every entity that describes your geometry
-comes out exactly as it went in, byte for byte, with its original names,
-colours, layers, properties and PMI attached.
+`stepq` works on the **entity graph** of a STEP file. It reads the geometry
+a file states — placements, axes, radii, unit factors — and never computes
+what the file does not: it never tessellates, never computes a volume, never
+"heals" anything. That constraint is the point: every entity that describes
+your geometry comes out exactly as it went in, byte for byte, with its
+original names, colours, layers, properties and PMI attached.
 
 > **Status: 0.4, early.** The Part 21 parser, reference graph, writer and
 > EXPRESS schema reader are in place, and `stepq info`, `tree`, `bom`,
@@ -74,9 +75,12 @@ next.
 
 ## What it will not do
 
-Anything geometric. No tessellation, no mass properties, no bounding boxes,
-no unit *conversion*, no shape healing, no format conversion. If you need
-those, you need a geometry kernel; [Open CASCADE](https://dev.opencascade.org/)
+Compute geometry. `stepq` reads what a file states — a point, an axis, a
+radius, a placement, a unit factor — and applying a stated unit factor or
+composing stated placements counts as reading. It never computes what the
+file does not state: no intersections, no trimmed areas, no tessellation, no
+mass properties, no bounding boxes, no shape healing, no format conversion.
+If you need those, you need a geometry kernel; [Open CASCADE](https://dev.opencascade.org/)
 is the open-source one. `stepq` is designed to sit next to a kernel, not
 replace it.
 

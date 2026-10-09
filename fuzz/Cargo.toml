@@ -28,3 +28,10 @@ path = "fuzz_targets/parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "read"
+path = "fuzz_targets/read.rs"
+test = false
+doc = false
+bench = false
