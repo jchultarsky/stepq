@@ -9,7 +9,8 @@ Until 1.0, minor versions may contain breaking changes.
 ## [Unreleased]
 
 The read milestone begins, under a reworded rule: stepq reads what a file
-states and never computes what it does not. First, unit factors.
+states and never computes what it does not. First, unit factors; then the
+geometry values they scale.
 
 ### Added
 
@@ -34,6 +35,26 @@ states and never computes what it does not. First, unit factors.
   missing.
 - A `read` fuzz target, which runs every reader on every instance. CI starts
   it from hand-written seeds (`fuzz/seeds/read`) that reach every reader.
+- `stepq::geometry`: the geometry a file states, read by `#id` in
+  millimetres and radians. A `geometry::Reader`, tied to a representation or
+  to a solid, shell or face whose holders must agree, reads points,
+  directions (normalised, never scaled), vectors, axis placements (the
+  schema's `build_axes`, saying whether the axis and `ref_direction` were
+  stated), planes, cylindrical, conical, spherical and toroidal surfaces,
+  lines, circles and surface curves (their `curve_3d` and
+  `master_representation`). Every other entity and every complex instance
+  is an `Other` naming its type; what cannot be read as stated is a
+  `geometry::GeometryError` naming the innermost instance, the attribute
+  and why, and `stepq::Error` gains a `Geometry` variant. `geometry::Rigid`
+  is the transform placements will compose. Two policies bound what is
+  read: a `ref_direction` within a sine of 1e-6 of its axis, and a cone
+  semi-angle within 1e-6 rad of 0 or π/2, are refused. On all 55 fixtures
+  every face surface (342,733) and edge curve (979,505) reads, and
+  `tools/verify-read.py surfaces` and `curves` match the 331,873 elementary
+  surfaces and 906,031 lines and circles of their shape representations
+  with Open CASCADE 8.0.1's one to one, to 5.6e-16. CI runs both on the
+  core fixtures and on a part `tools/gen-occt-cases.py` writes with every
+  elementary surface, a cone point and a void, in millimetres and inches.
 
 ### Changed
 

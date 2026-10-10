@@ -100,8 +100,9 @@ There are three targets. `lex` checks that tokens stay in order and in
 bounds and that string decoding never panics. `parse` checks that parsing,
 the graph, the query views and `info::Info` never panic, and that writer
 output parses back with the same number of instances. `read` runs every
-reader of stated values (`units`, …) on every instance and checks that none
-panics and that what they return is finite. A crash found by
+reader of stated values (`units`, `geometry`, …) on every instance and
+checks that none panics, that what they return is finite, and that
+directions are of unit length and placement axes square. A crash found by
 fuzzing is a security issue; see [SECURITY.md](SECURITY.md).
 
 `read` starts from the seeds in `fuzz/seeds/read`: small hand-written files,
@@ -136,8 +137,8 @@ src/
   model/          entity graph, product structure, extraction (semantics)
   info.rs         the summary behind `stepq info`
   bin/stepq.rs    the CLI, behind the `cli` feature
-examples/         `rewrite` and `units`, used by tools/verify-rewrite.sh and
-                  tools/verify-read.py
+examples/         `rewrite`, `units` and `geometry`, used by
+                  tools/verify-rewrite.sh and tools/verify-read.py
 fuzz/             cargo-fuzz targets
 tests/            integration tests; fixtures fetched into tests/fixtures/
 tools/            fixture and schema fetching, OCCT verification

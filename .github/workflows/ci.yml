@@ -135,14 +135,21 @@ jobs:
       # input and that each assembly equals its components.
       - run: tools/verify-split.py
       # Writes the files only Open CASCADE writes (never committed): the same
-      # plate in millimetres, inches, feet, centimetres and metres.
+      # plate in millimetres, inches, feet, centimetres and metres, and a part
+      # with every elementary surface, a cone point and a void in millimetres
+      # and inches.
       - run: tools/gen-occt-cases.py "$RUNNER_TEMP/occt-cases"
       # Reads every unit context through stepq and Open CASCADE and compares
       # their factors and uncertainties.
       - run: tools/verify-read.py units tests/fixtures "$RUNNER_TEMP/occt-cases"
+      # Reads the surface of every face and the 3D curve of every edge of a
+      # face through both, in mm and rad, and matches them one to one (the
+      # cylinder axes and hole circles of M1's exit test).
+      - run: tools/verify-read.py surfaces tests/fixtures "$RUNNER_TEMP/occt-cases"
+      - run: tools/verify-read.py curves tests/fixtures "$RUNNER_TEMP/occt-cases"
       # The fixture tests with their pinned counts; a missing core fixture
       # fails them here instead of skipping.
-      - run: cargo test --all-features --test units --test fixtures
+      - run: cargo test --all-features --test units --test geometry --test fixtures
         env:
           STEPQ_REQUIRE_FIXTURES: "1"
 

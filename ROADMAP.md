@@ -95,7 +95,7 @@ against Open CASCADE by `tools/verify-read.py`.
 
 - [x] Unit factors per representation context, read or refused kind by
       kind, with each context's uncertainties (`stepq::units`).
-- [ ] Geometry values: points, directions, axis placements, elementary
+- [x] Geometry values: points, directions, axis placements, elementary
       surfaces, lines, circles and surface curves (`stepq::geometry`).
 - [ ] Placements and occurrences: each usage's transform and every
       occurrence under a root (`model::Placements`).

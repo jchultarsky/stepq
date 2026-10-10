@@ -3222,67 +3222,7 @@ mod tests {
     #[cfg(feature = "serde")]
     mod serialized {
         use super::*;
-        use serde::Deserialize;
-        use serde::de::{self, MapAccess, SeqAccess, Visitor};
-
-        /// Any JSON value; deserializing fails on a repeated key.
-        struct Unique;
-
-        impl<'de> Deserialize<'de> for Unique {
-            fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                d.deserialize_any(UniqueVisitor)
-            }
-        }
-
-        struct UniqueVisitor;
-
-        impl<'de> Visitor<'de> for UniqueVisitor {
-            type Value = Unique;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("JSON")
-            }
-            fn visit_bool<E>(self, _: bool) -> Result<Unique, E> {
-                Ok(Unique)
-            }
-            fn visit_i64<E>(self, _: i64) -> Result<Unique, E> {
-                Ok(Unique)
-            }
-            fn visit_u64<E>(self, _: u64) -> Result<Unique, E> {
-                Ok(Unique)
-            }
-            fn visit_f64<E>(self, _: f64) -> Result<Unique, E> {
-                Ok(Unique)
-            }
-            fn visit_str<E>(self, _: &str) -> Result<Unique, E> {
-                Ok(Unique)
-            }
-            fn visit_unit<E>(self) -> Result<Unique, E> {
-                Ok(Unique)
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Unique, A::Error> {
-                while seq.next_element::<Unique>()?.is_some() {}
-                Ok(Unique)
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Unique, A::Error> {
-                let mut keys = HashSet::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    if !keys.insert(key.clone()) {
-                        return Err(de::Error::custom(format!("duplicate key {key:?}")));
-                    }
-                    map.next_value::<Unique>()?;
-                }
-                Ok(Unique)
-            }
-        }
-
-        /// The value as JSON; fails on a repeated key.
-        fn unique(value: &impl serde::Serialize) -> String {
-            let json = serde_json::to_string(value).unwrap();
-            if let Err(e) = serde_json::from_str::<Unique>(&json) {
-                panic!("{json}: {e}");
-            }
-            json
-        }
+        use crate::testing::unique;
 
         /// One value of every variant.
         fn every_error() -> Vec<UnitError> {
