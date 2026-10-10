@@ -3,13 +3,14 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use super::placement::{is_finite, mapped_item_transform, not_finite};
 use super::{Definition, Graph, Placement, PlacementError, ProductStructure, Usage};
 use crate::geometry::Rigid;
 use crate::p21::{Exchange, Instance, Param, Record};
 use crate::policy::{MAX_SHAPE_DEPTH, MAX_SHAPE_VISITS};
-use crate::record::{self, NotRepresentation};
+use crate::record;
 
 /// What a definition's own shape representations hold, from
 /// [`ProductStructure::shape`].
@@ -53,7 +54,7 @@ pub struct ShapeItem {
     pub representation: u64,
     /// That representation's `context_of_items`, whose units its values are
     /// stated in.
-    pub context: Option<u64>,
+    pub context: u64,
     /// The definition's shape representation it was reached from: the
     /// space an assembly placement of the definition maps. An item reached
     /// from two of them is listed once for each.
@@ -174,7 +175,9 @@ pub struct NotFollowed {
 #[non_exhaustive]
 pub enum NotFollowedReason {
     /// The shape is stated in another file: an `applied_document_reference`
-    /// to the definition, an 'external definition' property of one of its
+    /// to the definition, a document an AP203
+    /// `product_definition_with_associated_documents` lists, an 'external
+    /// definition' property of one of its
     /// representations or one naming a `document_file` (as `stepq split
     /// --master` writes them), a `shape_representation_reference`, or an
     /// instance defined in an edition 3 `REFERENCE` section.
@@ -187,9 +190,12 @@ pub enum NotFollowedReason {
     TransformedRelationship,
     /// A representation relationship that is not a plain
     /// `shape_representation_relationship`, such as a plain
-    /// `representation_relationship`, a subtype, or a complex one with more
-    /// partials.
+    /// `representation_relationship`, a subtype, a complex one with more
+    /// partials, or one whose `rep_1` and `rep_2` cannot be read.
     NotShapeRelationship,
+    /// An item that is a `mapped_item` and more, or a subtype of it (an
+    /// annotation, a camera image): not read as a placement of shape.
+    NotPlainMappedItem,
     /// A `shape_representation_relationship` between representations of two
     /// context instances, which are two coordinate spaces unless a
     /// transformation relates them.
@@ -201,8 +207,8 @@ pub enum NotFollowedReason {
     /// representation other definitions reach too, other than as a
     /// component placement: whose shape it is is not certain.
     OtherDefinition {
-        /// Other definitions found to reach it, as indices into
-        /// [`ProductStructure::definitions`].
+        /// Other definitions found to reach it, at most eight, as indices
+        /// into [`ProductStructure::definitions`].
         definitions: Vec<usize>,
     },
     /// A link skipped by rule whose far side is not what the rule requires:
@@ -216,19 +222,25 @@ pub enum NotFollowedReason {
     /// A mapped item whose representation is already on the path to it
     /// (the schema's `acyclic_mapped_representation`).
     Cycle,
-    /// The walk went more than 64 links deep, or visited more than a
-    /// million items: crafted input, not read further.
+    /// The walk went more than 16 links deep, or visited more than 65,536
+    /// representations, items and references to them: crafted input, not
+    /// read further.
     TooLarge,
     /// A reference that is not defined, or not the entity the schema
     /// requires there.
     Malformed,
 }
 
+/// At most this many other definitions are listed in an
+/// [`OtherDefinition`](NotFollowedReason::OtherDefinition), so that many
+/// definitions sharing a representation cannot make the lists quadratic.
+const LISTED_OWNERS: usize = 8;
+
 /// Which definitions' walks reach a representation; see [`ShapeIndex`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Owners {
     One(usize),
-    /// The definitions found to reach it, two or more.
+    /// Two or more; the first [`LISTED_OWNERS`] found.
     Many(Vec<usize>),
 }
 
@@ -240,15 +252,17 @@ pub(super) struct ShapeIndex {
     owners: HashMap<u64, Owners>,
     /// Each usage's index, by its `#id`.
     usage_by_instance: HashMap<u64, usize>,
-    /// The mapped items `ProductStructure` matched to usages.
-    component_mapped_items: HashSet<u64>,
+    /// The mapped items `ProductStructure` matched to usages, and the
+    /// assembly whose component each places.
+    component_mapped_items: HashMap<u64, usize>,
 }
 
 /// Builds the index: walks every definition's links, as
 /// [`ProductStructure::shape`] follows them, recording which definitions
 /// reach each representation. A representation becomes owned by one
 /// definition, then perhaps by several, and is expanded at each of those two
-/// steps only, so the index takes time linear in the file.
+/// steps only; each relationship, mapped item and context is read once. So
+/// the index takes time linear in the file.
 pub(super) fn index(graph: &Graph<'_>, definitions: &[Definition], usages: &[Usage]) -> ShapeIndex {
     let mut index = ShapeIndex {
         owners: HashMap::new(),
@@ -260,12 +274,14 @@ pub(super) fn index(graph: &Graph<'_>, definitions: &[Definition], usages: &[Usa
         component_mapped_items: usages
             .iter()
             .filter_map(|usage| match usage.placement {
-                Some(Placement::MappedItem { mapped_item, .. }) => Some(mapped_item),
+                Some(Placement::MappedItem { mapped_item, .. }) => {
+                    Some((mapped_item, usage.parent))
+                }
                 _ => None,
             })
             .collect(),
     };
-    let links = Links { graph };
+    let mut links = Links::new(graph);
     for (definition, defined) in definitions.iter().enumerate() {
         let mut stack: Vec<u64> = defined.shape_representations.clone();
         while let Some(representation) = stack.pop() {
@@ -282,7 +298,7 @@ pub(super) fn index(graph: &Graph<'_>, definitions: &[Definition], usages: &[Usa
                         true
                     }
                     Owners::Many(owners) => {
-                        if !owners.contains(&definition) {
+                        if owners.len() < LISTED_OWNERS && !owners.contains(&definition) {
                             owners.push(definition);
                         }
                         false
@@ -290,7 +306,8 @@ pub(super) fn index(graph: &Graph<'_>, definitions: &[Definition], usages: &[Usa
                 },
             };
             if expand {
-                stack.extend(links.followed(representation, &index.component_mapped_items));
+                let components = &index.component_mapped_items;
+                stack.extend(links.followed(representation, definition, components));
             }
         }
     }
@@ -305,17 +322,24 @@ const SOLIDS: &[&str] = &[
     "FACETED_BREP_AND_BREP_WITH_VOIDS",
 ];
 
-/// Subtypes of `representation_relationship`, in the four schemas, whose
-/// names do not say so.
+/// `representation_relationship` and its subtypes, in the four schemas.
 const RELATIONSHIPS: &[&str] = &[
+    "REPRESENTATION_RELATIONSHIP",
     "ANGLE_ASSEMBLY_CONSTRAINT_WITH_DIMENSION",
     "BINARY_ASSEMBLY_CONSTRAINT",
     "COAXIAL_ASSEMBLY_CONSTRAINT",
     "CONSTRAINED_KINEMATIC_MOTION_REPRESENTATION",
+    "CONSTRUCTIVE_GEOMETRY_REPRESENTATION_RELATIONSHIP",
+    "DEFINITIONAL_REPRESENTATION_RELATIONSHIP",
+    "DEFINITIONAL_REPRESENTATION_RELATIONSHIP_WITH_SAME_CONTEXT",
     "DRAPED_ORIENTATION_ANGLE",
     "DRAWING_SHEET_REVISION_SEQUENCE",
     "EVALUATED_CHARACTERISTIC",
     "EVALUATED_CHARACTERISTIC_OF_PRODUCT_AS_INDIVIDUAL_TEST_RESULT",
+    "EXPLICIT_PROCEDURAL_REPRESENTATION_RELATIONSHIP",
+    "EXPLICIT_PROCEDURAL_SHAPE_REPRESENTATION_RELATIONSHIP",
+    "FACE_SHAPE_REPRESENTATION_RELATIONSHIP",
+    "FLAT_PATTERN_PLY_REPRESENTATION_RELATIONSHIP",
     "FREE_KINEMATIC_MOTION_REPRESENTATION",
     "GEOMETRY_TO_TOPOLOGY_MODEL_ASSOCIATION",
     "INCIDENCE_ASSEMBLY_CONSTRAINT",
@@ -327,15 +351,40 @@ const RELATIONSHIPS: &[&str] = &[
     "MECHANICAL_DESIGN_AND_DRAUGHTING_RELATIONSHIP",
     "MECHANISM_BASE_PLACEMENT",
     "MOTION_LINK_RELATIONSHIP",
+    "PAIR_REPRESENTATION_RELATIONSHIP",
     "PARALLEL_ASSEMBLY_CONSTRAINT",
     "PARALLEL_ASSEMBLY_CONSTRAINT_WITH_DIMENSION",
     "PERPENDICULAR_ASSEMBLY_CONSTRAINT",
     "PLY_ORIENTATION_ANGLE",
+    "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
     "RESULTING_PATH",
     "SHAPE_DATA_QUALITY_INSPECTED_SHAPE_AND_RESULT_RELATIONSHIP",
+    "SHAPE_REPRESENTATION_RELATIONSHIP",
     "SURFACE_DISTANCE_ASSEMBLY_CONSTRAINT_WITH_DIMENSION",
     "TANGENT_ASSEMBLY_CONSTRAINT",
+    "TESSELLATED_CONSTRUCTIVE_GEOMETRY_REPRESENTATION_RELATIONSHIP",
     "TOPOLOGY_TO_GEOMETRY_MODEL_ASSOCIATION",
+    "VARIATIONAL_CURRENT_REPRESENTATION_RELATIONSHIP",
+];
+
+/// `mapped_item` and its subtypes, in the four schemas. Only a plain mapped
+/// item is followed; the subtypes (annotations, camera images, fonts) are
+/// reported.
+const MAPPED_ITEMS: &[&str] = &[
+    "MAPPED_ITEM",
+    "ANNOTATION_SYMBOL",
+    "ANNOTATION_TEXT",
+    "ANNOTATION_TEXT_CHARACTER",
+    "CAMERA_IMAGE",
+    "CAMERA_IMAGE_2D_WITH_SCALE",
+    "CAMERA_IMAGE_3D_WITH_SCALE",
+    "DIMENSION_TEXT_ASSOCIATIVITY",
+    "INCLUDED_TEXT_BLOCK",
+    "PATH_AREA_WITH_PARAMETERS",
+    "REPOSITIONED_NEUTRAL_SKETCH",
+    "USER_DEFINED_CURVE_FONT",
+    "USER_DEFINED_MARKER",
+    "USER_DEFINED_TERMINATOR_SYMBOL",
 ];
 
 const CDSR: &str = "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION";
@@ -358,6 +407,7 @@ fn entity(exchange: &Exchange<'_>, id: u64) -> String {
 }
 
 /// What a link from a representation is.
+#[derive(Debug, Clone)]
 enum Link {
     /// Followed, to the representation on its far side.
     Follow { far: u64 },
@@ -373,14 +423,8 @@ enum Link {
     None,
 }
 
-/// A `context_dependent_shape_representation` that names a relationship.
-struct NamedBy {
-    /// The `#id` of the usage its product definition shape is of, if that
-    /// can be read.
-    usage: Option<u64>,
-}
-
 /// A mapped item, read.
+#[derive(Debug, Clone, Copy)]
 struct Mapped {
     representation_map: u64,
     origin: u64,
@@ -388,28 +432,77 @@ struct Mapped {
     representation: u64,
 }
 
+/// What an item is to the walk.
+#[derive(Debug, Clone, Copy)]
+enum MappedItem {
+    /// Not a mapped item.
+    No,
+    /// A plain mapped item.
+    Plain(Mapped),
+    /// One whose attributes cannot be read.
+    Malformed,
+    /// A subtype, or one with other partials (a camera image, an
+    /// annotation): not read as a placement of shape.
+    Other,
+}
+
+/// A representation, read: its items and its context.
+type Read = Option<(Rc<[u64]>, u64)>;
+
 /// Reads the links between representations, the same way for the index and
-/// for each walk.
+/// for each walk, each relationship, mapped item and representation once.
 struct Links<'g, 'a> {
     graph: &'g Graph<'a>,
+    representations: HashMap<u64, Read>,
+    mapped_items: HashMap<u64, MappedItem>,
+    relationships: HashMap<(usize, u64), Link>,
 }
 
 impl<'g, 'a> Links<'g, 'a> {
+    fn new(graph: &'g Graph<'a>) -> Self {
+        Self {
+            graph,
+            representations: HashMap::new(),
+            mapped_items: HashMap::new(),
+            relationships: HashMap::new(),
+        }
+    }
+
     fn exchange(&self) -> &'g Exchange<'a> {
         self.graph.exchange()
     }
 
-    /// The representations `#representation` leads to by links the walk
-    /// follows: its plain shape relationships, and the mapped items it
-    /// lists that are not component placements.
-    fn followed(&self, representation: u64, components: &HashSet<u64>) -> Vec<u64> {
+    /// The items and context of `#representation`, or `None` if it cannot
+    /// be read as one.
+    fn representation(&mut self, representation: u64) -> Read {
+        let exchange = self.graph.exchange();
+        self.representations
+            .entry(representation)
+            .or_insert_with(|| {
+                record::representation(exchange, representation)
+                    .ok()
+                    .map(|read| (read.items.into(), read.context))
+            })
+            .clone()
+    }
+
+    /// The representations `#representation` leads to, for definition
+    /// `definition`, by links the walk follows: its plain shape
+    /// relationships, and the mapped items it lists that are not the
+    /// definition's component placements.
+    fn followed(
+        &mut self,
+        representation: u64,
+        definition: usize,
+        components: &HashMap<u64, usize>,
+    ) -> Vec<u64> {
         let mut found = Vec::new();
-        if let Ok(read) = record::representation(self.exchange(), representation) {
-            for item in read.items {
-                if components.contains(&item) {
+        if let Some((items, _)) = self.representation(representation) {
+            for &item in items.iter() {
+                if components.get(&item) == Some(&definition) {
                     continue;
                 }
-                if let Some(Ok(mapped)) = self.mapped_item(item) {
+                if let MappedItem::Plain(mapped) = self.mapped_item(item) {
                     found.push(mapped.representation);
                 }
             }
@@ -425,84 +518,107 @@ impl<'g, 'a> Links<'g, 'a> {
         found
     }
 
-    /// `#item` as a mapped item: `None` if it is not one, an error if it is
-    /// one that cannot be read.
-    fn mapped_item(&self, item: u64) -> Option<Result<Mapped, ()>> {
+    /// What `#item` is as a mapped item.
+    fn mapped_item(&mut self, item: u64) -> MappedItem {
+        if let Some(&read) = self.mapped_items.get(&item) {
+            return read;
+        }
+        let read = self.read_mapped_item(item);
+        self.mapped_items.insert(item, read);
+        read
+    }
+
+    fn read_mapped_item(&self, item: u64) -> MappedItem {
         let exchange = self.exchange();
-        let instance = exchange.get(item)?;
+        let Some(instance) = exchange.get(item) else {
+            return MappedItem::No;
+        };
+        let names = names(exchange, instance);
+        if !names
+            .iter()
+            .any(|name| MAPPED_ITEMS.contains(&name.as_str()))
+        {
+            return MappedItem::No;
+        }
         let params = if instance.is_complex() {
-            // Anything more than a placed representation item (a camera
-            // image, say) is not read as a link.
-            let mut is_mapped = false;
-            for record in exchange.records(instance) {
-                if record.is("MAPPED_ITEM") {
-                    is_mapped = true;
-                } else if !record.is("REPRESENTATION_ITEM")
-                    && !record.is("GEOMETRIC_REPRESENTATION_ITEM")
-                {
-                    return None;
-                }
-            }
-            if !is_mapped {
-                return None;
+            // A placed representation item, and nothing more.
+            let plain = names.iter().all(|name| {
+                matches!(
+                    name.as_str(),
+                    "MAPPED_ITEM" | "REPRESENTATION_ITEM" | "GEOMETRIC_REPRESENTATION_ITEM"
+                )
+            });
+            if !plain {
+                return MappedItem::Other;
             }
             if record::repeats_partial(exchange, instance) {
-                return Some(Err(()));
+                return MappedItem::Malformed;
             }
             record::partial(exchange, instance, "MAPPED_ITEM")
                 .and_then(|r| record::exact_params(r, 2))
         } else {
-            let record = exchange.records(instance).next()?;
-            if !record.is("MAPPED_ITEM") {
-                return None;
+            if names != ["MAPPED_ITEM"] {
+                return MappedItem::Other;
             }
-            record::exact_params(record, 3).map(|params| params[1..].to_vec())
+            exchange
+                .records(instance)
+                .next()
+                .and_then(|record| record::exact_params(record, 3))
+                .map(|params| params[1..].to_vec())
         };
-        Some(self.mapped(params))
+        match self.mapped(params) {
+            Some(mapped) => MappedItem::Plain(mapped),
+            None => MappedItem::Malformed,
+        }
     }
 
-    fn mapped(&self, params: Option<Vec<Param<'_>>>) -> Result<Mapped, ()> {
-        let params = params.ok_or(())?;
-        let (Some(map), Some(target)) = (params[0].reference(), params[1].reference()) else {
-            return Err(());
-        };
+    fn mapped(&self, params: Option<Vec<Param<'_>>>) -> Option<Mapped> {
+        let params = params?;
+        let (map, target) = (params[0].reference()?, params[1].reference()?);
         let exchange = self.exchange();
-        let map_instance = exchange.get(map).ok_or(())?;
+        let map_instance = exchange.get(map)?;
         if map_instance.is_complex() {
-            return Err(());
+            return None;
         }
         let map_record = exchange
             .records(map_instance)
             .next()
-            .filter(|record| record.is("REPRESENTATION_MAP"))
-            .ok_or(())?;
-        let map_params = record::exact_params(map_record, 2).ok_or(())?;
-        let (Some(origin), Some(representation)) =
-            (map_params[0].reference(), map_params[1].reference())
-        else {
-            return Err(());
-        };
-        Ok(Mapped {
+            .filter(|record| record.is("REPRESENTATION_MAP"))?;
+        let map_params = record::exact_params(map_record, 2)?;
+        Some(Mapped {
             representation_map: map,
-            origin,
+            origin: map_params[0].reference()?,
             target,
-            representation,
+            representation: map_params[1].reference()?,
         })
     }
 
     /// What the instance at graph node `user`, which refers to
     /// `#representation`, is as a link from it.
-    fn relationship(&self, user: usize, representation: u64) -> Link {
+    fn relationship(&mut self, user: usize, representation: u64) -> Link {
+        if let Some(link) = self.relationships.get(&(user, representation)) {
+            return link.clone();
+        }
+        let link = self.read_relationship(user, representation);
+        self.relationships
+            .insert((user, representation), link.clone());
+        link
+    }
+
+    fn read_relationship(&mut self, user: usize, representation: u64) -> Link {
         let exchange = self.exchange();
         let instance = self.graph.instance(user);
         let names = names(exchange, instance);
-        let is_relationship = names
+        if !names
             .iter()
-            .any(|name| name.contains(RR) || RELATIONSHIPS.contains(&name.as_str()));
-        if !is_relationship {
+            .any(|name| RELATIONSHIPS.contains(&name.as_str()))
+        {
             return Link::None;
         }
-        // rep_1 and rep_2 are attributes 2 and 3 of every relationship.
+        // rep_1 and rep_2 are attributes 2 and 3 of a relationship's
+        // representation_relationship partial, or of a simple record whose
+        // supertypes are relationships only. Where they are not, the
+        // relationship cannot be read, and is reported.
         let base = if instance.is_complex() {
             record::partial(exchange, instance, RR)
         } else {
@@ -512,15 +628,15 @@ impl<'g, 'a> Links<'g, 'a> {
             let params: Vec<Param<'_>> = record.params().take(4).collect();
             Some((params.get(2)?.reference()?, params.get(3)?.reference()?))
         });
-        let Some((rep_1, rep_2)) = sides else {
-            return Link::None;
+        let far = match sides {
+            Some((rep_1, rep_2)) if rep_1 == representation && rep_2 != representation => rep_2,
+            Some((rep_1, rep_2)) if rep_2 == representation && rep_1 != representation => rep_1,
+            Some((rep_1, rep_2)) if rep_1 == representation && rep_2 == representation => {
+                return Link::None;
+            }
+            _ => return Link::Refused(NotFollowedReason::NotShapeRelationship),
         };
-        let far = match (rep_1 == representation, rep_2 == representation) {
-            (true, false) => rep_2,
-            (false, true) => rep_1,
-            _ => return Link::None,
-        };
-        if let Some(NamedBy { usage }) = self.named_by_usage(user) {
+        if let Some(usage) = self.named_by_usage(user) {
             return Link::Usage { far, usage };
         }
         let is = |name: &str| names.iter().any(|n| n == name);
@@ -529,7 +645,7 @@ impl<'g, 'a> Links<'g, 'a> {
         {
             return Link::Constructive { far };
         }
-        if names.iter().any(|name| name == RRWT) {
+        if is(RRWT) {
             return Link::Refused(NotFollowedReason::TransformedRelationship);
         }
         let plain = if instance.is_complex() {
@@ -548,20 +664,28 @@ impl<'g, 'a> Links<'g, 'a> {
         if !plain {
             return Link::Refused(NotFollowedReason::NotShapeRelationship);
         }
-        let context = |id: u64| record::representation(exchange, id).map(|read| read.context);
-        match (context(representation), context(far)) {
-            (Ok(here), Ok(there)) if here == there => Link::Follow { far },
-            (Ok(here), Ok(there)) => Link::Refused(NotFollowedReason::DifferentContext {
+        let here = self
+            .representation(representation)
+            .map(|(_, context)| context);
+        let there = self.representation(far).map(|(_, context)| context);
+        match (here, there) {
+            (Some(here), Some(there)) if here == there => Link::Follow { far },
+            (Some(here), Some(there)) => Link::Refused(NotFollowedReason::DifferentContext {
                 contexts: [here, there],
             }),
-            (_, Err(_)) => Link::Refused(self.unreadable(far)),
-            (Err(_), _) => Link::Refused(NotFollowedReason::Malformed),
+            (_, None) => Link::Refused(self.unreadable(far)),
+            (None, _) => Link::Refused(NotFollowedReason::Malformed),
         }
     }
 
-    /// The `context_dependent_shape_representation` naming the relationship
-    /// at graph node `relationship`, if one does.
-    fn named_by_usage(&self, relationship: usize) -> Option<NamedBy> {
+    /// If a `context_dependent_shape_representation` names the relationship
+    /// at graph node `relationship`: the `#id` of the usage its product
+    /// definition shape is of, if that can be read.
+    #[expect(
+        clippy::option_option,
+        reason = "named by none, or by one whose usage cannot be read"
+    )]
+    fn named_by_usage(&self, relationship: usize) -> Option<Option<u64>> {
         let exchange = self.exchange();
         let link = self
             .graph
@@ -583,7 +707,7 @@ impl<'g, 'a> Links<'g, 'a> {
             .and_then(|shape| exchange.get(shape))
             .and_then(|instance| exchange.records(instance).next())
             .and_then(|record| record::reference(record.param(2).as_ref()));
-        Some(NamedBy { usage })
+        Some(usage)
     }
 
     /// Why `#id`, where a representation must be, is not followed.
@@ -618,13 +742,13 @@ impl ProductStructure {
     ///   `shape_representation_relationship` partials, that no
     ///   `context_dependent_shape_representation` names and whose two sides
     ///   name one context instance, from whichever side it is on;
-    /// * a `mapped_item` that is not one this structure matched to a usage,
-    ///   into its map's representation.
+    /// * a plain `mapped_item` that is not one this structure matched to a
+    ///   usage of this definition, into its map's representation.
     ///
     /// It skips, as not this definition's own shape: `axis2_placement_3d`
     /// items (frames); a relationship an assembly usage names, if it leads
-    /// to a shape representation of the usage's other definition; a
-    /// component's mapped item; a constructive geometry relationship
+    /// to a shape representation of the usage's other definition; its
+    /// components' mapped items; a constructive geometry relationship
     /// (supplemental geometry), if it leads to constructive geometry; and
     /// the `representation_map`s that point back. Every other item is a
     /// solid or listed in [`other`](DefinitionShape::other); every other
@@ -634,7 +758,10 @@ impl ProductStructure {
     /// shape is in another file, and a walk that grows too large. Only
     /// `#id`s and entity types are read.
     ///
-    /// `graph` must be the graph this structure was read from.
+    /// The walk visits at most 65,536 representations, items and references
+    /// to representations, and each relationship, mapped item and
+    /// representation is read once, so one call takes time linear in the
+    /// file. `graph` must be the graph this structure was read from.
     ///
     /// # Panics
     ///
@@ -642,7 +769,7 @@ impl ProductStructure {
     pub fn shape(&self, graph: &Graph<'_>, definition: usize) -> DefinitionShape {
         let defined = &self.definitions()[definition];
         let mut walk = Walk {
-            links: Links { graph },
+            links: Links::new(graph),
             structure: self,
             index: self.shape_index(),
             definition,
@@ -652,7 +779,7 @@ impl ProductStructure {
             exhausted: false,
             seen: HashSet::new(),
         };
-        walk.applied_documents(defined.instance);
+        walk.documents(defined.instance);
         let mut roots = Vec::new();
         for &root in &defined.shape_representations {
             if !roots.contains(&root) {
@@ -708,10 +835,6 @@ struct Walk<'s, 'g, 'a> {
 }
 
 impl Walk<'_, '_, '_> {
-    fn exchange(&self) -> &Exchange<'_> {
-        self.links.exchange()
-    }
-
     fn refuse(&mut self, instance: u64, reason: NotFollowedReason) {
         if self
             .reported
@@ -756,14 +879,34 @@ impl Walk<'_, '_, '_> {
         }
     }
 
-    /// Reports each `applied_document_reference` that names the definition
-    /// `#definition`: its shape is in that document.
-    fn applied_documents(&mut self, definition: u64) {
+    /// Reports the documents the definition `#definition` is stated in: each
+    /// `applied_document_reference` that names it, and the documents an
+    /// AP203 `product_definition_with_associated_documents` lists.
+    fn documents(&mut self, definition: u64) {
         let graph = self.links.graph;
         let exchange = graph.exchange();
         let Some(node) = graph.node(definition) else {
             return;
         };
+        let instance = graph.instance(node);
+        let associated = (!instance.is_complex())
+            .then(|| exchange.records(instance).next())
+            .flatten()
+            .filter(|record| record.is("PRODUCT_DEFINITION_WITH_ASSOCIATED_DOCUMENTS"))
+            .and_then(|record| record.param(4))
+            .and_then(|documents| documents.list());
+        for document in associated
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.reference())
+        {
+            self.refuse(
+                document,
+                NotFollowedReason::External {
+                    document: Some(document),
+                },
+            );
+        }
         for &user in graph.referenced_by(node) {
             let instance = graph.instance(user);
             if instance.is_complex() {
@@ -783,25 +926,25 @@ impl Walk<'_, '_, '_> {
         if !self.count(representation) || !self.seen.insert((representation, at.mapped.clone())) {
             return;
         }
-        let read = match record::representation(self.exchange(), representation) {
-            Ok(read) => read,
-            Err(NotRepresentation::Undefined | NotRepresentation::Layout) => {
-                let reason = self.links.unreadable(representation);
-                self.refuse(representation, reason);
-                return;
-            }
+        let Some((items, context)) = self.links.representation(representation) else {
+            let reason = self.links.unreadable(representation);
+            self.refuse(representation, reason);
+            return;
         };
-        for item in read.items {
+        for &item in items.iter() {
             if !self.count(item) {
                 return;
             }
-            self.item(at, representation, read.context, item);
+            self.item(at, representation, context, item);
         }
         let graph = self.links.graph;
         let Some(node) = graph.node(representation) else {
             return;
         };
         for &user in graph.referenced_by(node) {
+            if !self.count(representation) {
+                return;
+            }
             self.link(at, representation, user);
         }
     }
@@ -814,13 +957,15 @@ impl Walk<'_, '_, '_> {
             return;
         };
         let names = names(exchange, instance);
-        if names == ["AXIS2_PLACEMENT_3D"] || self.index.component_mapped_items.contains(&item) {
+        let component = self.index.component_mapped_items.get(&item) == Some(&self.definition);
+        if names == ["AXIS2_PLACEMENT_3D"] || component {
             return;
         }
         match self.links.mapped_item(item) {
-            Some(Ok(mapped)) => return self.mapped(at, item, &mapped),
-            Some(Err(())) => return self.refuse(item, NotFollowedReason::Malformed),
-            None => {}
+            MappedItem::Plain(mapped) => return self.mapped(at, item, &mapped),
+            MappedItem::Malformed => return self.refuse(item, NotFollowedReason::Malformed),
+            MappedItem::Other => return self.refuse(item, NotFollowedReason::NotPlainMappedItem),
+            MappedItem::No => {}
         }
         if !self.seen.insert((item, at.mapped.clone())) {
             return;
@@ -829,7 +974,7 @@ impl Walk<'_, '_, '_> {
             item,
             entity: names.join("+"),
             representation,
-            context: Some(context),
+            context,
             shape_representation: at.root,
             path: at.path.clone(),
         };
@@ -1060,7 +1205,7 @@ mod tests {
         let solid = &shape.solids[0];
         assert_eq!(solid.entity, "MANIFOLD_SOLID_BREP");
         assert_eq!((solid.representation, solid.shape_representation), (13, 13));
-        assert_eq!(solid.context, Some(2));
+        assert_eq!(solid.context, 2);
         assert!(solid.path.is_empty() && !solid.is_transformed());
         assert_eq!(
             shape.solids[3].entity,
@@ -1402,12 +1547,16 @@ mod tests {
         assert!(shape.solids.is_empty() && !shape.is_complete());
     }
 
-    /// Every subtype of `representation_relationship` in the four schemas is
-    /// told apart as a relationship.
+    /// The lists of relationship and mapped-item types are exactly
+    /// `representation_relationship` and `mapped_item` and their subtypes
+    /// in the four schemas (`tools/fetch-schemas.sh`; skipped without them,
+    /// failed with `STEPQ_REQUIRE_FIXTURES=1`, as in CI).
     #[test]
-    fn every_relationship_type_is_known() {
+    fn relationship_and_mapped_item_types_match_the_schemas() {
         use crate::express::Schema;
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/schemas");
+        let mut found: [HashSet<String>; 2] = [HashSet::new(), HashSet::new()];
+        let mut read = 0;
         for file in [
             "ap242e4_mim_lf.exp",
             "ap214e3.exp",
@@ -1417,27 +1566,144 @@ mod tests {
             let Ok(src) = std::fs::read(dir.join(file)) else {
                 continue;
             };
+            read += 1;
             let schema = Schema::parse(&src).unwrap();
-            let mut subtypes = vec!["REPRESENTATION_RELATIONSHIP".to_owned()];
-            let mut found = HashSet::new();
-            while let Some(name) = subtypes.pop() {
-                for entity in schema.entities() {
-                    if entity
-                        .supertypes
-                        .iter()
-                        .any(|s| s.eq_ignore_ascii_case(&name))
-                        && found.insert(entity.name.clone())
-                    {
-                        subtypes.push(entity.name.clone());
+            for (root, found) in ["REPRESENTATION_RELATIONSHIP", "MAPPED_ITEM"]
+                .iter()
+                .zip(&mut found)
+            {
+                // Walked per schema: a subtype may be in one schema only.
+                let mut subtypes = vec![(*root).to_owned()];
+                let mut seen = HashSet::from([(*root).to_owned()]);
+                while let Some(name) = subtypes.pop() {
+                    for entity in schema.entities() {
+                        if entity
+                            .supertypes
+                            .iter()
+                            .any(|s| s.eq_ignore_ascii_case(&name))
+                            && seen.insert(entity.name.clone())
+                        {
+                            subtypes.push(entity.name.clone());
+                        }
                     }
                 }
+                found.extend(seen);
             }
-            for name in found {
-                assert!(
-                    name.contains(RR) || RELATIONSHIPS.contains(&name.as_str()),
-                    "{file}: {name}"
-                );
-            }
+        }
+        let required =
+            std::env::var_os("STEPQ_REQUIRE_FIXTURES").is_some_and(|v| v != "0" && !v.is_empty());
+        if read < 4 {
+            assert!(
+                !required,
+                "{read} of 4 schemas under {} (run tools/fetch-schemas.sh)",
+                dir.display()
+            );
+            eprintln!("skipping: {read} of 4 schemas (run tools/fetch-schemas.sh)");
+            return;
+        }
+        for (list, found) in [RELATIONSHIPS, MAPPED_ITEMS].iter().zip(&found) {
+            let listed: HashSet<String> = list.iter().map(|&name| name.to_owned()).collect();
+            assert_eq!(&listed, found);
+        }
+    }
+
+    /// What the review of this walk found it missed or misread.
+    #[test]
+    fn documents_mapped_item_subtypes_and_odd_relationships() {
+        // An AP203 definition with its geometry in an associated document.
+        let mut shapes_ = shapes(
+            "#10=PRODUCT_DEFINITION_WITH_ASSOCIATED_DOCUMENTS('p','',$,$,(#80));
+#11=PRODUCT_DEFINITION_SHAPE('','',#10);#12=SHAPE_DEFINITION_REPRESENTATION(#11,#13);
+#13=SHAPE_REPRESENTATION('',(#24),#2);#24=AXIS2_PLACEMENT_3D('',#92,$,$);
+#80=DOCUMENT_FILE('plate.stp','',$,#81,'',$);
+#50=PRODUCT_DEFINITION('a','',$,$);#60=NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#50,#10,$);",
+        );
+        assert_eq!(
+            reasons(&shapes_.remove(&10).unwrap()),
+            [(80, NotFollowedReason::External { document: Some(80) })]
+        );
+
+        // A camera image maps a representation holding a solid.
+        let camera = part("#70").not_followed.len();
+        assert_eq!(camera, 1, "an undefined #70");
+        let shape = shapes(&format!(
+            "{PART}#13=SHAPE_REPRESENTATION('',(#70),#2);#14=SHAPE_REPRESENTATION('',(#20,#24),#2);
+#20=MANIFOLD_SOLID_BREP('',#90);#24=AXIS2_PLACEMENT_3D('',#92,$,$);#69=REPRESENTATION_MAP(#24,#14);
+#70=(CAMERA_IMAGE()CAMERA_IMAGE_3D_WITH_SCALE()GEOMETRIC_REPRESENTATION_ITEM()MAPPED_ITEM(#69,#24)REPRESENTATION_ITEM(''));"
+        ))
+        .remove(&10)
+        .unwrap();
+        assert_eq!(
+            reasons(&shape),
+            [(70, NotFollowedReason::NotPlainMappedItem)]
+        );
+        assert_eq!(shape.other, []);
+
+        // A relationship whose rep_1 and rep_2 are not attributes 2 and 3.
+        let shape = shapes(&format!(
+            "{PART}#13=SHAPE_REPRESENTATION('',(#24),#2);#24=AXIS2_PLACEMENT_3D('',#92,$,$);
+#14=SHAPE_REPRESENTATION('',(#20),#2);#20=MANIFOLD_SOLID_BREP('',#90);
+#30=EVALUATED_CHARACTERISTIC('',(),#2,'','',#13,#14);"
+        ))
+        .remove(&10)
+        .unwrap();
+        assert_eq!(
+            reasons(&shape),
+            [(30, NotFollowedReason::NotShapeRelationship)]
+        );
+    }
+
+    /// A component's mapped item is skipped by its assembly only; any other
+    /// definition listing it places the component's shape, which is not its
+    /// own.
+    #[test]
+    fn component_mapped_items_belong_to_their_assembly() {
+        let mut shapes_ = shapes(&format!(
+            "{PART}#13=SHAPE_REPRESENTATION('',(#20,#24),#2);#20=MANIFOLD_SOLID_BREP('',#90);
+#24=AXIS2_PLACEMENT_3D('',#92,$,$);
+#50=PRODUCT_DEFINITION('a','',$,$);#51=PRODUCT_DEFINITION_SHAPE('','',#50);
+#52=SHAPE_DEFINITION_REPRESENTATION(#51,#53);#53=SHAPE_REPRESENTATION('',(#24,#70),#2);
+#60=NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#50,#10,$);
+#69=REPRESENTATION_MAP(#24,#13);#70=MAPPED_ITEM('',#69,#24);
+#40=PRODUCT_DEFINITION('b','',$,$);#41=PRODUCT_DEFINITION_SHAPE('','',#40);
+#42=SHAPE_DEFINITION_REPRESENTATION(#41,#43);#43=SHAPE_REPRESENTATION('',(#70),#2);"
+        ));
+        assert_eq!(shapes_.remove(&50).unwrap(), DefinitionShape::default());
+        assert_eq!(
+            reasons(&shapes_.remove(&40).unwrap()),
+            [(
+                70,
+                NotFollowedReason::OtherDefinition {
+                    definitions: vec![0]
+                }
+            )]
+        );
+    }
+
+    /// Many definitions sharing one representation each list at most eight
+    /// of the others.
+    #[test]
+    fn owners_are_listed_up_to_eight() {
+        let mut data =
+            "#13=SHAPE_REPRESENTATION('',(#20),#2);#20=MANIFOLD_SOLID_BREP('',#90);".to_owned();
+        for d in 0..20u64 {
+            let base = 100 + d * 3;
+            write!(
+                data,
+                "#{base}=PRODUCT_DEFINITION('{d}','',$,$);#{}=PRODUCT_DEFINITION_SHAPE('','',#{base});                 #{}=SHAPE_DEFINITION_REPRESENTATION(#{},#13);",
+                base + 1,
+                base + 2,
+                base + 1
+            )
+            .unwrap();
+        }
+        for shape in shapes(&data).values() {
+            let reasons = reasons(shape);
+            let [(13, NotFollowedReason::OtherDefinition { definitions })] = reasons.as_slice()
+            else {
+                panic!("{shape:?}");
+            };
+            assert!((7..=8).contains(&definitions.len()), "{definitions:?}");
         }
     }
 
@@ -1450,7 +1716,7 @@ mod tests {
                 item: 1,
                 entity: "MANIFOLD_SOLID_BREP".to_owned(),
                 representation: 2,
-                context: Some(3),
+                context: 3,
                 shape_representation: 4,
                 path: vec![
                     ShapeLink::Relationship {
@@ -1471,6 +1737,7 @@ mod tests {
                 NotFollowedReason::External { document: Some(1) },
                 NotFollowedReason::TransformedRelationship,
                 NotFollowedReason::NotShapeRelationship,
+                NotFollowedReason::NotPlainMappedItem,
                 NotFollowedReason::DifferentContext { contexts: [1, 2] },
                 NotFollowedReason::OtherDefinition {
                     definitions: vec![1],

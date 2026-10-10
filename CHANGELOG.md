@@ -125,15 +125,19 @@ definition.
   component mapped items and supplemental geometry, each only when the far
   side is what the rule expects. A transformed relationship no usage names,
   any other relationship, one across contexts, a representation another
-  definition reaches too, a cycle, a walk too large, a malformed reference
-  and a shape in another file (an `applied_document_reference`, an
-  'external definition', as `split --master` writes stubs) are reported.
+  definition reaches too, a mapped item that is more than one (an
+  annotation, a camera image), a cycle, a walk too large, a malformed
+  reference and a shape in another file (an `applied_document_reference`,
+  an AP203 definition's associated documents, an 'external definition', as
+  `split --master` writes stubs) are reported. Each relationship, mapped
+  item and representation is read once, so the index `ProductStructure::new`
+  builds for it and each call are linear in the file.
   Each item keeps its path, and `ShapeItem::transform` composes the mapped
   items on it in millimetres. On all 55 fixtures the 1,660 definitions are
   complete and their 1,261 solids are each reached once;
   `tools/verify-read.py shapes` matches every definition's subtree solids
   with Open CASCADE 8.0.1's shape labels, and CI runs it on the core
-  fixtures. `examples/shapes.rs` prints stepq's side.
+  fixtures and pins its counts. `examples/shapes.rs` prints stepq's side.
 
 ### Changed
 

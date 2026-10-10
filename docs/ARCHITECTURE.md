@@ -635,16 +635,24 @@ more shape is reported with its reason, never guessed past: a transformed
 relationship no usage names (no usage says which side is placed; Open
 CASCADE reads such a part as empty), a relationship that is not a plain
 shape relationship, one across two context instances (two coordinate
-spaces), a representation another definition also reaches, a mapped-item
-cycle, a walk past 64 links or a million visits, a malformed reference, and
-a shape stated in another file: an `applied_document_reference` to the
-definition, an 'external definition' property of a representation (as
-`split --master` writes component stubs), a `shape_representation_reference`
-or an edition 3 reference. So an empty shape that is complete states no
-geometry, and an incomplete one says stepq cannot tell. Which definitions
-reach each representation is recorded once, by `ProductStructure::new`, in
-time linear in the file: a representation is expanded when one definition
-first reaches it and again when a second does, never after.
+spaces), a mapped item that is more than a placed representation (an
+annotation, a camera image), a representation another definition also
+reaches, a mapped-item cycle, a walk past 16 links or 65,536 visits, a
+malformed reference, and a shape stated in another file: an
+`applied_document_reference` to the definition, a document an AP203
+`product_definition_with_associated_documents` lists, an 'external
+definition' property of a representation (as `split --master` writes
+component stubs), a `shape_representation_reference` or an edition 3
+reference. So an empty shape that is complete states no geometry, and an
+incomplete one says stepq cannot tell; an incomplete answer errs safe, as
+when a definition merely has a drawing attached. Which definitions reach
+each representation is recorded once, by `ProductStructure::new`: a
+representation is expanded when one definition first reaches it and again
+when a second does, never after, at most eight others are listed, and each
+relationship, mapped item and representation is read once, so the index
+takes time linear in the file. A walk reads each of those once too, and
+counts every representation, item and reference to a representation it
+visits against its limit, so one call is linear in the file as well.
 
 On all 55 fixtures every one of the 1,660 definitions is complete, and the
 1,261 solid instances are each reached once, from one definition and one
@@ -654,7 +662,10 @@ is used) with Open CASCADE's shape label of the same name, counting the one
 tessellated solid as Open CASCADE does; where names do not tell definitions
 apart, as in the moon buggy, whose products are all "Moon Buggy" and whose
 mapped components Open CASCADE leaves unnamed, the whole file's counts must
-agree. CI runs it on the core fixtures and the generated parts.
+agree, and only where Open CASCADE leaves some label unnamed; a product
+named like one of its expansion labels is still compared by name. CI runs
+it on the core fixtures and the generated parts and pins how many
+definitions match by name (154) and by the whole file (20).
 
 ### What is not read
 
@@ -733,6 +744,8 @@ fixtures:
 | Cone semi-angle | refused outside [1e-6, π/2 − 1e-6] rad once converted | geometry | 90 × 0.0174532925 is π/2 − 1.79e-9, which would otherwise read as a valid cone |
 | Conversion-unit chain | 8 deep | units | deepest in the fixtures: inch → centimetre → SI |
 | Assembly depth | 1024 | product structure, placements | deepest fixture assembly: 7 levels |
+| Shape walk depth | 16 links | solids of a definition | deepest fixture path: 1 link |
+| Shape walk size | 65,536 representations, items and references visited per definition | solids of a definition | largest fixture definition: 119 items |
 
 ## Non-goals, and why
 

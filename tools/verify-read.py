@@ -23,7 +23,7 @@ their paths.
     tools/verify-read.py curves --healing=SEAMS,PIECES,OTHER [PATH...]
     tools/verify-read.py occurrences --expect=MATCHED,DIVERGENT [PATH...]
     tools/verify-read.py topology --healing=EDGES [PATH...]
-    tools/verify-read.py shapes [PATH...]
+    tools/verify-read.py shapes --expect=BY_NAME,BY_FILE [PATH...]
 
 PATH is a STEP file or a directory searched for them, following symbolic
 links; directories skip files over 16 MB unless STEPQ_LARGE_FIXTURES=1, and a
@@ -115,9 +115,12 @@ undefined (stepq reads ref_direction_stated = false).
             names repeat. Open CASCADE's labels for the solids, shells and
             compounds of a shape, and unnamed labels, are dropped; any other
             name on one side only fails. Where names do not tell definitions
-            apart (Open CASCADE leaves the moon buggy's parts unnamed), the
-            whole file's multisets must agree instead, every label but the
-            shells and compounds of a shape taken.
+            apart (Open CASCADE leaves the moon buggy's parts unnamed), and
+            only where it leaves some label unnamed, the whole file's
+            multisets must agree instead, every label but the shells and
+            compounds of a shape taken. A product named like one of those
+            labels is compared by name. --expect pins how many definitions
+            match by name and how many by the whole file, as CI does.
 
 Exit status: 0 if every comparison holds, 1 if one fails or the pinned
 tallies differ, 2 if a file cannot be read by either side, a directory named
@@ -1022,8 +1025,12 @@ def check_shapes(path: Path, tally: ShapeTally) -> list[str]:
         # among the other items.
         ours_by_name.setdefault(name, []).append(line["total"] + line["tessellated"])
     theirs_by_name: dict[str, list[int]] = {}
+    unnamed = False
     for label in theirs:
-        if label.name in EXPANSION_LABELS or label.name is None:
+        # A label Open CASCADE makes for a shape's solids, shells or
+        # compounds, or leaves unnamed; unless a product has that name.
+        if label.name is None or (label.name in EXPANSION_LABELS and label.name not in ours_by_name):
+            unnamed |= label.name in (None, "?")
             tally.expansions += 1
             continue
         theirs_by_name.setdefault(label.name, []).append(label.solids)
@@ -1038,11 +1045,12 @@ def check_shapes(path: Path, tally: ShapeTally) -> list[str]:
             )
         else:
             matched += len(ours_solids)
-    if by_name:
+    if by_name and unnamed:
         # Open CASCADE leaves the products it reaches through mapped items
         # unnamed (the moon buggy, whose products are all called "Moon
         # Buggy"): the whole file's counts must then agree, every label but
-        # the shells and compounds of a shape taken.
+        # the shells and compounds of a shape taken. Without an unnamed
+        # label, names tell definitions apart and a difference fails.
         ours_all = sorted(total for totals in ours_by_name.values() for total in totals)
         theirs_all = sorted(
             label.solids for label in theirs if label.name not in ("SHELL", "COMPOUND")
@@ -1059,6 +1067,8 @@ def check_shapes(path: Path, tally: ShapeTally) -> list[str]:
                 f"the whole file: stepq's definitions hold {ours_all} solids, Open CASCADE's "
                 f"labels {theirs_all}"
             )
+    elif by_name:
+        problems.extend(by_name)
     else:
         tally.definitions += matched
     tally.agreeing += not problems
@@ -1098,9 +1108,15 @@ def main() -> int:
             healing = tuple(int(c) for c in counts)
         elif arg.startswith("--expect="):
             counts = arg.split("=", 1)[1].split(",")
-            if name != "occurrences" or len(counts) != 2 or not all(c.isdigit() for c in counts):
+            if (
+                name not in ("occurrences", "shapes")
+                or len(counts) != 2
+                or not all(c.isdigit() for c in counts)
+            ):
                 print(
-                    f"{arg}: only occurrences takes --expect=MATCHED,DIVERGENT", file=sys.stderr
+                    f"{arg}: only occurrences takes --expect=MATCHED,DIVERGENT, and shapes "
+                    "--expect=BY_NAME,BY_FILE",
+                    file=sys.stderr,
                 )
                 return 2
             expect = tuple(int(c) for c in counts)
@@ -1207,7 +1223,17 @@ def main() -> int:
     if failed:
         print(f"{failed} of {len(files)} files differ", file=sys.stderr)
         return 1
-    if expect is not None:
+    if expect is not None and isinstance(tally, ShapeTally):
+        found = (tally.definitions, tally.by_file)
+        if found != expect:
+            print(
+                f"{found[0]} definitions match by name and {found[1]} by the whole file, pinned "
+                f"at {expect[0]} and {expect[1]}: a definition may be missing, or the files or "
+                "Open CASCADE changed",
+                file=sys.stderr,
+            )
+            return 1
+    elif expect is not None:
         found = (tally.by_name + tally.by_value, tally.divergent)
         if found != expect:
             print(
