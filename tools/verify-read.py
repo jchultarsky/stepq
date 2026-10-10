@@ -16,8 +16,9 @@ Both are joined on Open CASCADE's entity number, which is the instance's
 
     tools/verify-read.py CHECK [PATH...]
 
-PATH is a STEP file or a directory searched for them; directories skip files
-over 16 MB unless STEPQ_LARGE_FIXTURES=1. Default: tests/fixtures.
+PATH is a STEP file or a directory searched for them, following symbolic
+links; directories skip files over 16 MB unless STEPQ_LARGE_FIXTURES=1, and a
+directory that holds no STEP file at all is an error. Default: tests/fixtures.
 
 Checks:
 
@@ -28,7 +29,7 @@ Checks:
           refusal by stepq fails.
 
 Exit status: 0 if every comparison holds, 1 if one fails, 2 if a file cannot
-be read by either side.
+be read by either side or a directory named holds no STEP file.
 """
 
 from __future__ import annotations
@@ -58,19 +59,46 @@ class Unreadable(Exception):
     """One side could not read a file at all."""
 
 
+class NoFiles(Exception):
+    """A directory named holds no STEP file."""
+
+
+def files_under(directory: Path) -> list[Path]:
+    """Every STEP file under `directory`, sorted.
+
+    Symlinked directories are followed, as the Rust fixture tests follow
+    them (Path.rglob does not), and each real directory is read once.
+    """
+    found, seen = [], set()
+    for root, dirs, names in os.walk(directory, followlinks=True):
+        real = os.path.realpath(root)
+        if real in seen:
+            dirs[:] = []
+            continue
+        seen.add(real)
+        found.extend(Path(root) / name for name in names
+                     if Path(name).suffix.lower() in (".stp", ".step"))
+    return sorted(found)
+
+
 def step_files(paths: list[Path]) -> list[Path]:
-    """The STEP files named, and those under the directories named."""
+    """The STEP files named, and those under the directories named.
+
+    Each directory must hold at least one, before the size limit, so that a
+    set that was never fetched cannot pass unseen next to one that was.
+    """
     large = os.environ.get("STEPQ_LARGE_FIXTURES", "") not in ("", "0")
     files, skipped = [], 0
     for path in paths:
         if path.is_dir():
-            for found in sorted(path.rglob("*")):
-                if found.suffix.lower() not in (".stp", ".step"):
-                    continue
-                if not large and found.stat().st_size > LARGE_FIXTURE_BYTES:
+            found = files_under(path)
+            if not found:
+                raise NoFiles(f"no STEP files under {path} (run tools/fetch-fixtures.sh)")
+            for file in found:
+                if not large and file.stat().st_size > LARGE_FIXTURE_BYTES:
                     skipped += 1
                     continue
-                files.append(found)
+                files.append(file)
         else:
             files.append(path)
     if skipped:
@@ -202,7 +230,11 @@ def main() -> int:
         return 2
     name = sys.argv[1]
     example, check = CHECKS[name]
-    files = step_files([Path(arg) for arg in sys.argv[2:]] or [ROOT / "tests" / "fixtures"])
+    try:
+        files = step_files([Path(arg) for arg in sys.argv[2:]] or [ROOT / "tests" / "fixtures"])
+    except NoFiles as error:
+        print(error, file=sys.stderr)
+        return 2
     if not files:
         print("no STEP files (run tools/fetch-fixtures.sh)", file=sys.stderr)
         return 2

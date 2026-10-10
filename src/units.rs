@@ -55,11 +55,12 @@
 //! # Ok::<(), stepq::Error>(())
 //! ```
 
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::model::Graph;
-use crate::p21::{Exchange, Instance, Literal, Param, Record};
+use crate::p21::{Instance, Literal, Param, Record};
 use crate::policy::MAX_CONVERSION_DEPTH;
 use crate::record;
 
@@ -195,8 +196,10 @@ impl ContextUnits {
     /// [`UnitError::Undefined`] if there is no such instance (`from` and
     /// `to` are then both `context`), [`UnitError::NotAContext`] if it is not
     /// a representation context, and [`UnitError::Malformed`] if its
-    /// `coordinate_space_dimension` is not a positive integer. Problems with
-    /// its units or uncertainties are reported per kind instead.
+    /// `coordinate_space_dimension` is not a positive integer or it repeats
+    /// a partial entity (two unit sets, say, of which either could be
+    /// meant). Problems with its units or uncertainties are reported per
+    /// kind instead.
     pub fn of_context(graph: &Graph<'_>, context: u64) -> Result<Self, UnitError> {
         let exchange = graph.exchange();
         let instance = exchange.get(context).ok_or(UnitError::Undefined {
@@ -208,6 +211,12 @@ impl ContextUnits {
             return Err(UnitError::NotAContext {
                 instance: context,
                 entity: record::entity(exchange, instance),
+            });
+        }
+        if record::repeats_partial(exchange, instance) {
+            return Err(UnitError::Malformed {
+                instance: context,
+                reason: REPEATED,
             });
         }
         // A simple instance's record also holds representation_context's
@@ -300,8 +309,9 @@ impl ContextUnits {
     }
 
     /// Reads the units of `#item` from the context of every representation
-    /// that lists it, directly or through the shells, solids and surface
-    /// models that contain it (`closed_shell` and `open_shell` faces, an
+    /// that lists it, directly or through the faces, shells, solids and
+    /// surface models that contain it (`closed_shell`, `open_shell` and
+    /// `connected_face_set` faces, an `oriented_face`'s face, an
     /// `oriented_closed_shell`'s shell, a solid's outer shell and voids, a
     /// surface model's shells or faces).
     ///
@@ -315,17 +325,21 @@ impl ContextUnits {
     /// # Errors
     ///
     /// [`UnitError::Undefined`] if there is no such instance,
-    /// [`UnitError::NotHeld`] if no representation holds it through a
-    /// container stepq knows, [`UnitError::HolderUnreadable`] if a
-    /// representation that lists it, or its context, cannot be read,
-    /// [`UnitError::Malformed`] if a shell, solid or model that refers to it
-    /// has the wrong number of attributes, and
+    /// [`UnitError::NotHeld`] if no representation holds it,
+    /// [`UnitError::NotFollowed`] if something on the way up that may hold
+    /// it is not followed (a complex shell or solid, or an instance that
+    /// lists it next to a reference that is not a context), so a holder in
+    /// another context could be missed, [`UnitError::HolderUnreadable`] if
+    /// a representation that lists it, or its context, cannot be read,
+    /// [`UnitError::Malformed`] if a face, shell, solid or model that refers
+    /// to it has the wrong number of attributes, and
     /// [`UnitError::ContextsDisagree`] with `kind: None` if the holding
     /// contexts differ in dimension.
     pub fn of_item(graph: &Graph<'_>, item: u64) -> Result<Self, UnitError> {
         let mut contexts: Vec<Self> = Vec::new();
+        let mut read = HashSet::new();
         for (holder, context) in holders(graph, item)? {
-            if contexts.iter().any(|units| units.context == context) {
+            if !read.insert(context) {
                 continue;
             }
             let units =
@@ -424,6 +438,9 @@ const GEOMETRIC: &str = "GEOMETRIC_REPRESENTATION_CONTEXT";
 const UNITS: &str = "GLOBAL_UNIT_ASSIGNED_CONTEXT";
 const UNCERTAINTIES: &str = "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT";
 
+/// Why an instance that repeats a partial entity is refused.
+const REPEATED: &str = "a partial entity is repeated, so its attributes are stated twice";
+
 /// Reads named unit `#id`: an SI unit or a conversion-based unit of length,
 /// plane angle or solid angle, simple or complex. This also resolves the
 /// unit `#id` of a [`props::Value`](crate::props::Value) or of a PMI value.
@@ -497,7 +514,8 @@ pub enum UnitError {
         /// The missing `#id`.
         to: u64,
     },
-    /// Not a unit at all, such as a `DIMENSIONAL_EXPONENTS`.
+    /// Not a unit at all, such as a `DIMENSIONAL_EXPONENTS` or a measure
+    /// with unit.
     NotAUnit {
         /// The instance.
         instance: u64,
@@ -515,9 +533,10 @@ pub enum UnitError {
         entity: String,
     },
     /// Contradicts the schema: a wrong number of attributes, an attribute of
-    /// the wrong type, an unknown SI prefix, an SI unit that is also
-    /// conversion-based, or a unit or uncertainty set that is `$`, empty or
-    /// lists something other than references.
+    /// the wrong type, an unknown SI prefix or SI unit name, an SI unit that
+    /// is also conversion-based, a complex instance that repeats a partial
+    /// entity, or a unit or uncertainty set that is `$`, empty or lists
+    /// something other than references.
     Malformed {
         /// The instance.
         instance: u64,
@@ -599,6 +618,19 @@ pub enum UnitError {
     NotHeld {
         /// The item.
         item: u64,
+    },
+    /// Something that refers to the item, or to a container holding it, may
+    /// hold it but is not followed: a shell, solid or model written as a
+    /// complex instance, or an instance that lists it next to a reference
+    /// that is not a context. A representation behind it could hold the
+    /// item in another context, so the item is not read from the others.
+    NotFollowed {
+        /// The item.
+        item: u64,
+        /// The instance that is not followed.
+        container: u64,
+        /// Its upper-cased entity types, joined with `+`.
+        entity: String,
     },
     /// A representation that lists the item, or that representation's
     /// context, cannot be read. The item is not read from the others.
@@ -689,6 +721,14 @@ impl fmt::Display for UnitError {
                 "#{item} is held by no representation, directly or through a shell, solid or \
                  surface model"
             ),
+            Self::NotFollowed {
+                item,
+                container,
+                entity,
+            } => write!(
+                f,
+                "#{item} may be held through #{container} ({entity}), which stepq does not follow"
+            ),
             Self::HolderUnreadable {
                 item,
                 holder,
@@ -724,7 +764,7 @@ fn context_units(graph: &Graph<'_>, context: u64, units: &[u64]) -> [Result<Unit
     for &id in units {
         match unit_at(graph, id, context, 0) {
             Ok(unit) => found[unit.kind.slot()].push(unit),
-            Err(error) => match declared_kind(graph.exchange(), id) {
+            Err(error) => match declared_kind(graph, id) {
                 Declared::Kind(kind) => {
                     refused[kind.slot()].get_or_insert((id, error));
                 }
@@ -813,6 +853,11 @@ fn agree_uncertainty(
 
 /// The representations that hold `#item` and their contexts, in file order:
 /// every representation that lists it or a container holding it.
+///
+/// Each instance that refers to the item, or to a container on the way, is
+/// read once into the `#id`s it holds, so the walk is linear in the size of
+/// the file however many shells, representations or contexts share the
+/// item.
 fn holders(graph: &Graph<'_>, item: u64) -> Result<Vec<(u64, u64)>, UnitError> {
     let exchange = graph.exchange();
     let start = graph.node(item).ok_or(UnitError::Undefined {
@@ -821,64 +866,136 @@ fn holders(graph: &Graph<'_>, item: u64) -> Result<Vec<(u64, u64)>, UnitError> {
     })?;
     let mut seen = HashSet::from([start]);
     let mut stack = vec![start];
+    let mut users: HashMap<usize, Holding> = HashMap::new();
+    let mut listed = HashSet::new();
     let mut found: Vec<(usize, u64)> = Vec::new();
     while let Some(node) = stack.pop() {
         let held = graph.instance(node).id;
         for &user in graph.referenced_by(node) {
-            match holding(graph, item, graph.instance(user), held)? {
-                Holding::Container => {
-                    if seen.insert(user) {
+            let holds = match users.entry(user) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => entry.insert(holding(graph, item, graph.instance(user))?),
+            };
+            match holds {
+                Holding::Container(ids) => {
+                    if ids.contains(held) && seen.insert(user) {
                         stack.push(user);
                     }
                 }
-                Holding::Representation(context) => found.push((user, context)),
+                Holding::Representation(ids, context) => {
+                    if ids.contains(held) && listed.insert(user) {
+                        let context =
+                            context
+                                .clone()
+                                .map_err(|reason| UnitError::HolderUnreadable {
+                                    item,
+                                    holder: graph.instance(user).id,
+                                    reason: Box::new(reason),
+                                })?;
+                        found.push((user, context));
+                    }
+                }
+                Holding::NotFollowed(ids) => {
+                    if ids.contains(held) {
+                        let user = graph.instance(user);
+                        return Err(UnitError::NotFollowed {
+                            item,
+                            container: user.id,
+                            entity: record::entity(exchange, user),
+                        });
+                    }
+                }
                 Holding::No => {}
             }
         }
     }
     found.sort_unstable();
-    found.dedup();
     Ok(found
         .into_iter()
-        .map(|(node, context)| (exchange.instances()[node].id, context))
+        .map(|(node, context)| (graph.instance(node).id, context))
         .collect())
 }
 
+/// What an instance that refers to something on the way up holds.
 enum Holding {
-    /// A shell, solid or model that holds it: look further up.
-    Container,
-    /// A representation that lists it, with its context.
-    Representation(u64),
-    /// Refers to it some other way.
+    /// A face, shell, solid or model, and the `#id`s it holds: look further
+    /// up from it if it holds what was reached.
+    Container(Ids),
+    /// A representation, the `#id`s it lists, and its context or why that
+    /// cannot be read (an error only once it lists what was reached).
+    Representation(Ids, Result<u64, UnitError>),
+    /// Lists `#id`s, but is neither a known container nor a representation
+    /// with a context: if it lists what was reached, it is not followed.
+    NotFollowed(Ids),
+    /// Holds nothing.
     No,
 }
 
-/// How `user` holds `#held`, on the way up from `#item`.
-fn holding(graph: &Graph<'_>, item: u64, user: &Instance, held: u64) -> Result<Holding, UnitError> {
+/// The `#id`s an instance holds: searched in order the first time, and
+/// hashed if the walk looks in them again, so that an instance holding many
+/// of the walk's ids is not searched once per id.
+struct Ids {
+    list: Vec<u64>,
+    set: Option<HashSet<u64>>,
+    looked: bool,
+}
+
+impl Ids {
+    fn new(list: Vec<u64>) -> Self {
+        Self {
+            list,
+            set: None,
+            looked: false,
+        }
+    }
+
+    fn contains(&mut self, id: u64) -> bool {
+        if !self.looked {
+            self.looked = true;
+            return self.list.contains(&id);
+        }
+        let list = &self.list;
+        self.set
+            .get_or_insert_with(|| list.iter().copied().collect())
+            .contains(&id)
+    }
+}
+
+/// What `user` holds, read once for the walk up from `#item`.
+fn holding(graph: &Graph<'_>, item: u64, user: &Instance) -> Result<Holding, UnitError> {
     let exchange = graph.exchange();
-    let unreadable = |reason| UnitError::HolderUnreadable {
-        item,
-        holder: user.id,
-        reason: Box::new(reason),
-    };
     if user.is_complex() {
         // Containers are only read as simple instances; a complex
         // representation keeps its attributes in its REPRESENTATION partial.
         if record::partial(exchange, user, "REPRESENTATION").is_none() {
+            if exchange
+                .records(user)
+                .any(|partial| record::container(partial).is_some())
+            {
+                // A complex shell or solid: which partial holds what is not
+                // read, and a representation behind it may hold the item.
+                return Err(UnitError::NotFollowed {
+                    item,
+                    container: user.id,
+                    entity: record::entity(exchange, user),
+                });
+            }
             return Ok(Holding::No);
         }
         let Ok(read) = record::representation(exchange, user.id) else {
-            return Err(unreadable(UnitError::NotARepresentation {
-                instance: user.id,
-                entity: record::entity(exchange, user),
-            }));
+            return Err(UnitError::HolderUnreadable {
+                item,
+                holder: user.id,
+                reason: Box::new(UnitError::NotARepresentation {
+                    instance: user.id,
+                    entity: record::entity(exchange, user),
+                }),
+            });
         };
-        if !read.items.contains(&held) {
-            return Ok(Holding::No);
-        }
-        return representation_context(graph, user.id)
-            .map(Holding::Representation)
-            .map_err(unreadable);
+        return Ok(Holding::Representation(
+            Ids::new(read.items),
+            representation_context(graph, user.id),
+        ));
     }
     let Some(simple) = exchange.records(user).next() else {
         return Ok(Holding::No);
@@ -887,40 +1004,41 @@ fn holding(graph: &Graph<'_>, item: u64, user: &Instance, held: u64) -> Result<H
         let params =
             record::exact_params(simple, container.params).ok_or(UnitError::Malformed {
                 instance: user.id,
-                reason: "a shell, solid or surface model with the wrong number of attributes",
+                reason: "a face, shell, solid or surface model with the wrong number of attributes",
             })?;
-        let holds = container
+        let ids = container
             .holds
             .iter()
-            .any(|&index| record::holds(&params[index], held));
-        return Ok(if holds {
-            Holding::Container
-        } else {
-            Holding::No
-        });
+            .flat_map(|&index| record::held(&params[index]))
+            .collect();
+        return Ok(Holding::Container(Ids::new(ids)));
     }
     // A representation lists its items in its second attribute and names its
     // context in its third.
-    let lists = simple
-        .param(1)
-        .and_then(|param| param.list())
-        .is_some_and(|mut items| items.any(|p| p.reference() == Some(held)));
-    if !lists {
+    let Some(items) = simple.param(1).and_then(|param| param.list()) else {
         return Ok(Holding::No);
-    }
+    };
+    let ids = Ids::new(items.filter_map(|item| item.reference()).collect());
     let names_context = match simple.param(2) {
         Some(Param::Reference(context)) => exchange
             .get(context)
             .is_none_or(|context| exchange.records(context).any(record::is_context_record)),
         _ => false,
     };
-    if !(names_context || record::upper(simple.name()).contains("REPRESENTATION")) {
-        // A set or curve listing it, which is not a representation.
-        return Ok(Holding::No);
+    if names_context || record::upper(simple.name()).contains("REPRESENTATION") {
+        return Ok(Holding::Representation(
+            ids,
+            representation_context(graph, user.id),
+        ));
     }
-    representation_context(graph, user.id)
-        .map(Holding::Representation)
-        .map_err(unreadable)
+    if matches!(simple.param(2), Some(Param::Reference(_))) {
+        // Lists items next to a reference that is not a context: a
+        // representation whose context is wrong, or a container stepq does
+        // not know. Either way a holder may be missed.
+        return Ok(Holding::NotFollowed(ids));
+    }
+    // A set or curve that lists it, which is not a representation.
+    Ok(Holding::No)
 }
 
 /// A non-empty list of references; `None` for `$`, an empty list or a list
@@ -943,32 +1061,64 @@ enum Declared {
     Unknown,
 }
 
-fn declared_kind(exchange: &Exchange<'_>, id: u64) -> Declared {
+fn declared_kind(graph: &Graph<'_>, id: u64) -> Declared {
+    let exchange = graph.exchange();
     let Some(instance) = exchange.get(id) else {
         return Declared::Unknown;
     };
+    if record::repeats_partial(exchange, instance) {
+        return Declared::Unknown;
+    }
     let records: Vec<Record<'_>> = exchange.records(instance).collect();
     match kind_record(&records) {
         Ok(Some(kind)) => return Declared::Kind(kind),
         Ok(None) => {}
         Err(_) => return Declared::Unknown,
     }
-    if records.iter().any(|r| is_other_quantity(*r)) {
-        return Declared::Other;
-    }
+    let other = records.iter().any(|r| is_other_quantity(*r));
     if let Some(si) = records.iter().find(|r| r.is("SI_UNIT")) {
         let name = si
             .params()
             .last()
             .and_then(|p| p.literal())
             .and_then(Literal::enumeration);
-        return match name.and_then(si_kind) {
-            Some(kind) => Declared::Kind(kind),
-            None if name.is_some() => Declared::Other,
+        return match name {
+            Some(name) => match si_kind(name) {
+                Some(kind) if !other => Declared::Kind(kind),
+                None if is_si_name(name) => Declared::Other,
+                // Another quantity's record over a metre, radian or
+                // steradian, whose statements disagree, or a name that is no
+                // si_unit_name: it may be any kind.
+                _ => Declared::Unknown,
+            },
             None => Declared::Unknown,
         };
     }
+    if other && !states_length_or_angle(graph, &records, id) {
+        return Declared::Other;
+    }
+    // Either nothing names its kind, or a record of another quantity sits
+    // over a length or an angle. Taking the record's word would refuse no
+    // kind of the context at all, so such a unit refuses every kind.
     Declared::Unknown
+}
+
+/// True if the conversion-based unit `#id`, which a record declares a unit
+/// of another quantity, is defined over a length or an angle: its factor's
+/// type names one, or its base unit reads as one.
+fn states_length_or_angle(graph: &Graph<'_>, records: &[Record<'_>], id: u64) -> bool {
+    let Some(factor) = records
+        .iter()
+        .find(|r| r.is("CONVERSION_BASED_UNIT"))
+        .and_then(|r| r.params().last())
+        .and_then(|param| param.reference())
+    else {
+        return false;
+    };
+    match factor_measure(graph, factor, id) {
+        Ok(measure) => !measure.kinds.is_empty() || unit_at(graph, measure.unit, factor, 1).is_ok(),
+        Err(_) => false,
+    }
 }
 
 /// The kind a `LENGTH_UNIT`, `PLANE_ANGLE_UNIT` or `SOLID_ANGLE_UNIT` record
@@ -995,7 +1145,9 @@ fn kind_record(records: &[Record<'_>]) -> Result<Option<UnitKind>, &'static str>
 
 /// A unit record of another quantity: `MASS_UNIT`, `AREA_UNIT`,
 /// `DERIVED_UNIT`, … — any `*_UNIT` but the named, SI, conversion-based and
-/// context-dependent units and the three kinds read here.
+/// context-dependent units and the three kinds read here. A
+/// `*_MEASURE_WITH_UNIT` or `GEOMETRIC_TOLERANCE_WITH_DEFINED_UNIT` is no
+/// unit at all: no unit entity of the schemas has `_WITH_` in its name.
 fn is_other_quantity(record: Record<'_>) -> bool {
     const READ: &[&str] = &[
         "NAMED_UNIT",
@@ -1006,7 +1158,43 @@ fn is_other_quantity(record: Record<'_>) -> bool {
         "PLANE_ANGLE_UNIT",
         "SOLID_ANGLE_UNIT",
     ];
-    record::upper(record.name()).ends_with("_UNIT") && !READ.iter().any(|name| record.is(name))
+    let name = record::upper(record.name());
+    name.ends_with("_UNIT") && !name.contains("_WITH_") && !READ.iter().any(|n| record.is(n))
+}
+
+/// True if `name` is a value of the schemas' `si_unit_name` enumeration.
+fn is_si_name(name: &str) -> bool {
+    const NAMES: [&str; 28] = [
+        "METRE",
+        "GRAM",
+        "SECOND",
+        "AMPERE",
+        "KELVIN",
+        "MOLE",
+        "CANDELA",
+        "RADIAN",
+        "STERADIAN",
+        "HERTZ",
+        "NEWTON",
+        "PASCAL",
+        "JOULE",
+        "WATT",
+        "COULOMB",
+        "VOLT",
+        "FARAD",
+        "OHM",
+        "SIEMENS",
+        "WEBER",
+        "TESLA",
+        "HENRY",
+        "DEGREE_CELSIUS",
+        "LUMEN",
+        "LUX",
+        "BECQUEREL",
+        "GRAY",
+        "SIEVERT",
+    ];
+    NAMES.iter().any(|known| known.eq_ignore_ascii_case(name))
 }
 
 fn si_kind(name: &str) -> Option<UnitKind> {
@@ -1082,6 +1270,12 @@ fn unit_at(graph: &Graph<'_>, id: u64, from: u64, depth: usize) -> Result<Unit, 
     let instance = exchange
         .get(id)
         .ok_or(UnitError::Undefined { from, to: id })?;
+    if record::repeats_partial(exchange, instance) {
+        return Err(UnitError::Malformed {
+            instance: id,
+            reason: REPEATED,
+        });
+    }
     let records: Vec<Record<'_>> = exchange.records(instance).collect();
     let declared = kind_record(&records).map_err(|reason| UnitError::Malformed {
         instance: id,
@@ -1178,6 +1372,9 @@ impl Read<'_, '_> {
         let Some(name) = name.literal().and_then(Literal::enumeration) else {
             return Err(self.malformed("the SI unit name is not an enumeration"));
         };
+        if !is_si_name(name) {
+            return Err(self.malformed("the SI unit name is not an si_unit_name"));
+        }
         let Some(kind) = si_kind(name) else {
             let exchange = self.graph.exchange();
             return Err(UnitError::Unsupported {
@@ -1298,6 +1495,34 @@ impl Read<'_, '_> {
     }
 }
 
+/// What the type of a `*MEASURE_WITH_UNIT` record says about its kind.
+enum Subtype {
+    /// `MEASURE_WITH_UNIT` or `RATIO_MEASURE_WITH_UNIT`: no kind.
+    Neutral,
+    /// A measure of length, plane angle or solid angle.
+    Kind(UnitKind),
+    /// A measure of another quantity (`TIME_MEASURE_WITH_UNIT`, …).
+    Other,
+}
+
+/// What the type `name` (upper case) says about a measure's kind; `None` if
+/// it is not a measure with unit. The `POSITIVE_*` measures are subtypes of
+/// the length and plane angle measures (AP242 ed. 4).
+fn measure_subtype(name: &str) -> Option<Subtype> {
+    Some(match name {
+        "MEASURE_WITH_UNIT" | "RATIO_MEASURE_WITH_UNIT" => Subtype::Neutral,
+        "LENGTH_MEASURE_WITH_UNIT" | "POSITIVE_LENGTH_MEASURE_WITH_UNIT" => {
+            Subtype::Kind(UnitKind::Length)
+        }
+        "PLANE_ANGLE_MEASURE_WITH_UNIT" | "POSITIVE_PLANE_ANGLE_MEASURE_WITH_UNIT" => {
+            Subtype::Kind(UnitKind::PlaneAngle)
+        }
+        "SOLID_ANGLE_MEASURE_WITH_UNIT" => Subtype::Kind(UnitKind::SolidAngle),
+        other if other.ends_with("MEASURE_WITH_UNIT") => Subtype::Other,
+        _ => return None,
+    })
+}
+
 /// A conversion factor: its value, its unit and the kinds its types state.
 struct Measure {
     value: f64,
@@ -1317,25 +1542,26 @@ fn factor_measure(graph: &Graph<'_>, id: u64, from: u64) -> Result<Measure, Unit
         instance: id,
         reason,
     };
+    if record::repeats_partial(exchange, instance) {
+        return Err(malformed(REPEATED));
+    }
     let records: Vec<Record<'_>> = exchange.records(instance).collect();
     let mut kinds = Vec::new();
     let mut base = None;
     for partial in &records {
         let name = record::upper(partial.name());
-        if !name.ends_with("MEASURE_WITH_UNIT") {
+        let Some(subtype) = measure_subtype(&name) else {
             continue;
-        }
+        };
         // A simple instance is its own measure with unit; a complex one
         // holds value and unit in its MEASURE_WITH_UNIT partial.
         if !instance.is_complex() || name == "MEASURE_WITH_UNIT" {
             base = Some(*partial);
         }
-        match name.as_str() {
-            "MEASURE_WITH_UNIT" | "RATIO_MEASURE_WITH_UNIT" => {}
-            "LENGTH_MEASURE_WITH_UNIT" => kinds.push(UnitKind::Length),
-            "PLANE_ANGLE_MEASURE_WITH_UNIT" => kinds.push(UnitKind::PlaneAngle),
-            "SOLID_ANGLE_MEASURE_WITH_UNIT" => kinds.push(UnitKind::SolidAngle),
-            _ => {
+        match subtype {
+            Subtype::Neutral => {}
+            Subtype::Kind(kind) => kinds.push(kind),
+            Subtype::Other => {
                 return Err(malformed(
                     "the conversion factor measures something other than a length or an angle",
                 ));
@@ -1407,6 +1633,9 @@ fn read_uncertainty(graph: &Graph<'_>, id: u64, from: u64) -> Result<Uncertainty
         instance: id,
         reason,
     };
+    if record::repeats_partial(exchange, instance) {
+        return Err(malformed(REPEATED));
+    }
     let params: Vec<Param<'_>> = if instance.is_complex() {
         let measure = record::partial(exchange, instance, "MEASURE_WITH_UNIT")
             .and_then(|r| record::exact_params(r, 2));
@@ -1437,6 +1666,25 @@ fn read_uncertainty(graph: &Graph<'_>, id: u64, from: u64) -> Result<Uncertainty
     let unit = unit_at(graph, unit, id, 0)?;
     if let Some(found) = typed.map_err(malformed)? {
         check(id, unit.kind, Some(Evidence::Kind(found)))?;
+    }
+    // A complex instance's measure subtype partial (`LENGTH_MEASURE_WITH_UNIT`,
+    // …) states a kind too. Its UNCERTAINTY_MEASURE_WITH_UNIT partial
+    // states none.
+    if instance.is_complex() {
+        for partial in exchange.records(instance) {
+            if partial.is("UNCERTAINTY_MEASURE_WITH_UNIT") {
+                continue;
+            }
+            match measure_subtype(&record::upper(partial.name())) {
+                Some(Subtype::Kind(found)) => check(id, unit.kind, Some(Evidence::Kind(found)))?,
+                Some(Subtype::Other) => {
+                    return Err(malformed(
+                        "the uncertainty measures something other than a length or an angle",
+                    ));
+                }
+                Some(Subtype::Neutral) | None => {}
+            }
+        }
     }
     let name = string(name).ok_or_else(|| malformed("the name is not a string"))?;
     let description = match description {
@@ -1618,6 +1866,39 @@ mod tests {
             (simple.kind, simple.factor.to_bits()),
             (UnitKind::Length, 25.4f64.to_bits())
         );
+    }
+
+    #[test]
+    fn positive_measures_are_lengths_and_angles() {
+        let g = graph(&format!(
+            "{BASE}#20=POSITIVE_LENGTH_MEASURE_WITH_UNIT(POSITIVE_LENGTH_MEASURE(25.4),#1);\
+             #21=(CONVERSION_BASED_UNIT('INCH',#20)LENGTH_UNIT()NAMED_UNIT(#4));\
+             #22=POSITIVE_PLANE_ANGLE_MEASURE_WITH_UNIT(\
+             POSITIVE_PLANE_ANGLE_MEASURE(0.0174532925),#2);\
+             #23=(CONVERSION_BASED_UNIT('DEGREE',#22)NAMED_UNIT(#11)PLANE_ANGLE_UNIT());\
+             #24=(LENGTH_MEASURE_WITH_UNIT()MEASURE_WITH_UNIT(POSITIVE_LENGTH_MEASURE(25.4),#1)\
+             POSITIVE_LENGTH_MEASURE_WITH_UNIT());\
+             #25=(CONVERSION_BASED_UNIT('INCH',#24)LENGTH_UNIT()NAMED_UNIT(#4));\
+             #26=POSITIVE_LENGTH_MEASURE_WITH_UNIT(POSITIVE_LENGTH_MEASURE(25.4),#2);\
+             #27=(CONVERSION_BASED_UNIT('X',#26)LENGTH_UNIT()NAMED_UNIT(#4));\
+             #100=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#21,#23))\
+             REPRESENTATION_CONTEXT('',''));"
+        ));
+        assert_eq!(bits(unit(&g, 21)), 25.4f64.to_bits());
+        assert_eq!(bits(unit(&g, 23)), 0.017_453_292_5f64.to_bits());
+        assert_eq!(bits(unit(&g, 25)), 25.4f64.to_bits(), "as a partial");
+        assert_eq!(
+            unit(&g, 27),
+            Err(UnitError::KindMismatch {
+                instance: 27,
+                declared: UnitKind::Length,
+                found: UnitKind::PlaneAngle
+            }),
+            "a positive length over a radian"
+        );
+        let units = ContextUnits::of_context(&g, 100).unwrap();
+        assert_eq!(units.length().unwrap().instance, 21);
+        assert_eq!(units.plane_angle().unwrap().instance, 23);
     }
 
     #[test]
@@ -2135,6 +2416,65 @@ mod tests {
     }
 
     #[test]
+    fn complex_uncertainties_agree_with_their_measure_type() {
+        for (uncertainty, expected) in [
+            (
+                "#20=(LENGTH_MEASURE_WITH_UNIT()MEASURE_WITH_UNIT(0.5,#12)\
+                 UNCERTAINTY_MEASURE_WITH_UNIT('closure',''));",
+                UnitError::KindMismatch {
+                    instance: 20,
+                    declared: UnitKind::PlaneAngle,
+                    found: UnitKind::Length,
+                },
+            ),
+            (
+                "#20=(MEASURE_WITH_UNIT(0.5,#1)PLANE_ANGLE_MEASURE_WITH_UNIT()\
+                 UNCERTAINTY_MEASURE_WITH_UNIT('closure',''));",
+                UnitError::KindMismatch {
+                    instance: 20,
+                    declared: UnitKind::Length,
+                    found: UnitKind::PlaneAngle,
+                },
+            ),
+            (
+                "#20=(MASS_MEASURE_WITH_UNIT()MEASURE_WITH_UNIT(0.5,#1)\
+                 UNCERTAINTY_MEASURE_WITH_UNIT('closure',''));",
+                UnitError::Malformed {
+                    instance: 20,
+                    reason: "the uncertainty measures something other than a length or an angle",
+                },
+            ),
+        ] {
+            let g = context("#1,#12", "#20", uncertainty);
+            let units = ContextUnits::of_context(&g, 100).unwrap();
+            assert_eq!(units.uncertainty(), Err(expected), "{uncertainty}");
+        }
+
+        for subtypes in [
+            "LENGTH_MEASURE_WITH_UNIT()",
+            "LENGTH_MEASURE_WITH_UNIT()POSITIVE_LENGTH_MEASURE_WITH_UNIT()",
+        ] {
+            let g = context(
+                "#1,#12",
+                "#20",
+                &format!(
+                    "#20=({subtypes}MEASURE_WITH_UNIT(LENGTH_MEASURE(0.01),#1)\
+                     UNCERTAINTY_MEASURE_WITH_UNIT('closure',''));"
+                ),
+            );
+            let units = ContextUnits::of_context(&g, 100).unwrap();
+            let [closure] = units.uncertainty().unwrap() else {
+                panic!("one uncertainty");
+            };
+            assert_eq!(
+                (closure.value.to_bits(), closure.unit.kind),
+                (0.01f64.to_bits(), UnitKind::Length),
+                "{subtypes}"
+            );
+        }
+    }
+
+    #[test]
     fn contexts_simple_parametric_and_malformed() {
         let g = graph(&format!(
             "{BASE}#100=GLOBAL_UNIT_ASSIGNED_CONTEXT('','',(#1,#2));\
@@ -2443,13 +2783,409 @@ mod tests {
             ContextUnits::of_item(&g, 203),
             Err(UnitError::Malformed {
                 instance: 210,
-                reason: "a shell, solid or surface model with the wrong number of attributes"
+                reason: "a face, shell, solid or surface model with the wrong number of attributes"
             })
         );
         // A geometric set lists the face but is no representation; it holds
         // nothing the walk follows.
         let g = solid("#1,#12", "#210=GEOMETRIC_SET('',(#203));");
         assert_eq!(ContextUnits::of_item(&g, 203).map(|u| u.context), Ok(100));
+    }
+
+    /// A 3D inch context #103, for a second holder that disagrees with the
+    /// millimetre context #100 of [`solid`].
+    const INCH: &str = "#103=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+        GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#16))GLOBAL_UNIT_ASSIGNED_CONTEXT((#6,#12))\
+        REPRESENTATION_CONTEXT('',''));";
+
+    #[test]
+    fn holders_behind_containers_stepq_does_not_follow_are_not_skipped() {
+        let not_followed = |item, container, entity: &str| {
+            Err(UnitError::NotFollowed {
+                item,
+                container,
+                entity: entity.to_owned(),
+            })
+        };
+        // Face #203 is also in a complex closed shell of an inch solid. Read
+        // from its simple shell alone, it would be in millimetres.
+        let g = solid(
+            "#1,#12",
+            &format!(
+                "{INCH}#312=(CLOSED_SHELL()CONNECTED_FACE_SET((#203))REPRESENTATION_ITEM('')\
+                 TOPOLOGICAL_REPRESENTATION_ITEM());#311=MANIFOLD_SOLID_BREP('',#312);\
+                 #310=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#311),#103);"
+            ),
+        );
+        assert_eq!(
+            ContextUnits::of_item(&g, 203),
+            not_followed(
+                203,
+                312,
+                "CLOSED_SHELL+CONNECTED_FACE_SET+REPRESENTATION_ITEM+TOPOLOGICAL_REPRESENTATION_ITEM"
+            )
+        );
+        assert_eq!(
+            ContextUnits::of_item(&g, 312).map(|u| u.length().unwrap().factor.to_bits()),
+            Ok(25.4f64.to_bits()),
+            "the complex shell itself is held by the inch solid"
+        );
+        // Alone, the complex shell is reported too, not as held by nothing.
+        let g = graph(&format!(
+            "{BASE}{INCH}#203=ADVANCED_FACE('',(),#999,.T.);\
+             #312=(CLOSED_SHELL()CONNECTED_FACE_SET((#203))REPRESENTATION_ITEM('')\
+             TOPOLOGICAL_REPRESENTATION_ITEM());#311=MANIFOLD_SOLID_BREP('',#312);\
+             #310=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#311),#103);"
+        ));
+        assert!(matches!(
+            ContextUnits::of_item(&g, 203),
+            Err(UnitError::NotFollowed { container: 312, .. })
+        ));
+
+        // A complex solid over shell #202, met from the face and the shell.
+        let g = solid(
+            "#1,#12",
+            &format!(
+                "{INCH}#311=(GEOMETRIC_REPRESENTATION_ITEM()MANIFOLD_SOLID_BREP(#202)\
+                 REPRESENTATION_ITEM('')SOLID_MODEL());\
+                 #310=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#311),#103);"
+            ),
+        );
+        for item in [203, 202] {
+            assert_eq!(
+                ContextUnits::of_item(&g, item),
+                not_followed(
+                    item,
+                    311,
+                    "GEOMETRIC_REPRESENTATION_ITEM+MANIFOLD_SOLID_BREP+REPRESENTATION_ITEM+SOLID_MODEL"
+                ),
+                "#{item}"
+            );
+        }
+
+        // A complex solid with voids whose void is shell #202.
+        let g = solid(
+            "#1,#12",
+            &format!(
+                "{INCH}#313=ORIENTED_CLOSED_SHELL('',*,#202,.F.);#314=CLOSED_SHELL('',());\
+                 #311=(BREP_WITH_VOIDS((#313))GEOMETRIC_REPRESENTATION_ITEM()\
+                 MANIFOLD_SOLID_BREP(#314)REPRESENTATION_ITEM('')SOLID_MODEL());\
+                 #310=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#311),#103);"
+            ),
+        );
+        assert!(matches!(
+            ContextUnits::of_item(&g, 203),
+            Err(UnitError::NotFollowed { container: 311, .. })
+        ));
+
+        // A representation-like instance that lists the solid next to a
+        // reference that is not a context.
+        let g = solid("#1,#12", "#310=DRAUGHTING_MODEL('',(#201),#5);");
+        for item in [203, 201] {
+            assert_eq!(
+                ContextUnits::of_item(&g, item),
+                not_followed(item, 310, "DRAUGHTING_MODEL"),
+                "#{item}"
+            );
+        }
+    }
+
+    #[test]
+    fn oriented_faces_and_face_subsets_are_followed() {
+        let disagree = Err(UnitError::ContextsDisagree {
+            item: 203,
+            kind: Some(UnitKind::Length),
+            contexts: [100, 103],
+        });
+        // Face #203 also faces the other way in an inch surface model.
+        let g = solid(
+            "#1,#12",
+            &format!(
+                "{INCH}#313=ORIENTED_FACE('',*,#203,.F.);#314=OPEN_SHELL('',(#313));\
+                 #315=SHELL_BASED_SURFACE_MODEL('',(#314));\
+                 #310=MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#315),#103);"
+            ),
+        );
+        let units = ContextUnits::of_item(&g, 203).unwrap();
+        assert_eq!(units.length(), disagree.clone());
+        assert!(units.plane_angle().is_ok());
+        assert_eq!(
+            ContextUnits::of_item(&g, 313).map(|u| u.length().unwrap().instance),
+            Ok(6),
+            "the oriented face is in inches"
+        );
+
+        // A subset of shell #202's faces in an inch face-based model. The
+        // subset refers to its parent shell, but does not hold it.
+        let g = solid(
+            "#1,#12",
+            &format!(
+                "{INCH}#313=CONNECTED_FACE_SUB_SET('',(#203),#202);\
+                 #315=FACE_BASED_SURFACE_MODEL('',(#313));\
+                 #310=MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#315),#103);"
+            ),
+        );
+        assert_eq!(ContextUnits::of_item(&g, 203).unwrap().length(), disagree);
+        assert_eq!(
+            ContextUnits::of_item(&g, 202).map(|u| u.length().unwrap().instance),
+            Ok(1),
+            "the parent shell is held only by the millimetre solid"
+        );
+    }
+
+    #[test]
+    fn styles_and_layers_hold_nothing() {
+        let g = solid(
+            "#1,#12",
+            "#320=STYLED_ITEM('',(#321),#203);#321=PRESENTATION_STYLE_ASSIGNMENT(());\
+             #322=OVER_RIDING_STYLED_ITEM('',(#321),#203,#320);\
+             #323=PRESENTATION_LAYER_ASSIGNMENT('layer','',(#203,#201));\
+             #324=STYLED_ITEM('',(#321),#201);",
+        );
+        for item in [203, 201] {
+            assert_eq!(
+                ContextUnits::of_item(&g, item).map(|u| (u.context, u.length().unwrap().instance)),
+                Ok((100, 1)),
+                "#{item}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_partials_are_refused_not_picked() {
+        let g = graph(&format!(
+            "{BASE}#20=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.)SI_UNIT(.CENTI.,.METRE.));\
+             #21=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.CENTI.,.METRE.)SI_UNIT(.MILLI.,.METRE.));\
+             #22=(CONVERSION_BASED_UNIT('INCH',#5)CONVERSION_BASED_UNIT('FOOT',#13)\
+             LENGTH_UNIT()NAMED_UNIT(#4));\
+             #23=(LENGTH_MEASURE_WITH_UNIT()MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#1)\
+             MEASURE_WITH_UNIT(LENGTH_MEASURE(1.),#1));\
+             #24=(CONVERSION_BASED_UNIT('INCH',#23)LENGTH_UNIT()NAMED_UNIT(#4));\
+             #25=(LENGTH_UNIT()NAMED_UNIT(#4)NAMED_UNIT(#11)SI_UNIT(.MILLI.,.METRE.));\
+             #29=(NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.)SI_UNIT($,.RADIAN.));"
+        ));
+        let repeated = |instance| {
+            Err(UnitError::Malformed {
+                instance,
+                reason: REPEATED,
+            })
+        };
+        assert_eq!(unit(&g, 20), repeated(20), "SI_UNIT twice");
+        assert_eq!(unit(&g, 21), repeated(21), "in either order");
+        assert_eq!(unit(&g, 22), repeated(22), "CONVERSION_BASED_UNIT twice");
+        assert_eq!(
+            unit(&g, 24),
+            repeated(23),
+            "a factor's MEASURE_WITH_UNIT twice"
+        );
+        assert_eq!(unit(&g, 25), repeated(25), "NAMED_UNIT twice");
+
+        // A unit whose partials name two kinds refuses every kind of the
+        // context that lists it.
+        let g = context(
+            "#1,#2,#29",
+            "#16",
+            "#29=(NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.)SI_UNIT($,.RADIAN.));",
+        );
+        let units = ContextUnits::of_context(&g, 100).unwrap();
+        for kind in UnitKind::ALL {
+            assert_eq!(
+                units.unit(kind),
+                Err(UnitError::Unreadable {
+                    context: 100,
+                    unit: 29,
+                    reason: Box::new(UnitError::Malformed {
+                        instance: 29,
+                        reason: REPEATED
+                    })
+                }),
+                "{kind}"
+            );
+        }
+
+        // A context that states its units, dimension or uncertainties twice.
+        for partials in [
+            "GLOBAL_UNIT_ASSIGNED_CONTEXT((#1,#2))GLOBAL_UNIT_ASSIGNED_CONTEXT((#6,#2))",
+            "GEOMETRIC_REPRESENTATION_CONTEXT(2)GLOBAL_UNIT_ASSIGNED_CONTEXT((#1,#2))",
+            "GLOBAL_UNIT_ASSIGNED_CONTEXT((#1,#2))GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#16))\
+             GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT($)",
+        ] {
+            let g = graph(&format!(
+                "{BASE}#100=(GEOMETRIC_REPRESENTATION_CONTEXT(3){partials}\
+                 REPRESENTATION_CONTEXT('',''));"
+            ));
+            assert_eq!(
+                ContextUnits::of_context(&g, 100),
+                Err(UnitError::Malformed {
+                    instance: 100,
+                    reason: REPEATED
+                }),
+                "{partials}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_partials_in_holders_and_uncertainties_are_refused() {
+        // A representation that names two contexts names neither, so the
+        // items it lists are not read from the other holders alone.
+        let g = solid(
+            "#1,#12",
+            &format!(
+                "{INCH}#210=(REPRESENTATION('',(#201),#100)REPRESENTATION('',(#201),#103)\
+                 SHAPE_REPRESENTATION());"
+            ),
+        );
+        let not_a_representation = UnitError::NotARepresentation {
+            instance: 210,
+            entity: "REPRESENTATION+REPRESENTATION+SHAPE_REPRESENTATION".to_owned(),
+        };
+        assert_eq!(
+            representation_context(&g, 210),
+            Err(not_a_representation.clone())
+        );
+        assert_eq!(
+            ContextUnits::of_item(&g, 203),
+            Err(UnitError::HolderUnreadable {
+                item: 203,
+                holder: 210,
+                reason: Box::new(not_a_representation)
+            })
+        );
+
+        // A repeated uncertainty partial.
+        let g = context(
+            "#1,#12",
+            "#20",
+            "#20=(LENGTH_MEASURE_WITH_UNIT()MEASURE_WITH_UNIT(LENGTH_MEASURE(0.01),#1)\
+             UNCERTAINTY_MEASURE_WITH_UNIT('closure','')UNCERTAINTY_MEASURE_WITH_UNIT('x',''));",
+        );
+        assert_eq!(
+            ContextUnits::of_context(&g, 100).unwrap().uncertainty(),
+            Err(UnitError::Malformed {
+                instance: 20,
+                reason: REPEATED
+            })
+        );
+    }
+
+    #[test]
+    fn listed_entries_that_are_no_length_or_angle_unit_refuse_every_kind() {
+        let g = graph(&format!(
+            "{BASE}#20=GEOMETRIC_TOLERANCE_WITH_DEFINED_UNIT('','',#5,#999,#5);\
+             #21=(NAMED_UNIT(*)SI_UNIT(.MILLI.,.METER.));#22=SI_UNIT(*,.MILLI.,.METER.);\
+             #23=(MASS_UNIT()NAMED_UNIT(*)SI_UNIT(.CENTI.,.METRE.));\
+             #24=(CONVERSION_BASED_UNIT('INCH',#5)MASS_UNIT()NAMED_UNIT(#4));\
+             #25=MEASURE_WITH_UNIT(25.4,#1);\
+             #26=(CONVERSION_BASED_UNIT('X',#25)MASS_UNIT()NAMED_UNIT(*));"
+        ));
+        for (id, entity) in [
+            (5, "LENGTH_MEASURE_WITH_UNIT"),
+            (16, "UNCERTAINTY_MEASURE_WITH_UNIT"),
+            (20, "GEOMETRIC_TOLERANCE_WITH_DEFINED_UNIT"),
+        ] {
+            assert_eq!(
+                unit(&g, id),
+                Err(UnitError::NotAUnit {
+                    instance: id,
+                    entity: entity.to_owned()
+                }),
+                "a measure is no unit"
+            );
+        }
+        for id in [21, 22] {
+            assert_eq!(
+                unit(&g, id),
+                Err(UnitError::Malformed {
+                    instance: id,
+                    reason: "the SI unit name is not an si_unit_name"
+                }),
+                "#{id}"
+            );
+        }
+
+        // Each of these, listed next to an inch and a degree, refuses every
+        // kind: it may be the length unit, or contradicts itself.
+        let extra = "#20=GEOMETRIC_TOLERANCE_WITH_DEFINED_UNIT('','',#5,#999,#5);\
+             #21=(NAMED_UNIT(*)SI_UNIT(.MILLI.,.METER.));#22=SI_UNIT(*,.MILLI.,.METER.);\
+             #23=(MASS_UNIT()NAMED_UNIT(*)SI_UNIT(.CENTI.,.METRE.));\
+             #24=(CONVERSION_BASED_UNIT('INCH',#5)MASS_UNIT()NAMED_UNIT(#4));\
+             #25=MEASURE_WITH_UNIT(25.4,#1);\
+             #26=(CONVERSION_BASED_UNIT('X',#25)MASS_UNIT()NAMED_UNIT(*));";
+        for listed in [5, 16, 20, 21, 22, 23, 24, 26] {
+            let g = context(&format!("#6,#{listed},#12"), "#16", extra);
+            let units = ContextUnits::of_context(&g, 100).unwrap();
+            for kind in UnitKind::ALL {
+                assert!(
+                    matches!(
+                        units.unit(kind),
+                        Err(UnitError::Unreadable { unit, .. }) if unit == listed
+                    ),
+                    "#{listed}, {kind}: {:?}",
+                    units.unit(kind)
+                );
+            }
+        }
+
+        // Units of other quantities are still ignored.
+        let g = context(
+            "#6,#21,#22,#26,#12",
+            "#16",
+            "#21=(MASS_UNIT()NAMED_UNIT(*)SI_UNIT(.KILO.,.GRAM.));#22=SI_UNIT(*,$,.SECOND.);\
+             #25=MASS_MEASURE_WITH_UNIT(MASS_MEASURE(1000.),#21);\
+             #26=(CONVERSION_BASED_UNIT('ton',#25)MASS_UNIT()NAMED_UNIT(*));",
+        );
+        let units = ContextUnits::of_context(&g, 100).unwrap();
+        assert_eq!(units.length().unwrap().instance, 6);
+        assert_eq!(units.plane_angle().unwrap().instance, 12);
+    }
+
+    #[test]
+    fn of_item_reads_each_holder_once() {
+        // Crafted files that share one face among N holders. Reading each
+        // holder's list once per member made one call quadratic: 43 s for
+        // the second at 3 MB.
+        const N: usize = 20_000;
+        let started = std::time::Instant::now();
+        let mut data = format!("{BASE}#5000000=ADVANCED_FACE('',(),#999,.T.);");
+        // N representations, each in its own context, list the face.
+        for i in 0..N {
+            let (rep, ctx) = (100_000 + 2 * i, 100_001 + 2 * i);
+            write!(
+                data,
+                "#{ctx}=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#1,#2))\
+                 REPRESENTATION_CONTEXT('',''));#{rep}=SHAPE_REPRESENTATION('',(#5000000),#{ctx});"
+            )
+            .unwrap();
+        }
+        // N open shells hold a second face, and one representation lists
+        // them all.
+        let mut shells = String::new();
+        for i in 0..N {
+            let shell = 200_000 + i;
+            write!(data, "#{shell}=OPEN_SHELL('',(#5000001));").unwrap();
+            write!(shells, "{}#{shell}", if i == 0 { "" } else { "," }).unwrap();
+        }
+        write!(
+            data,
+            "#5000001=ADVANCED_FACE('',(),#999,.T.);\
+             #5000002=SHELL_BASED_SURFACE_MODEL('',({shells}));\
+             #5000003=MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#5000002),#100001);\
+             #5000004=SHAPE_REPRESENTATION('',({shells}),#100001);"
+        )
+        .unwrap();
+        let g = graph(&data);
+        for face in [5_000_000, 5_000_001] {
+            assert_eq!(
+                ContextUnits::of_item(&g, face).map(|u| u.length().unwrap().instance),
+                Ok(1),
+                "#{face}"
+            );
+        }
+        // Linear, this takes well under a second even in a debug build;
+        // quadratic, minutes.
+        let elapsed = started.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(20), "{elapsed:?}");
     }
 
     #[test]
@@ -2598,6 +3334,11 @@ mod tests {
                     reason: Box::new(UnitError::TooDeep { instance: 2 }),
                 },
                 UnitError::NotHeld { item: 1 },
+                UnitError::NotFollowed {
+                    item: 1,
+                    container: 2,
+                    entity: entity(),
+                },
                 UnitError::HolderUnreadable {
                     item: 1,
                     holder: 2,

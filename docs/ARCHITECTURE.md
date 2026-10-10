@@ -315,7 +315,9 @@ generated there by `tools/gen-occt-cases.py`), and every reader shares one
 way of reading records (`src/record.rs`): which partial of a complex
 instance holds an attribute, the exact attribute count of every record it
 reads, INTEGER tokens accepted where REALs are expected, non-finite numbers
-refused, and one table of which shell, solid or model holds what.
+refused, a complex instance that repeats a partial entity (and so states its
+attributes twice) refused rather than read from either, and one table of
+which face, shell, solid or model holds what.
 
 ### Units
 
@@ -339,22 +341,30 @@ blocks only what needs an angle:
 * A context that states no unit of a kind has none (`Missing`); several of
   one kind must have bit-equal factors (`Ambiguous`); a listed unit that
   cannot be read refuses its kind, or every kind if its kind cannot be told,
-  even when a readable unit of that kind is listed too (`Unreadable`). A unit
-  or uncertainty set that is `$`, empty or lists anything but references is
-  malformed, never empty.
+  even when a readable unit of that kind is listed too (`Unreadable`). Only
+  a valid unit of another quantity (a kilogram, a second) is ignored;
+  anything else listed whose kind cannot be told — a measure with unit, an
+  SI name outside the schema's `si_unit_name`, a mass unit over a metre —
+  refuses every kind. A unit or uncertainty set that is `$`, empty or lists
+  anything but references is malformed, never empty.
 
 Uncertainties are per context, not per file, and each is converted with its
-own unit: Pro/ENGINEER's AS1 states a 'closure' of 0.115, 0.363 or 0.672 mm
+own unit, which its measure type and value type must agree with:
+Pro/ENGINEER's AS1 states a 'closure' of 0.115, 0.363 or 0.672 mm
 in its seven contexts. Exporters name them differently
 (`distance_accuracy_value`, `closure`, `MODEL_ACCURACY`, …), and stepq
 reports names and values without choosing between them.
 
 A solid, shell or face takes the context of every representation that lists
-it, directly or through the shells, solids and surface models that contain
-it. Every such representation must be readable and their contexts must agree
-kind by kind and in dimension; a container the table does not know is not
-followed, so an item held only through one reads as held by nothing rather
-than in a guessed context.
+it, directly or through the faces, shells, solids and surface models that
+contain it (an `oriented_face` and a `connected_face_sub_set` among them).
+Every such representation must be readable and their contexts must agree
+kind by kind and in dimension. What the walk cannot follow is refused, not
+stepped over: a shell or solid written as a complex instance, or an instance
+that lists the item next to a reference that is not a context, could hold it
+in another context, so the item is `NotFollowed` even when its other holders
+agree. Each instance on the way is read once, so the walk stays linear in
+the file however many shells, representations or contexts share an item.
 
 A placement frame is scaled in the context its position assigns (ISO
 10303-43): `transform_item_k` in `rep_k`'s context, a `mapping_origin` in its

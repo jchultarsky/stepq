@@ -37,6 +37,24 @@ pub(crate) fn partial<'e>(
     exchange.records(instance).find(|r| r.is(name))
 }
 
+/// True if a complex instance writes some partial entity more than once.
+///
+/// A complex instance is a set of entity types (ISO 10303-11), so ISO
+/// 10303-21 writes each partial once. A repeated partial states its
+/// attributes twice, and a reader that took either one would be guessing,
+/// so every reader of stated values refuses such an instance.
+pub(crate) fn repeats_partial(exchange: &Exchange<'_>, instance: &Instance) -> bool {
+    if !instance.is_complex() {
+        return false;
+    }
+    let mut names: Vec<Vec<u8>> = exchange
+        .records(instance)
+        .map(|record| record.name().to_ascii_uppercase())
+        .collect();
+    names.sort_unstable();
+    names.windows(2).any(|pair| pair[0] == pair[1])
+}
+
 /// The partial record named `name`, or failing that the first record.
 pub(crate) fn primary_record<'e>(
     exchange: &'e Exchange<'_>,
@@ -110,14 +128,18 @@ pub(crate) enum NotRepresentation {
 /// subtype of `representation` inherits in that order; a subtype may add
 /// attributes after them (`tessellated_shape_representation_with_accuracy_parameters`
 /// adds a fourth). A complex instance is read from its `REPRESENTATION`
-/// partial, which must have exactly three. Either way `name` must be a
-/// string, `items` a list of references and `context_of_items` a reference.
+/// partial, which must have exactly three, and one that repeats any partial
+/// is refused ([`repeats_partial`]). Either way `name` must be a string,
+/// `items` a list of references and `context_of_items` a reference.
 pub(crate) fn representation(
     exchange: &Exchange<'_>,
     id: u64,
 ) -> Result<Representation, NotRepresentation> {
     let instance = exchange.get(id).ok_or(NotRepresentation::Undefined)?;
     let params: Vec<Param<'_>> = if instance.is_complex() {
+        if repeats_partial(exchange, instance) {
+            return Err(NotRepresentation::Layout);
+        }
         partial(exchange, instance, "REPRESENTATION")
             .and_then(|record| exact_params(record, 3))
             .ok_or(NotRepresentation::Layout)?
@@ -169,13 +191,15 @@ pub(crate) struct Container {
     pub(crate) holds: &'static [usize],
 }
 
-/// Which attribute of which shell, solid or model holds what (ISO
+/// Which attribute of which face, shell, solid or model holds what (ISO
 /// 10303-42). Units and topology both walk containment through this table,
-/// so the two cannot disagree about what holds a face.
+/// so the two cannot disagree about what holds a face. A walk may still
+/// refuse to read what a container holds (topology, for one, does not read
+/// an `oriented_face`'s bounds); the table only says what is held.
 ///
-/// Only simple instances are containers. A complex instance of one of these
-/// types, or any container not listed, is not followed: a walk that needs it
-/// reports what it could not reach instead of guessing.
+/// Only simple instances are containers. A complex instance with a partial
+/// of one of these types is not followed, and a walk that meets one reports
+/// it instead of guessing what it holds.
 pub(crate) const CONTAINERS: &[Container] = &[
     // connected_face_set.cfs_faces
     Container {
@@ -192,6 +216,20 @@ pub(crate) const CONTAINERS: &[Container] = &[
         entity: "CONNECTED_FACE_SET",
         params: 2,
         holds: &[1],
+    },
+    // connected_face_sub_set(name, cfs_faces, parent_face_set): the parent
+    // holds the subset, not the other way round.
+    Container {
+        entity: "CONNECTED_FACE_SUB_SET",
+        params: 3,
+        holds: &[1],
+    },
+    // oriented_face(name, *, face_element, orientation): bounds is derived
+    // and written `*`.
+    Container {
+        entity: "ORIENTED_FACE",
+        params: 4,
+        holds: &[2],
     },
     // oriented_closed_shell(name, *, closed_shell_element, orientation):
     // cfs_faces is derived and written `*`.
@@ -244,12 +282,13 @@ pub(crate) fn container(record: Record<'_>) -> Option<&'static Container> {
         .find(|container| record.is(container.entity))
 }
 
-/// True if `param` is `#id` or a list that contains `#id`.
-pub(crate) fn holds(param: &Param<'_>, id: u64) -> bool {
+/// The `#id`s a container attribute holds: the reference itself, or every
+/// reference in a list.
+pub(crate) fn held(param: &Param<'_>) -> Vec<u64> {
     match param {
-        Param::Reference(target) => *target == id,
-        Param::List(items) => items.clone().any(|item| item.reference() == Some(id)),
-        _ => false,
+        Param::Reference(target) => vec![*target],
+        Param::List(items) => items.clone().filter_map(|item| item.reference()).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -341,20 +380,51 @@ mod tests {
     fn containers() {
         let x = exchange(
             "#1=CLOSED_SHELL('',(#5,#6));#2=ORIENTED_CLOSED_SHELL('',*,#1,.F.);\
-             #3=BREP_WITH_VOIDS('',#1,(#2));#4=ADVANCED_FACE('',(),#9,.T.);",
+             #3=BREP_WITH_VOIDS('',#1,(#2));#4=ADVANCED_FACE('',(),#9,.T.);\
+             #5=ORIENTED_FACE('',*,#4,.F.);#6=CONNECTED_FACE_SUB_SET('',(#4),#1);",
         );
         let record = |id| x.records(x.get(id).unwrap()).next().unwrap();
         let shell = container(record(1)).unwrap();
-        assert!(holds(&record(1).param(shell.holds[0]).unwrap(), 6));
+        assert_eq!(held(&record(1).param(shell.holds[0]).unwrap()), [5, 6]);
         assert_eq!(container(record(2)).unwrap().holds, &[2]);
         let voids = container(record(3)).unwrap();
-        assert!(
-            voids
-                .holds
-                .iter()
-                .any(|&i| holds(&record(3).param(i).unwrap(), 2))
-        );
+        let held_by_voids: Vec<u64> = voids
+            .holds
+            .iter()
+            .flat_map(|&i| held(&record(3).param(i).unwrap()))
+            .collect();
+        assert_eq!(held_by_voids, [1, 2]);
         assert!(container(record(4)).is_none());
+        assert_eq!(container(record(5)).unwrap().holds, &[2], "the face");
+        assert_eq!(
+            container(record(6)).unwrap().holds,
+            &[1],
+            "the faces, not the parent"
+        );
+        assert_eq!(held(&record(4).param(0).unwrap()), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn repeated_partials() {
+        let x = exchange(
+            "#1=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\
+             #2=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.)si_unit(.CENTI.,.METRE.));\
+             #3=SI_UNIT(*,.MILLI.,.METRE.);\
+             #4=(REPRESENTATION('',(#5),#9)REPRESENTATION('',(#5),#8)SHAPE_REPRESENTATION());\
+             #6=(REPRESENTATION('',(#5),#9)SHAPE_REPRESENTATION()SHAPE_REPRESENTATION());",
+        );
+        assert!(!repeats_partial(&x, x.get(1).unwrap()));
+        assert!(
+            repeats_partial(&x, x.get(2).unwrap()),
+            "names are compared ignoring case"
+        );
+        assert!(!repeats_partial(&x, x.get(3).unwrap()));
+        assert_eq!(
+            representation(&x, 4),
+            Err(NotRepresentation::Layout),
+            "two contexts: neither is read"
+        );
+        assert_eq!(representation(&x, 6), Err(NotRepresentation::Layout));
     }
 
     #[test]

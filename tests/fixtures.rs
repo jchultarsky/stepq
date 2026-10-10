@@ -205,21 +205,17 @@ fn non_name_tokens(text: &[u8]) -> Vec<&[u8]> {
         .collect()
 }
 
+/// The fixture at `relative`, or `None` if it is not fetched; with
+/// `STEPQ_REQUIRE_FIXTURES=1`, a missing core fixture fails the test.
 fn read_fixture(relative: &str) -> Option<Vec<u8>> {
-    let path = fixtures_root().join(relative);
-    let src = fs::read(&path).ok();
-    if src.is_none() {
-        eprintln!(
-            "skipping: {} not fetched (run tools/fetch-fixtures.sh)",
-            path.display()
-        );
-    }
-    src
+    common::fixture(relative)
 }
 
 /// Runs `check` on every fixture and fails listing every file that failed.
+/// With `STEPQ_REQUIRE_FIXTURES=1`, a missing core fixture fails too.
 fn for_each_fixture(check: impl Fn(&[u8]) -> Result<(), String>) {
     let files = common::step_files();
+    common::require_core_set(&files);
     if files.is_empty() {
         eprintln!(
             "skipping: no STEP files under {} (run tools/fetch-fixtures.sh)",

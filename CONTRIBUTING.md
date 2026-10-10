@@ -93,6 +93,7 @@ toolchain. CI runs each target for 60 seconds; to fuzz for longer locally:
 $ rustup toolchain install nightly
 $ cargo install cargo-fuzz
 $ cargo +nightly fuzz run parse -- -dict=fuzz/p21.dict
+$ cargo +nightly fuzz run read fuzz/corpus/read fuzz/seeds/read -- -create_missing_dirs=1 -dict=fuzz/p21.dict
 ```
 
 There are three targets. `lex` checks that tokens stay in order and in
@@ -102,6 +103,13 @@ output parses back with the same number of instances. `read` runs every
 reader of stated values (`units`, …) on every instance and checks that none
 panics and that what they return is finite. A crash found by
 fuzzing is a security issue; see [SECURITY.md](SECURITY.md).
+
+`read` starts from the seeds in `fuzz/seeds/read`: small hand-written files,
+not fixtures, that reach every reader. From an empty corpus, libFuzzer does
+not write a file with a single instance in CI's minute, so without them no
+reader would run. Name the writable corpus first, as above, so that new
+inputs do not land among the seeds. A reader added to the target comes with
+seeds that reach it; `tests/fuzz_seeds.rs` checks that they do.
 
 Pedantic clippy is on. If a lint is wrong for a specific line, `allow` it
 there with a comment; do not disable it crate-wide without discussion.

@@ -19,7 +19,8 @@ states and never computes what it does not. First, unit factors.
   unit to millimetres, plane angle to radians and solid angle to
   steradians, each read or refused on its own, its uncertainties and its
   coordinate space dimension — for a context, a representation, or a
-  solid, shell or face, whose holding contexts must agree. Factors are
+  solid, shell or face, whose holding contexts must agree (a holder stepq
+  cannot follow is reported, never stepped over). Factors are
   used as stated (a degree of `0.0174532925` radian stays that) and nothing
   is assumed: what cannot be read is a `units::UnitError` with the reason,
   and `stepq::Error` gains a `Unit` variant. On all 55 fixtures, the 1,670
@@ -28,10 +29,11 @@ states and never computes what it does not. First, unit factors.
 - `tools/verify-read.py units` compares every unit context with Open
   CASCADE's reading (through `examples/units.rs`), and
   `tools/gen-occt-cases.py` writes the same plate in five length units for
-  it. CI runs both, and the new fixture tests with
+  it. CI runs both, and the fixture tests with
   `STEPQ_REQUIRE_FIXTURES=1`, which fails them if a core fixture is
   missing.
-- A `read` fuzz target, which runs every reader on every instance.
+- A `read` fuzz target, which runs every reader on every instance. CI starts
+  it from hand-written seeds (`fuzz/seeds/read`) that reach every reader.
 
 ### Changed
 

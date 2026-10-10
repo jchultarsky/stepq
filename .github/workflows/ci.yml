@@ -98,8 +98,12 @@ jobs:
         run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu lex -- -max_total_time=60 -dict=${{ github.workspace }}/fuzz/p21.dict
       - name: Fuzz the parser
         run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse -- -max_total_time=60 -dict=${{ github.workspace }}/fuzz/p21.dict
+      # From an empty corpus, a minute of fuzzing does not write a file with
+      # an instance in it, so no reader would run: start from the seeds. The
+      # writable corpus comes first, or new inputs land among the seeds, and
+      # libFuzzer creates it on a fresh checkout.
       - name: Fuzz the readers
-        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu read -- -max_total_time=60 -dict=${{ github.workspace }}/fuzz/p21.dict
+        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu read ${{ github.workspace }}/fuzz/corpus/read ${{ github.workspace }}/fuzz/seeds/read -- -create_missing_dirs=1 -max_total_time=60 -dict=${{ github.workspace }}/fuzz/p21.dict
       - name: Upload crashing inputs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -138,7 +142,7 @@ jobs:
       - run: tools/verify-read.py units tests/fixtures "$RUNNER_TEMP/occt-cases"
       # The fixture tests with their pinned counts; a missing core fixture
       # fails them here instead of skipping.
-      - run: cargo test --all-features --test units
+      - run: cargo test --all-features --test units --test fixtures
         env:
           STEPQ_REQUIRE_FIXTURES: "1"
 

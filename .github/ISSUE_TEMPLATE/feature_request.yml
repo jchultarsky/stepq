@@ -18,5 +18,5 @@ body:
     attributes:
       label: Scope check
       options:
-        - label: This does not require evaluating geometry (tessellation, volume, bounding box, healing, unit conversion). See ROADMAP.md "Not planned".
+        - label: This reads what the file states and computes nothing it does not (no tessellation, intersections, trimmed areas, mass properties, bounding boxes, healing or format conversion). See ROADMAP.md "Not planned".
           required: true
