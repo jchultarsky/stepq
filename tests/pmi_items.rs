@@ -257,7 +257,9 @@ fn nist_spot_checks() {
 }
 
 /// On every fixture: no panic, every item is defined, and `naming` is the
-/// inverse of `resolve` over every aspect a usage or relationship names.
+/// inverse of `resolve`, with the same kinds of route: every item a datum,
+/// tolerance target, dimension end or usage's aspect lists names it back,
+/// and every definition `naming` lists for an item lists it.
 #[test]
 fn naming_inverts_resolve_on_every_fixture() {
     let files = step_files();
@@ -266,41 +268,54 @@ fn naming_inverts_resolve_on_every_fixture() {
         let src = fs::read(path).unwrap();
         let graph = Graph::new(parse(&src).unwrap()).unwrap();
         let index = AspectItems::new(&graph);
-        let mut definitions: BTreeSet<u64> = index.usages().iter().map(|u| u.definition).collect();
         let structure = ProductStructure::new(&graph);
         let found = pmi(&graph, &structure);
+        let mut definitions: BTreeSet<u64> = index.usages().iter().map(|u| u.definition).collect();
         definitions.extend(found.datums.iter().map(|d| d.instance));
         definitions.extend(found.tolerances.iter().map(|t| t.target.instance));
-        let mut forward: BTreeSet<(u64, u64)> = BTreeSet::new();
+        for dimension in &found.dimensions {
+            definitions.insert(dimension.target.instance);
+            definitions.extend(dimension.related.as_ref().map(|r| r.instance));
+        }
+        let mut resolved: BTreeMap<u64, BTreeMap<u64, Vec<StepKinds>>> = BTreeMap::new();
+        let mut resolve = |id: u64| -> BTreeMap<u64, Vec<StepKinds>> {
+            resolved
+                .entry(id)
+                .or_insert_with(|| {
+                    index
+                        .resolve(&graph, id)
+                        .items
+                        .into_iter()
+                        .map(|item| (item.item, item.route_kinds))
+                        .collect()
+                })
+                .clone()
+        };
         let mut items: HashSet<u64> = HashSet::new();
         for &definition in &definitions {
-            for item in index.resolve(&graph, definition).items {
-                assert!(graph.exchange().get(item.item).is_some());
-                forward.insert((item.item, definition));
-                items.insert(item.item);
+            for (item, kinds) in resolve(definition) {
+                assert!(graph.exchange().get(item).is_some());
+                let back = index.naming(item);
+                let naming = back.iter().find(|n| n.definition == definition);
+                assert_eq!(
+                    naming.map(|n| &n.route_kinds),
+                    Some(&kinds),
+                    "{}: #{definition} lists #{item}",
+                    path.display()
+                );
+                items.insert(item);
             }
         }
         for &item in &items {
             for naming in index.naming(item) {
-                if definitions.contains(&naming.definition) {
-                    assert!(
-                        forward.contains(&(item, naming.definition)),
-                        "{}: naming(#{item}) lists #{}",
-                        path.display(),
-                        naming.definition
-                    );
-                }
+                assert_eq!(
+                    resolve(naming.definition).get(&item),
+                    Some(&naming.route_kinds),
+                    "{}: naming(#{item}) lists #{}",
+                    path.display(),
+                    naming.definition
+                );
             }
-        }
-        for &(item, definition) in &forward {
-            assert!(
-                index
-                    .naming(item)
-                    .iter()
-                    .any(|n| n.definition == definition),
-                "{}: #{definition} lists #{item}, naming does not",
-                path.display()
-            );
         }
     }
 }

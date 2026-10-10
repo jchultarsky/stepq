@@ -149,8 +149,9 @@ definition; then the faces PMI applies to.
   so a resolution is linear in the file. On the 17 NIST AP242 files, 637 of
   683 tolerance and dimension ends reach a face, 42 other items and 4
   nothing, for stated reasons; `tools/verify-read.py pmi` pairs all 328 of
-  Open CASCADE 8.0.1's tolerances one to one with stepq's and matches its
-  dimensions and datums but three named exceptions, and CI pins the counts.
+  Open CASCADE 8.0.1's tolerances and 250 of its 251 dimensions one to one
+  with stepq's and matches 54 of its 56 datum labels, the three others
+  being named exceptions where it binds less, and CI pins the counts.
 - `stepq pmi --geometry`: each datum, tolerance and dimension with the
   items it stands for and where stepq stopped, in table, JSON (`geometry`,
   `related_geometry`) and CSV (`items`, `unresolved`, `related_items`,

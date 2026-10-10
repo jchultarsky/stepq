@@ -575,6 +575,11 @@ fn pmi_geometry(graph: &Graph<'_>, found: &Pmi) -> Geometry {
         ids.push(dimension.target.instance);
         ids.extend(dimension.related.as_ref().map(|related| related.instance));
     }
+    // Each target once, however many tolerances share it. A resolution
+    // takes time linear in the file, so targets that share much of it,
+    // through composites of a common part, pay again for it.
+    ids.sort_unstable();
+    ids.dedup();
     ids.into_iter()
         .map(|id| (id, index.resolve(graph, id)))
         .collect()

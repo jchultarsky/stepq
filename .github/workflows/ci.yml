@@ -185,7 +185,7 @@ jobs:
       # tolerance one to one, each dimension with one of stepq's, each datum
       # label by its items. The few differences allowed are named, with
       # their reasons, in the script; the counts are pinned for this set.
-      - run: tools/verify-read.py pmi --expect=328,250,54 tests/fixtures
+      - run: tools/verify-read.py pmi --expect=328,250,54,3 tests/fixtures
       # The unit tests that check attribute positions and type lists against
       # the four schemas, which only skip where the schemas are not fetched.
       - run: tools/fetch-schemas.sh

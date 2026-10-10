@@ -24,7 +24,7 @@ their paths.
     tools/verify-read.py occurrences --expect=MATCHED,DIVERGENT [PATH...]
     tools/verify-read.py topology --healing=EDGES [PATH...]
     tools/verify-read.py shapes --expect=BY_NAME,BY_FILE [PATH...]
-    tools/verify-read.py pmi --expect=TOLERANCES,DIMENSIONS,DATUMS [PATH...]
+    tools/verify-read.py pmi --expect=TOLERANCES,DIMENSIONS,DATUMS,ALLOWED [PATH...]
 
 PATH is a STEP file or a directory searched for them, following symbolic
 links; directories skip files over 16 MB unless STEPQ_LARGE_FIXTURES=1, and a
@@ -131,11 +131,13 @@ undefined (stepq reads ref_direction_stated = false).
             Open CASCADE's tolerances must pair one to one with one of
             stepq's of the same kind and items, with the same magnitude up to
             a length unit; each of its dimensions (presentation-only ones
-            aside) must equal one of stepq's ends, either way round, or
-            their union; and each datum label's items must equal the union of
-            stepq's datums with that label. A difference fails unless it is
-            named in PMI_ALLOWED with its reason. --expect pins how many
-            tolerances, dimensions and datum labels match, as CI does.
+            aside) must pair one to one with one of stepq's, its first
+            shapes stepq's target end and its second the related end; and
+            each datum label's items must equal the union of stepq's datums
+            with that label. A difference fails unless PMI_ALLOWED names it,
+            with exactly the items stepq reads beyond Open CASCADE and the
+            reason. --expect pins how many tolerances, dimensions and datum
+            labels match and how many differences are allowed, as CI does.
 
 Exit status: 0 if every comparison holds, 1 if one fails or the pinned
 tallies differ, 2 if a file cannot be read by either side, a directory named
@@ -1109,16 +1111,48 @@ TOLERANCE_KINDS = {
     "TotalRunout": "total runout",
 }
 
-# Datums, by label, and dimensions, by `#id`, whose items stepq reads beyond
-# Open CASCADE's, and why. The check fails on any other.
+# Datums, by label, and dimensions, by `#id`, where stepq reads exactly these
+# items beyond Open CASCADE's (for a dimension, its related end), and why.
+# The check fails on any other difference.
 PMI_ALLOWED = {
-    ("nist_ctc_04_asme1_ap242-e1.stp", "#20263"): "its related end is curve sets in a "
-    "constructive geometry representation (supplemental), which Open CASCADE does not bind",
-    ("nist_ftc_10_asme1_ap242-e2.stp", "K"): "datum target areas named against a surface "
-    "model, which Open CASCADE does not bind",
-    ("nist_ftc_10_asme1_ap242-e2.stp", "L"): "datum target areas named against a surface "
-    "model, which Open CASCADE does not bind",
+    ("nist_ctc_04_asme1_ap242-e1.stp", "#20263"): (
+        {17569, 17576, 17583, 17590},
+        "its related end is curve sets in a constructive geometry representation "
+        "(supplemental), which Open CASCADE does not bind",
+    ),
+    ("nist_ftc_10_asme1_ap242-e2.stp", "K"): (
+        {17450, 17481},
+        "datum target areas named against a surface model, which Open CASCADE does not bind",
+    ),
+    ("nist_ftc_10_asme1_ap242-e2.stp", "L"): (
+        {17528, 17559},
+        "datum target areas named against a surface model, which Open CASCADE does not bind",
+    ),
 }
+
+
+def matching(candidates: list[list[int]]) -> list[int | None]:
+    """A maximum one-to-one matching of each left index to one of its
+    candidates (Kuhn's algorithm): the candidate each is matched to, or
+    None."""
+    owner: dict[int, int] = {}
+
+    def augment(left: int, seen: set[int]) -> bool:
+        for right in candidates[left]:
+            if right in seen:
+                continue
+            seen.add(right)
+            if right not in owner or augment(owner[right], seen):
+                owner[right] = left
+                return True
+        return False
+
+    for left in range(len(candidates)):
+        augment(left, set())
+    matched: list[int | None] = [None] * len(candidates)
+    for right, left in owner.items():
+        matched[left] = right
+    return matched
 
 
 @dataclass
@@ -1129,6 +1163,7 @@ class PmiTally(Tally):
     dimensions: int = 0
     datums: int = 0
     stepq_only: int = 0
+    dimensions_only_stepq: int = 0
     allowed: int = 0
     notes: list = field(default_factory=list)
 
@@ -1223,42 +1258,57 @@ def check_pmi(path: Path, tally: PmiTally) -> list[str]:
                     "Open CASCADE"
                 )
     tally.stepq_only += len(unused)
-    # Dimensions: equal to one of stepq's ends, either way round, or their
-    # union.
-    pairs = []
-    for dimension in ours["dimensions"]:
-        a = comparable(dimension["geometry"])
-        b = comparable(dimension.get("related_geometry"))
-        pairs.append((a, b, dimension["instance"]))
-    for read in (g for g in theirs if g.kind == "dimension" and (g.first or g.second)):
-        if read.type.endswith("DimensionPresentation"):
-            continue
-        a, b = set_of(read.first), set_of(read.second)
-        ok = any(
-            (ours_a == a and ours_b == b)
-            or (ours_a == b and ours_b == a)
-            or (not b and (ours_a | ours_b) == a)
-            for ours_a, ours_b, _ in pairs
+    # Dimensions, one to one: Open CASCADE's first shapes are stepq's
+    # target end, its second the related end.
+    ends = [
+        (
+            comparable(dimension["geometry"]),
+            comparable(dimension.get("related_geometry")),
+            dimension["instance"],
         )
-        # Open CASCADE binding one end only, where stepq reads the other too.
-        allowed = [
-            instance
-            for ours_a, ours_b, instance in pairs
-            if not b and a in (ours_a, ours_b) and (name, f"#{instance}") in PMI_ALLOWED
-        ]
-        if ok:
+        for dimension in ours["dimensions"]
+    ]
+    reads = [
+        (set_of(read.first), set_of(read.second), read.type)
+        for read in theirs
+        if read.kind == "dimension"
+        and (read.first or read.second)
+        and not read.type.endswith("DimensionPresentation")
+    ]
+    candidates = [
+        [j for j, (a, b, _) in enumerate(ends) if (a, b) == (first, second)]
+        for first, second, _ in reads
+    ]
+    paired = matching(candidates)
+    used = {j for j in paired if j is not None}
+    for (first, second, type_), j in zip(reads, paired):
+        if j is not None:
             tally.dimensions += 1
-        elif allowed:
+            continue
+        # Open CASCADE binding the target end only, where stepq reads exactly
+        # the related end allowed.
+        allowed = [
+            (k, instance)
+            for k, (a, b, instance) in enumerate(ends)
+            if k not in used
+            and not second
+            and a == first
+            and PMI_ALLOWED.get((name, f"#{instance}"), (None,))[0] == b
+        ]
+        if allowed:
+            k, instance = allowed[0]
+            used.add(k)
             tally.allowed += 1
             tally.notes.append(
-                f"dimension #{allowed[0]}: Open CASCADE binds one end only, as allowed: "
-                f"{PMI_ALLOWED[(name, f'#{allowed[0]}')]}"
+                f"dimension #{instance}: Open CASCADE binds its target end only, as allowed: "
+                f"{PMI_ALLOWED[(name, f'#{instance}')][1]}"
             )
-        else:
-            problems.append(
-                f"Open CASCADE's {read.type} dimension on {sorted(a)} and {sorted(b)} has no "
-                "match in stepq"
-            )
+            continue
+        problems.append(
+            f"Open CASCADE's {type_} dimension on {sorted(first)} and {sorted(second)} has no "
+            "match in stepq"
+        )
+    tally.dimensions_only_stepq += len(ends) - len(used)
     # Datums: the union of items per label.
     ours_labels: dict[str, set[int]] = {}
     for datum in ours["datums"]:
@@ -1272,9 +1322,12 @@ def check_pmi(path: Path, tally: PmiTally) -> list[str]:
         mine = ours_labels.get(label, set())
         if mine == items:
             tally.datums += 1
-        elif (name, label) in PMI_ALLOWED and items < mine:
+        elif (name, label) in PMI_ALLOWED and items < mine and mine - items == PMI_ALLOWED[(name, label)][0]:
             tally.allowed += 1
-            tally.notes.append(f"datum {label}: stepq reads {sorted(mine - items)} more, as allowed: {PMI_ALLOWED[(name, label)]}")
+            tally.notes.append(
+                f"datum {label}: stepq reads {sorted(mine - items)} more, as allowed: "
+                f"{PMI_ALLOWED[(name, label)][1]}"
+            )
         else:
             problems.append(
                 f"datum {label}: stepq reads {sorted(mine)}, Open CASCADE {sorted(items)}"
@@ -1319,11 +1372,11 @@ def main() -> int:
             healing = tuple(int(c) for c in counts)
         elif arg.startswith("--expect="):
             counts = arg.split("=", 1)[1].split(",")
-            wanted = {"occurrences": 2, "shapes": 2, "pmi": 3}.get(name)
+            wanted = {"occurrences": 2, "shapes": 2, "pmi": 4}.get(name)
             if len(counts) != wanted or not all(c.isdigit() for c in counts):
                 print(
                     f"{arg}: only occurrences takes --expect=MATCHED,DIVERGENT, shapes "
-                    "--expect=BY_NAME,BY_FILE, and pmi --expect=TOLERANCES,DIMENSIONS,DATUMS",
+                    "--expect=BY_NAME,BY_FILE, and pmi --expect=TOLERANCES,DIMENSIONS,DATUMS,ALLOWED",
                     file=sys.stderr,
                 )
                 return 2
@@ -1403,8 +1456,8 @@ def main() -> int:
             f"datums, tolerances and dimensions; {tally.tolerances} of Open CASCADE's tolerances "
             f"pair one to one with stepq's, {tally.dimensions} of its dimensions and "
             f"{tally.datums} of its datum labels match; {tally.allowed} datum labels and "
-            f"dimensions where stepq reads more, as allowed; {tally.stepq_only} tolerances only "
-            "stepq reads"
+            f"dimensions where stepq reads more, as allowed; {tally.stepq_only} tolerances and "
+            f"{tally.dimensions_only_stepq} dimensions only stepq reads"
         )
     elif isinstance(tally, ShapeTally):
         print(
@@ -1438,10 +1491,11 @@ def main() -> int:
         print(f"{failed} of {len(files)} files differ", file=sys.stderr)
         return 1
     if expect is not None and isinstance(tally, PmiTally):
-        found = (tally.tolerances, tally.dimensions, tally.datums)
+        found = (tally.tolerances, tally.dimensions, tally.datums, tally.allowed)
         if found != expect:
             print(
-                f"{found} tolerances, dimensions and datum labels match, pinned at {expect}: "
+                f"{found} tolerances, dimensions, datum labels and allowed differences, "
+                f"pinned at {expect}: "
                 "an item may be missing, or the files or Open CASCADE changed",
                 file=sys.stderr,
             )

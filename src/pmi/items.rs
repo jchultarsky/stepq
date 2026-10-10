@@ -10,9 +10,9 @@ use crate::model::Graph;
 use crate::p21::{Exchange, Instance, Param, Record};
 use crate::record::{self, text};
 
-/// Routes longer than this many relationships are not followed
-/// ([`UnresolvedReason::TooDeep`]). The longest route in the fixtures has
-/// two.
+/// Aspects more than this many relationships from the definition, by the
+/// shortest route, are not reached ([`UnresolvedReason::TooDeep`]). The
+/// longest route in the fixtures has two.
 const MAX_DEPTH: usize = 64;
 
 /// `shape_aspect_relationship` and its subtypes, in the four schemas.
@@ -372,7 +372,7 @@ pub struct ResolvedItem {
     /// names; empty if it names the definition itself.
     pub via: Vec<Step>,
     /// The kinds of step each route to the item takes, each distinct set
-    /// once, smallest first: the empty set if a usage names the definition
+    /// once, in a fixed order: the empty set if a usage names the definition
     /// itself. A value stated on a composite applies to the group, and an
     /// axis's derived-from faces are not what it tolerances, so a caller
     /// keeps these apart.
@@ -446,7 +446,8 @@ pub enum UnresolvedReason {
     Missing,
     /// The relationships lead back to an aspect already on a route to here.
     Cycle,
-    /// The aspect lies more than 64 relationships from the definition.
+    /// The aspect lies 64 relationships from the definition by the
+    /// shortest route, and its steps on are not followed.
     TooDeep,
 }
 
@@ -474,7 +475,7 @@ impl fmt::Display for UnresolvedReason {
             }
             Self::Missing => f.write_str("not defined"),
             Self::Cycle => f.write_str("the relationships lead back to it"),
-            Self::TooDeep => f.write_str("more than 64 relationships away"),
+            Self::TooDeep => f.write_str("64 relationships away, not followed further"),
         }
     }
 }
@@ -519,7 +520,8 @@ struct Relationship {
     instance: u64,
     kind: RelationshipKind,
     relating: u64,
-    related: u64,
+    /// `None` if it is not a reference: the relationship is reported.
+    related: Option<u64>,
 }
 
 /// What an aspect is, for the rules.
@@ -532,6 +534,7 @@ impl Class {
     const DATUM_FEATURE: u8 = 4;
     const DATUM_TARGET: u8 = 8;
     const DATUM: u8 = 16;
+    const BETWEEN: u8 = 32;
 
     fn of(names: &[String]) -> Self {
         let has = |set: &[&str]| names.iter().any(|name| set.contains(&name.as_str()));
@@ -542,6 +545,7 @@ impl Class {
             (DATUM_FEATURES, Self::DATUM_FEATURE),
             (DATUM_TARGETS, Self::DATUM_TARGET),
             (DATUMS, Self::DATUM),
+            (&["BETWEEN_SHAPE_ASPECT"], Self::BETWEEN),
         ] {
             if has(set) {
                 class |= bit;
@@ -587,6 +591,8 @@ impl Class {
 #[derive(Debug, Clone)]
 pub struct AspectItems {
     usages: Vec<ItemUsage>,
+    /// Each usage's items, each once, for resolving.
+    distinct: Vec<Vec<u64>>,
     /// Followed usages, by definition.
     by_definition: HashMap<u64, Vec<usize>>,
     /// Followed usages, by item.
@@ -648,6 +654,7 @@ impl AspectItems {
         let exchange = graph.exchange();
         let mut index = Self {
             usages: Vec::new(),
+            distinct: Vec::new(),
             by_definition: HashMap::new(),
             by_item: HashMap::new(),
             unsupported: HashMap::new(),
@@ -671,7 +678,8 @@ impl AspectItems {
         let mut aspects: HashSet<u64> = index.by_definition.keys().copied().collect();
         aspects.extend(index.unsupported.keys());
         for relationship in &index.relationships {
-            aspects.extend([relationship.relating, relationship.related]);
+            aspects.insert(relationship.relating);
+            aspects.extend(relationship.related);
         }
         for aspect in aspects {
             let Some(instance) = exchange.get(aspect) else {
@@ -719,17 +727,21 @@ impl AspectItems {
             ItemUsageKind::Other
         };
         let index = self.usages.len();
+        let mut seen = HashSet::new();
+        let distinct: Vec<u64> = items
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&item| seen.insert(item))
+            .collect();
         match kind {
             ItemUsageKind::GeometricItemSpecific | ItemUsageKind::ItemIdentified => {
                 self.by_definition
                     .entry(definition)
                     .or_default()
                     .push(index);
-                let mut seen = HashSet::new();
-                for &item in items.iter().flatten() {
-                    if seen.insert(item) {
-                        self.by_item.entry(item).or_default().push(index);
-                    }
+                for &item in &distinct {
+                    self.by_item.entry(item).or_default().push(index);
                 }
             }
             ItemUsageKind::Other => {
@@ -740,6 +752,7 @@ impl AspectItems {
             }
             ItemUsageKind::Presentation => {}
         }
+        self.distinct.push(distinct);
         self.usages.push(ItemUsage {
             instance: instance.id,
             kind,
@@ -768,14 +781,17 @@ impl AspectItems {
         let Some(record) = record else {
             return;
         };
-        let (Some(relating), Some(related)) = (
-            record::reference(record.param(offset + 2).as_ref()),
-            record::reference(record.param(offset + 3).as_ref()),
-        ) else {
+        // A relationship whose relating aspect cannot be read belongs to no
+        // aspect; one whose related aspect cannot be read is reported from
+        // its relating one.
+        let Some(relating) = record::reference(record.param(offset + 2).as_ref()) else {
             return;
         };
+        let related = record::reference(record.param(offset + 3).as_ref());
         let simple = |name: &str| !instance.is_complex() && names == [name];
-        let kind = if names.iter().any(|name| LOCATIONS.contains(&name.as_str())) {
+        let kind = if related.is_none() {
+            RelationshipKind::Other
+        } else if names.iter().any(|name| LOCATIONS.contains(&name.as_str())) {
             RelationshipKind::Location
         } else if simple("SHAPE_ASPECT_RELATIONSHIP") {
             RelationshipKind::Plain
@@ -794,11 +810,13 @@ impl AspectItems {
             related,
         });
         self.from.entry(relating).or_default().push(index);
-        self.to.entry(related).or_default().push(index);
+        if let Some(related) = related {
+            self.to.entry(related).or_default().push(index);
+        }
     }
 
-    /// Every `item_identified_representation_usage` in file order,
-    /// presentation links included.
+    /// Every `item_identified_representation_usage` whose `definition` is a
+    /// reference, in file order, presentation links included.
     pub fn usages(&self) -> &[ItemUsage] {
         &self.usages
     }
@@ -815,11 +833,16 @@ impl AspectItems {
         let mut others = Vec::new();
         for &index in self.from.get(&aspect).into_iter().flatten() {
             let relationship = &self.relationships[index];
-            let related = relationship.related;
+            let Some(related) = relationship.related else {
+                others.push(relationship.instance);
+                continue;
+            };
             let basis = (class.is(Class::DATUM_FEATURE) || class.is(Class::DATUM_TARGET))
                 && self.class(related).is(Class::DATUM);
             match relationship.kind {
-                RelationshipKind::Plain if basis => {}
+                // A datum feature's or target's basis; a between aspect's
+                // start and end features, which bound its region.
+                RelationshipKind::Plain if basis || class.is(Class::BETWEEN) => {}
                 RelationshipKind::Plain if class.is(Class::COMPOSITE) => steps.push(Step {
                     relationship: relationship.instance,
                     kind: StepKind::Component,
@@ -861,6 +884,8 @@ impl AspectItems {
                             kind,
                             aspect: relating,
                         }),
+                        // A common datum's component: read from its side.
+                        None if from.is(Class::COMPOSITE) => {}
                         None => refused.push(UnresolvedReason::NotFollowed {
                             relationship: relationship.instance,
                             related: relating,
@@ -874,7 +899,9 @@ impl AspectItems {
                         aspect: relating,
                     });
                 }
-                RelationshipKind::Other if into_datum => others.push(relationship.instance),
+                RelationshipKind::Other if into_datum || class.is(Class::DATUM_TARGET) => {
+                    others.push(relationship.instance);
+                }
                 _ => {}
             }
         }
@@ -900,7 +927,7 @@ impl AspectItems {
             let aspect_routes = routes.get(&aspect).copied().unwrap_or_default();
             for &index in self.by_definition.get(&aspect).into_iter().flatten() {
                 let usage = &self.usages[index];
-                for &item in &usage.items {
+                for &item in &self.distinct[index] {
                     if exchange.get(item).is_none() {
                         continue;
                     }
@@ -933,11 +960,13 @@ impl AspectItems {
             })
             .collect();
         // Cycles: a step back to an aspect on the current depth-first path.
-        for (from, to) in back_edges(definition, &walked.edges) {
+        for (from, step) in back_edges(definition, &walked.edges) {
+            let mut via = walked.via(from);
+            via.push(step);
             out.unresolved.push(Unresolved {
-                aspect: to,
-                entity: entity(exchange, to),
-                via: walked.via(from),
+                aspect: step.aspect,
+                entity: entity(exchange, step.aspect),
+                via,
                 reason: UnresolvedReason::Cycle,
             });
         }
@@ -1001,7 +1030,7 @@ impl AspectItems {
         for &index in self.by_definition.get(&aspect).into_iter().flatten() {
             stated = true;
             let usage = &self.usages[index];
-            for &item in &usage.items {
+            for &item in &self.distinct[index] {
                 if exchange.get(item).is_none() {
                     stops.push((
                         aspect,
@@ -1038,7 +1067,10 @@ impl AspectItems {
     /// The definitions whose [`resolve`](Self::resolve) lists `#item`, in
     /// ascending order of `#id`, each with the kinds of step its routes
     /// take: walked back from the usages that name the item, each aspect
-    /// once. Empty if no followed usage names it.
+    /// once. Empty if no followed usage names it. Both limit routes to 64
+    /// relationships, `resolve` counting from the definition and this from
+    /// the item, so for a route longer than that the kinds can differ;
+    /// which definitions are listed does not.
     pub fn naming(&self, item: u64) -> Vec<Naming> {
         let mut routes: HashMap<u64, Routes> = HashMap::new();
         let mut depth: HashMap<u64, usize> = HashMap::new();
@@ -1106,7 +1138,9 @@ impl AspectItems {
             let basis = (from.is(Class::DATUM_FEATURE) || from.is(Class::DATUM_TARGET))
                 && class.is(Class::DATUM);
             match relationship.kind {
-                RelationshipKind::Plain if from.is(Class::COMPOSITE) && !basis => {
+                RelationshipKind::Plain
+                    if from.is(Class::COMPOSITE) && !basis && !from.is(Class::BETWEEN) =>
+                {
                     found.push((relationship.relating, StepKind::Component));
                 }
                 RelationshipKind::Deriving if from.is(Class::DERIVED) => {
@@ -1117,17 +1151,20 @@ impl AspectItems {
         }
         for &index in self.from.get(&aspect).into_iter().flatten() {
             let relationship = &self.relationships[index];
-            let to = self.class(relationship.related);
+            let Some(related) = relationship.related else {
+                continue;
+            };
+            let to = self.class(related);
             match relationship.kind {
                 RelationshipKind::Plain if to.is(Class::DATUM) => {
                     if class.is(Class::DATUM_FEATURE) {
-                        found.push((relationship.related, StepKind::DatumFeature));
+                        found.push((related, StepKind::DatumFeature));
                     } else if class.is(Class::DATUM_TARGET) {
-                        found.push((relationship.related, StepKind::DatumTarget));
+                        found.push((related, StepKind::DatumTarget));
                     }
                 }
                 RelationshipKind::TargetFeature if to.is(Class::DATUM_TARGET) => {
-                    found.push((relationship.related, StepKind::TargetFeature));
+                    found.push((related, StepKind::TargetFeature));
                 }
                 _ => {}
             }
@@ -1197,9 +1234,9 @@ fn stop(names: &[String]) -> Option<UnresolvedReason> {
     }
 }
 
-/// The steps `(from, to)` of `edges` that lead back to an aspect on the
-/// depth-first path from `root`: one per cycle entry.
-fn back_edges(root: u64, edges: &HashMap<u64, Vec<Step>>) -> Vec<(u64, u64)> {
+/// The steps of `edges`, each with the aspect it leaves, that lead back to
+/// an aspect on the depth-first path from `root`: one per cycle entry.
+fn back_edges(root: u64, edges: &HashMap<u64, Vec<Step>>) -> Vec<(u64, Step)> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Colour {
         Grey,
@@ -1213,7 +1250,7 @@ fn back_edges(root: u64, edges: &HashMap<u64, Vec<Step>>) -> Vec<(u64, u64)> {
         if let Some(step) = steps.get(*next) {
             *next += 1;
             match colour.get(&step.aspect) {
-                Some(Colour::Grey) => found.push((aspect, step.aspect)),
+                Some(Colour::Grey) => found.push((aspect, *step)),
                 Some(Colour::Black) => {}
                 None => {
                     colour.insert(step.aspect, Colour::Grey);
@@ -1529,6 +1566,103 @@ mod tests {
         let deep = index.resolve(graph, 1000);
         assert_eq!(deep.items, []);
         assert_eq!(reasons(&deep), [(1064, UnresolvedReason::TooDeep)]);
+    }
+
+    /// What the review of this resolver found: a between aspect's bounds, a
+    /// common datum's components, a complex target feature relationship, a
+    /// relationship whose related side cannot be read, and a cycle's route.
+    #[test]
+    fn review_cases() {
+        let data = format!(
+            "{BASE}#30=BETWEEN_SHAPE_ASPECT('','',#21,.T.);#31=SHAPE_ASPECT('','',#21,.T.);\
+             #32=SHAPE_ASPECT('','',#21,.T.);#50=SHAPE_ASPECT_RELATIONSHIP('start feature','',#30,#31);\
+             #51=SHAPE_ASPECT_RELATIONSHIP('end feature','',#30,#32);{}{}{}\
+             #33=DATUM('',$,#21,.F.,'A');#34=DATUM('',$,#21,.F.,'B');#35=COMMON_DATUM('',$,#21,.F.,'A-B');\
+             #36=DATUM_FEATURE('','',#21,.T.);#37=DATUM_FEATURE('','',#21,.T.);\
+             #52=SHAPE_ASPECT_RELATIONSHIP('','',#36,#33);#53=SHAPE_ASPECT_RELATIONSHIP('','',#37,#34);\
+             #54=SHAPE_ASPECT_RELATIONSHIP('','',#35,#33);#55=SHAPE_ASPECT_RELATIONSHIP('','',#35,#34);{}{}\
+             #38=DATUM('',$,#21,.F.,'C');#39=PLACED_DATUM_TARGET_FEATURE('','point',#21,.T.,'1');\
+             #40=SHAPE_ASPECT('','',#21,.T.);#56=SHAPE_ASPECT_RELATIONSHIP('','',#39,#38);\
+             #57=(FEATURE_FOR_DATUM_TARGET_RELATIONSHIP()SHAPE_ASPECT_RELATIONSHIP('','',#40,#39));{}{}\
+             #41=COMPOSITE_SHAPE_ASPECT('','',#21,.T.);#58=SHAPE_ASPECT_RELATIONSHIP('','',#41,$);{}",
+            gisu(60, 30, 3),
+            gisu(61, 31, 1),
+            gisu(62, 32, 2),
+            gisu(63, 36, 1),
+            gisu(64, 37, 2),
+            gisu(65, 39, 6),
+            gisu(66, 40, 4),
+            gisu(67, 41, 3)
+        );
+        let (graph, index) = read(&data);
+        // The region between the start and end features, not the features.
+        let between = index.resolve(graph, 30);
+        assert_eq!(ids(&between), [3]);
+        assert!(between.is_complete());
+        // A common datum's components are datums, each with its feature;
+        // neither datum reports the link from the common datum.
+        let common = index.resolve(graph, 35);
+        assert!(common.is_complete(), "{:?}", common.unresolved);
+        assert_eq!(ids(&common), [1, 2]);
+        assert_eq!(
+            common.items[0].route_kinds,
+            [StepKinds::NONE
+                .with(StepKind::Component)
+                .with(StepKind::DatumFeature)]
+        );
+        assert!(index.resolve(graph, 33).is_complete());
+        // A complex target feature relationship is reported, not dropped.
+        let target = index.resolve(graph, 38);
+        assert_eq!(ids(&target), [6]);
+        assert_eq!(
+            reasons(&target),
+            [(
+                39,
+                UnresolvedReason::UnsupportedRelationship {
+                    relationship: 57,
+                    entity: "FEATURE_FOR_DATUM_TARGET_RELATIONSHIP+SHAPE_ASPECT_RELATIONSHIP"
+                        .to_owned()
+                }
+            )]
+        );
+        // So is a relationship whose related side is not a reference.
+        assert_eq!(
+            reasons(&index.resolve(graph, 41)),
+            [(
+                41,
+                UnresolvedReason::UnsupportedRelationship {
+                    relationship: 58,
+                    entity: "SHAPE_ASPECT_RELATIONSHIP".to_owned()
+                }
+            )]
+        );
+        // naming lists the same, with the same kinds of route.
+        for aspect in 30..=41 {
+            for item in index.resolve(graph, aspect).items {
+                let naming = index.naming(item.item);
+                let found = naming.iter().find(|n| n.definition == aspect);
+                assert_eq!(
+                    found.map(|n| &n.route_kinds),
+                    Some(&item.route_kinds),
+                    "#{aspect}"
+                );
+            }
+        }
+
+        // A cycle's route ends at the aspect it returns to.
+        let (graph, index) = read(&format!(
+            "{BASE}#30=COMPOSITE_SHAPE_ASPECT('','',#21,.T.);#31=COMPOSITE_SHAPE_ASPECT('','',#21,.T.);\
+             #50=SHAPE_ASPECT_RELATIONSHIP('','',#30,#31);#51=SHAPE_ASPECT_RELATIONSHIP('','',#31,#30);{}",
+            gisu(40, 31, 1)
+        ));
+        let cycle = index.resolve(graph, 30);
+        let back = cycle
+            .unresolved
+            .iter()
+            .find(|u| u.reason == UnresolvedReason::Cycle)
+            .unwrap();
+        assert_eq!(back.aspect, 30);
+        assert_eq!(back.via.last().map(|step| step.aspect), Some(30));
     }
 
     /// Layers of two composites, each relating to both below: 2^22 routes,
