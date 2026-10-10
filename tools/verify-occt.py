@@ -809,13 +809,13 @@ def gdt(path: Path) -> list[Gdt]:
             XCAFDoc_DimTolTool.GetRefShapeLabel_s(label, first, second)
             type_, value, name = "", None, None
             if label.IsAttribute(attribute.GetID_s()):
-                read = attribute.Set_s(label).GetObject()
+                dimtol = attribute.Set_s(label).GetObject()
                 if kind == "datum":
-                    name = read.GetName().ToCString() if read.GetName() is not None else None
+                    name = dimtol.GetName().ToCString() if dimtol.GetName() is not None else None
                 else:
                     # XCAFDimTolObjects_DimensionType_Size_Radius -> Size_Radius.
-                    type_ = str(read.GetType()).split(".")[-1].split("Type_", 1)[-1]
-                    value = read.GetValue()
+                    type_ = str(dimtol.GetType()).split(".")[-1].split("Type_", 1)[-1]
+                    value = dimtol.GetValue()
             found.append(
                 Gdt(kind=kind, type=type_, value=value, label=name, first=refs(first), second=refs(second))
             )
@@ -913,8 +913,8 @@ def main() -> int:
             return 0
         if args.command == "gdt":
             for path in args.files:
-                for read in gdt(path):
-                    print(f"{path}\t{read.line()}")
+                for found in gdt(path):
+                    print(f"{path}\t{found.line()}")
             return 0
         if args.command == "shapes":
             for path in args.files:
