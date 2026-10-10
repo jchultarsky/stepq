@@ -83,7 +83,12 @@ use crate::units::{ContextUnits, UnitError};
 /// frames composes from the root down: `root_from_a * a_from_b`.
 ///
 /// Nothing re-orthonormalises the rotation: a transform carries what the
-/// frames it was built from state, rounding included.
+/// frames it was built from state, rounding included. Nor is anything
+/// checked: composing, inverting or applying finite transforms can overflow
+/// where a length nears `f64::MAX` (a translation of (1.3e308, 1.3e308, 0)
+/// is longer than that, so under a rotation that turns it onto an axis its
+/// inverse is not finite), and a caller that needs a finite result checks
+/// for it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Rigid {
@@ -290,9 +295,9 @@ impl<'g, 'a> Reader<'g, 'a> {
     ///
     /// A [`GeometryError`] if `#id` is not defined, or a supported surface
     /// cannot be read as stated: the wrong number of attributes, a
-    /// placement that cannot be read, a radius that is not positive (a
-    /// cone's may be zero), or a cone's semi-angle outside
-    /// [10⁻⁶, π/2 − 10⁻⁶] rad once converted.
+    /// placement that cannot be read, a radius that is not positive as
+    /// written and in millimetres (a cone's may be zero), or a cone's
+    /// semi-angle outside [10⁻⁶, π/2 − 10⁻⁶] rad once converted.
     pub fn surface(&self, id: u64) -> Result<Surface, GeometryError> {
         let instance = self.entry(id, None)?;
         let Some(record) = self.simple_record(instance) else {
@@ -357,8 +362,8 @@ impl<'g, 'a> Reader<'g, 'a> {
     /// A [`GeometryError`] if `#id` is not defined, or a supported curve
     /// cannot be read as stated: the wrong number of attributes, a point,
     /// vector or placement that cannot be read, a radius that is not
-    /// positive, or a `master_representation` that is not `.CURVE_3D.`,
-    /// `.PCURVE_S1.` or `.PCURVE_S2.`.
+    /// positive as written and in millimetres, or a `master_representation`
+    /// that is not `.CURVE_3D.`, `.PCURVE_S1.` or `.PCURVE_S2.`.
     pub fn curve(&self, id: u64) -> Result<Curve, GeometryError> {
         self.read_curve(id, None, true)
     }
@@ -543,7 +548,8 @@ impl<'g, 'a> Reader<'g, 'a> {
         Ok(millimetres)
     }
 
-    /// A `positive_length_measure` attribute, in millimetres.
+    /// A `positive_length_measure` attribute, in millimetres: positive as
+    /// written, and still positive once converted.
     fn positive_length(
         &self,
         id: u64,
@@ -551,10 +557,19 @@ impl<'g, 'a> Reader<'g, 'a> {
         attribute: &'static str,
     ) -> Result<f64, GeometryError> {
         let value = self.number(id, param, attribute)?;
+        let refuse = || self.error(id, Some(attribute), out_of_range(value));
+        // Checked as written first, so that a zero or negative value is out
+        // of range even where the context has no length unit.
         if value <= 0.0 {
-            return Err(self.error(id, Some(attribute), out_of_range(value)));
+            return Err(refuse());
         }
-        self.length(id, attribute, value)
+        // A positive value times a tiny unit factor can underflow to zero,
+        // as 1e-310 attometres does.
+        let millimetres = self.length(id, attribute, value)?;
+        if millimetres <= 0.0 {
+            return Err(refuse());
+        }
+        Ok(millimetres)
     }
 
     /// A conical surface's `semi_angle`, in radians: no closer than
@@ -1230,8 +1245,9 @@ pub enum GeometryErrorKind {
     /// 10⁻⁶.
     Parallel,
     /// A value outside its range, as written: a radius not positive (a
-    /// cone's negative), a negative vector magnitude, or a cone's
-    /// semi-angle outside [10⁻⁶, π/2 − 10⁻⁶] rad once converted.
+    /// cone's negative) or zero once converted, a negative vector
+    /// magnitude, or a cone's semi-angle outside [10⁻⁶, π/2 − 10⁻⁶] rad
+    /// once converted.
     OutOfRange {
         /// The value as written, before conversion.
         value: f64,
@@ -1513,8 +1529,9 @@ mod tests {
     }
 
     /// ISO 10303-42's `first_proj_axis`: (1, 0, 0) projected off z, or
-    /// (0, 1, 0) when z is exactly ±(1, 0, 0). Open CASCADE 8.0.1 builds
-    /// x = (0, 0, 1) for the axes (1, 0, 0) and (0, 1, 0) instead.
+    /// (0, 1, 0) when z is exactly ±(1, 0, 0). Open CASCADE 8.0.1's
+    /// `gp_Ax2` builds a different x for most other axes: (0, 0, −1),
+    /// ±(1, 0, 0) and ±(0, 1, 0) among them.
     #[test]
     fn a_defaulted_ref_direction_follows_the_schema() {
         for (axis, x) in [
@@ -1704,6 +1721,77 @@ mod tests {
             kind(reader(MM, data).curve(209)),
             GeometryErrorKind::OutOfRange { value: 0.0 }
         );
+    }
+
+    /// A length that is finite and positive as written can leave its range
+    /// once converted: it underflows to zero in a tiny unit, which a radius
+    /// may not be, or overflows in a large one, which no length may.
+    #[test]
+    fn lengths_that_leave_the_range_once_converted_are_refused() {
+        // An attometre is 1e-15 mm, and a unit of 1e-300 mm is a valid
+        // factor: 1e-310 of the first and 1e-30 of the second are 0 mm.
+        let data = "#40=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.ATTO.,.METRE.));\
+            #41=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#40,#2))\
+            REPRESENTATION_CONTEXT('',''));#42=SHAPE_REPRESENTATION('',(),#41);\
+            #43=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-300),#1);\
+            #44=(CONVERSION_BASED_UNIT('TINY',#43)LENGTH_UNIT()NAMED_UNIT(#3));\
+            #45=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#44,#2))\
+            REPRESENTATION_CONTEXT('',''));#46=SHAPE_REPRESENTATION('',(),#45);\
+            #200=CYLINDRICAL_SURFACE('',#104,1.E-310);#201=SPHERICAL_SURFACE('',#104,1.E-310);\
+            #202=TOROIDAL_SURFACE('',#104,1.,1.E-310);#203=CIRCLE('',#104,1.E-310);\
+            #204=CONICAL_SURFACE('',#104,1.E-310,0.5);#205=CYLINDRICAL_SURFACE('',#104,1.E-9);\
+            #210=CYLINDRICAL_SURFACE('',#104,1.E-30);\
+            #211=TOROIDAL_SURFACE('',#104,2.E-30,1.E-30);#212=CIRCLE('',#104,1.E-30);\
+            #220=CYLINDRICAL_SURFACE('',#104,1.E307);#221=CARTESIAN_POINT('',(0.,1.E307,0.));";
+        let refusal = |error: GeometryError| (error.instance, error.attribute, error.kind);
+        let out = |id, attribute, value| (id, Some(attribute), out_of_range(value));
+        let atto = reader(42, data);
+        for (id, attribute) in [(200, "radius"), (201, "radius"), (202, "minor_radius")] {
+            assert_eq!(
+                refusal(atto.surface(id).unwrap_err()),
+                out(id, attribute, 1e-310),
+                "#{id}"
+            );
+        }
+        assert_eq!(
+            refusal(atto.curve(203).unwrap_err()),
+            out(203, "radius", 1e-310)
+        );
+        let Surface::Conical(cone) = atto.surface(204).unwrap() else {
+            panic!("a cone");
+        };
+        assert_eq!(cone.radius, 0.0, "a cone's radius may be zero");
+        let Surface::Cylindrical(small) = atto.surface(205).unwrap() else {
+            panic!("a cylinder");
+        };
+        assert!(small.radius > 0.0, "1e-9 am is {} mm", small.radius);
+        let tiny = reader(46, data);
+        assert_eq!(
+            refusal(tiny.surface(210).unwrap_err()),
+            out(210, "radius", 1e-30)
+        );
+        assert_eq!(
+            refusal(tiny.surface(211).unwrap_err()),
+            out(211, "major_radius", 2e-30)
+        );
+        assert_eq!(
+            refusal(tiny.curve(212).unwrap_err()),
+            out(212, "radius", 1e-30)
+        );
+        // 1e307 inches is not a finite number of millimetres.
+        let inch = reader(INCH, data);
+        assert_eq!(
+            refusal(inch.surface(220).unwrap_err()),
+            (220, Some("radius"), GeometryErrorKind::NotFinite)
+        );
+        assert_eq!(
+            refusal(inch.point(221).unwrap_err()),
+            (221, Some("coordinates"), GeometryErrorKind::NotFinite)
+        );
+        let Surface::Cylindrical(large) = surface(MM, data, 220) else {
+            panic!("a cylinder");
+        };
+        assert_eq!(large.radius, 1e307, "1e307 mm is finite");
     }
 
     #[test]

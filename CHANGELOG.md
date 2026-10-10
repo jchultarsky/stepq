@@ -48,13 +48,19 @@ geometry values they scale.
   and why, and `stepq::Error` gains a `Geometry` variant. `geometry::Rigid`
   is the transform placements will compose. Two policies bound what is
   read: a `ref_direction` within a sine of 1e-6 of its axis, and a cone
-  semi-angle within 1e-6 rad of 0 or π/2, are refused. On all 55 fixtures
-  every face surface (342,733) and edge curve (979,505) reads, and
-  `tools/verify-read.py surfaces` and `curves` match the 331,873 elementary
-  surfaces and 906,031 lines and circles of their shape representations
-  with Open CASCADE 8.0.1's one to one, to 5.6e-16. CI runs both on the
-  core fixtures and on a part `tools/gen-occt-cases.py` writes with every
-  elementary surface, a cone point and a void, in millimetres and inches.
+  semi-angle within 1e-6 rad of 0 or π/2, are refused. A radius must be
+  positive in millimetres as well as written, so one that a tiny unit takes
+  to zero is refused, and a length that is not finite once converted is
+  refused. On all 55 fixtures every face surface (342,733) and edge curve
+  (979,505) reads, and `tools/verify-read.py surfaces` and `curves` match
+  the 331,816 elementary surfaces and 905,916 lines and circles of their
+  shape representations with Open CASCADE 8.0.1's one to one, to 5.6e-16.
+  CI runs both on the core fixtures and on a part `tools/gen-occt-cases.py`
+  writes with every elementary surface, a cone point and a void, in
+  millimetres and inches. `curves` excuses the seams and split edges Open
+  CASCADE adds while it reads, so an edge stepq misses that is a seam or
+  equals another edge shows only in its healing tallies, which CI pins
+  (`--healing`).
 
 ### Changed
 

@@ -144,9 +144,13 @@ jobs:
       - run: tools/verify-read.py units tests/fixtures "$RUNNER_TEMP/occt-cases"
       # Reads the surface of every face and the 3D curve of every edge of a
       # face through both, in mm and rad, and matches them one to one (the
-      # cylinder axes and hole circles of M1's exit test).
+      # cylinder axes and hole circles of M1's exit test). Open CASCADE's
+      # healing is excused rather than matched, so its tallies (lines and
+      # circles that are seams, pieces of split edges, other curves) are
+      # pinned for this set: an edge stepq stops reading changes them.
+      # Re-pin them when the fixtures or the generated cases change.
       - run: tools/verify-read.py surfaces tests/fixtures "$RUNNER_TEMP/occt-cases"
-      - run: tools/verify-read.py curves tests/fixtures "$RUNNER_TEMP/occt-cases"
+      - run: tools/verify-read.py curves --healing=5,267,770 tests/fixtures "$RUNNER_TEMP/occt-cases"
       # The fixture tests with their pinned counts; a missing core fixture
       # fails them here instead of skipping.
       - run: cargo test --all-features --test units --test geometry --test fixtures

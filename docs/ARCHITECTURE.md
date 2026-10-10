@@ -393,13 +393,14 @@ surfaces, lines, circles and surface curves a file states (ISO 10303-42),
 through a `Reader` tied to a representation, or to a solid, shell or face
 whose holding representations must agree. There is no reader built from bare
 factors and no unscaled path: a cone's semi-angle of 59 is 59 degrees in a
-degree context, 1.0297 is 59 degrees in a radian one, and the 72 fixture
-cones of 0.57, 1 or 2 degrees stay degrees. A length is converted when it is
-read, and a zero length needs no unit; a plane angle is needed only by a
-cone. A direction is normalised, dividing by its largest ratio before
-squaring so that ratios of 1e-200 or 1e200 stay in range, and never scaled:
-NIST FTC-08 (rc) writes 1,159 directions of length 1/25.4, as if a converter
-had converted them as inches.
+degree context, 1.0297 is 59 degrees in a radian one, and the 442 conical
+surfaces that the 55 fixtures state as 0.57, 1 or 2 degrees stay degrees (28
+in the core set, the weldment's 8 and NIST FTC-07 (rd)'s 20; the rest are
+Creo's). A length is converted when it is read, and a zero length needs no
+unit; a plane angle is needed only by a cone. A direction is normalised,
+dividing by its largest ratio before squaring so that ratios of 1e-200 or
+1e200 stay in range, and never scaled: NIST FTC-08 (rc) writes 1,159
+directions of length 1/25.4, as if a converter had converted them as inches.
 
 Axes are the schema's `build_axes`, with `first_proj_axis` as AP203 edition
 2, AP214 edition 3 and AP242 edition 4 define it: z is the stated axis or
@@ -428,11 +429,14 @@ complex instance (in the fixtures only rational B-splines are complex), is
 that the representations of the 55 fixtures reach, all read; 10,915 surfaces
 are `Other` (B-spline surfaces, 1,581 of them complex, and surfaces of
 linear extrusion and of revolution), and 73,581 curves are or wrap one
-(B-splines, 128 of them complex, and 224 ellipses). Every record read must have its schema's attribute count, an
-INTEGER token is a number, and a typed measure such as
-`LENGTH_MEASURE(5.)` where the schema has a plain number is refused. A
-radius must be positive (a cone's may be zero), a vector's magnitude not
-negative, a direction not all zero, and the policies below bound a stated
+(B-splines, 128 of them complex, and 224 ellipses). Every record read must
+have its schema's attribute count, an INTEGER token is a number, and a typed
+measure such as `LENGTH_MEASURE(5.)` where the schema has a plain number is
+refused. A
+radius must be positive both as written and in millimetres, where a tiny
+unit can take it to zero (a cone's may be zero); every length must stay
+finite once converted; a vector's magnitude must not be negative, a
+direction not all zero, and the policies below bound a stated
 `ref_direction` and a cone's semi-angle. Errors name the innermost
 instance: a zero direction under a cylinder's placement is reported at the
 direction, and a reference to an undefined `#id` at the instance holding it.
@@ -474,10 +478,17 @@ Walks that return many things list what they did not follow.
   25.400000000000002 in Open CASCADE (NIST FTC-07), one unit in the last
   place; the oracle compares at 1e-12.
 * The default x axis. Where `ref_direction` is omitted, Open CASCADE 8.0.1
-  builds x = (0, 0, 1) for an axis of (1, 0, 0) or (0, 1, 0), where the
-  schema gives (0, 1, 0) and (1, 0, 0); they agree for (0, 0, 1) and
+  builds x with `gp_Ax2`'s own rule, not the schema's `first_proj_axis`, and
+  the two differ for most axes other than (0, 0, 1). Measured through Open
+  CASCADE's STEP reader: (0, 0, −1) gives x = (−1, 0, 0) where the schema
+  gives (1, 0, 0); ±(1, 0, 0) gives ±(0, 0, 1) where the schema gives
+  (0, 1, 0); ±(0, 1, 0) gives ±(0, 0, 1) where the schema gives (1, 0, 0);
+  and (1, 1, 1)/√3 gives (0.707, 0, −0.707) where the schema gives
+  (0.816, −0.408, −0.408). They agree for (0, 0, 1) and, for example,
   (0.6, 0, 0.8). stepq follows the schema and says x was not stated. In the
-  fixtures only plane and circle positions and identity frames omit it.
+  fixtures only plane and circle positions, and frames that omit the axis
+  too, omit it; 903 of the 1,328 that state an axis get a different x in
+  Open CASCADE, all 360 on (0, 0, −1) among them.
 * Cone semi-angles. Open CASCADE clamps a semi-angle at or below 1e-12 to
   1e-12, a negative one included, and drops a cone at or above π/2; stepq
   refuses any outside [1e-6, π/2 − 1e-6] rad. No fixture has one, so the
@@ -485,9 +496,13 @@ Walks that return many things list what they did not follow.
 * Healing. Open CASCADE adds a seam to a periodic face that the file bounds
   only by closed loops (a cylinder between two circles) and splits the
   closed edges there; it reads a wireframe's curves as edges too. Neither
-  is stated, so `curves` accounts for them instead of matching them: on CI's
-  set, 5 lines and circles as seams, 267 pieces of split circles, and 770
-  B-spline seams and pieces.
+  is stated, so `curves` accounts for them instead of matching them: what
+  Open CASCADE holds beyond stepq is excused if it is a seam of its face
+  (one the file states included) or equal to an edge stepq reads. An edge
+  stepq failed to read that is a seam, or equal to another edge, is
+  therefore caught only by the tallies, which CI pins (`--healing`): on its
+  set, 5 lines and circles that are seams, 267 pieces of split circles, and
+  770 B-spline seams and pieces.
 
 ### Policies
 

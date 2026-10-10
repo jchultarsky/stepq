@@ -123,8 +123,14 @@ fn check_placement(frame: &Axis2Placement3d) {
     for (a, b) in [(frame.x, frame.y), (frame.y, frame.z), (frame.z, frame.x)] {
         assert!(dot(a, b).abs() <= 1e-9, "#{}: axes not square", frame.instance);
     }
-    let rigid = frame.to_rigid();
-    finite(&rigid.inverse().translation, "inverse");
+    // The inverse's translation, −Rᵀ·location, has the location's length,
+    // which can exceed f64::MAX although each coordinate is finite: the
+    // reader is right to return such a location. Each component sums three
+    // products no larger than a coordinate, so below a quarter of f64::MAX
+    // it cannot overflow.
+    if frame.location.iter().all(|c| c.abs() <= f64::MAX / 4.0) {
+        finite(&frame.to_rigid().inverse().translation, "inverse");
+    }
 }
 
 fn check_curve(curve: &Curve) {

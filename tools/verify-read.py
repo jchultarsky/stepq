@@ -18,6 +18,7 @@ does not bind to the entities it reads them from, are compared as multisets
 per file.
 
     tools/verify-read.py CHECK [PATH...]
+    tools/verify-read.py curves --healing=SEAMS,PIECES,OTHER [PATH...]
 
 PATH is a STEP file or a directory searched for them, following symbolic
 links; directories skip files over 16 MB unless STEPQ_LARGE_FIXTURES=1, and a
@@ -49,18 +50,24 @@ Checks:
             radius) equal to one of Open CASCADE's, one to one. Open CASCADE
             heals while it reads: it adds a seam to a periodic face that the
             file bounds only by closed loops and splits the closed edges
-            there, so it may hold more; a line or circle it holds beyond
-            stepq's must be such a seam or a piece of an edge stepq reads, or
-            the file fails. Edges of no face (a wireframe's) are left out on
-            both sides.
+            there, so it may hold more. A line or circle it holds beyond
+            stepq's is excused if it is a seam of its face, any seam,
+            including one the file states, or a piece: equal to an edge
+            stepq reads. Any other fails the file. So an edge stepq misses
+            that is a seam, or equal to another edge, shows only in these
+            tallies; --healing pins them (lines and circles excused as seams
+            and as pieces, and other curves Open CASCADE holds beyond
+            stepq's) and fails when they differ, as CI does for its set.
+            Edges of no face (a wireframe's) are left out on both sides.
 
 Both geometry checks compare each value to 1e-9 of max(1, |value|, the size
 of the stated location it is computed from), and report positions on (-1, 0,
 0) with no ref_direction in AP203 edition 1 files, whose x that schema leaves
 undefined (stepq reads ref_direction_stated = false).
 
-Exit status: 0 if every comparison holds, 1 if one fails, 2 if a file cannot
-be read by either side or a directory named holds no STEP file.
+Exit status: 0 if every comparison holds, 1 if one fails or the healing
+tallies differ from those pinned, 2 if a file cannot be read by either side,
+a directory named holds no STEP file, or the arguments are wrong.
 """
 
 from __future__ import annotations
@@ -572,7 +579,11 @@ def check_curves(path: Path, tally: GeometryTally) -> list[str]:
     to one. Open CASCADE heals while it reads, so it may hold more: a seam
     it adds to a periodic face the file bounds only by closed loops (any
     kind of curve), and the pieces of a closed edge it splits there (the
-    same line or circle as an edge stepq reads). Any other line or circle it
+    same line or circle as an edge stepq reads). What it holds beyond
+    stepq's is excused if it is a seam of its face, whether Open CASCADE
+    added it or the file states it, or equal to an edge stepq reads; so an
+    edge stepq misses that is a seam, or equal to another edge, changes
+    only the tallies, which --healing pins. Any other line or circle it
     holds fails, as does reading fewer other curves than stepq.
     """
     try:
@@ -606,8 +617,9 @@ def check_curves(path: Path, tally: GeometryTally) -> list[str]:
     tally.other_extra += max(0, other["occt"] - other["stepq"])
     if seams or pieces or other["occt"] > other["stepq"]:
         tally.notes.append(
-            f"Open CASCADE adds {seams} lines and circles as seams, splits closed ones into "
-            f"{pieces} more pieces, and holds {other['occt'] - other['stepq']} more other curves"
+            f"Open CASCADE holds {seams} more lines and circles that are seams, {pieces} more "
+            f"equal to an edge stepq reads, and {other['occt'] - other['stepq']} more other "
+            "curves"
         )
     tally.agreeing += not problems
     return problems
@@ -628,8 +640,18 @@ def main() -> int:
         return 2
     name = sys.argv[1]
     example, check, tally_type = CHECKS[name]
+    args, healing = [], None
+    for arg in sys.argv[2:]:
+        if not arg.startswith("--healing="):
+            args.append(arg)
+            continue
+        counts = arg.split("=", 1)[1].split(",")
+        if name != "curves" or len(counts) != 3 or not all(c.isdigit() for c in counts):
+            print(f"{arg}: only curves takes --healing=SEAMS,PIECES,OTHER", file=sys.stderr)
+            return 2
+        healing = tuple(int(c) for c in counts)
     try:
-        files = step_files([Path(arg) for arg in sys.argv[2:]] or [ROOT / "tests" / "fixtures"])
+        files = step_files([Path(arg) for arg in args] or [ROOT / "tests" / "fixtures"])
     except NoFiles as error:
         print(error, file=sys.stderr)
         return 2
@@ -679,9 +701,9 @@ def main() -> int:
             print(f"  {kind}: stepq {count['stepq']}, Open CASCADE {count['occt']}")
         if name == "curves":
             print(
-                f"  Open CASCADE's healing: {tally.seams} lines and circles added as seams, "
-                f"{tally.pieces} more pieces of split closed edges, {tally.other_extra} more "
-                "other curves (seams and pieces, not compared)"
+                f"  Open CASCADE's healing: {tally.seams} more lines and circles that are seams, "
+                f"{tally.pieces} more equal to an edge stepq reads, {tally.other_extra} more "
+                "other curves (excused, not compared)"
             )
         if tally.defaulted_minus_x:
             print(
@@ -700,6 +722,15 @@ def main() -> int:
     if failed:
         print(f"{failed} of {len(files)} files differ", file=sys.stderr)
         return 1
+    if healing is not None:
+        found = (tally.seams, tally.pieces, tally.other_extra)
+        if found != healing:
+            print(
+                f"Open CASCADE's healing tallies are {found}, pinned at {healing}: an edge "
+                "stepq reads may be missing, or the files or Open CASCADE changed",
+                file=sys.stderr,
+            )
+            return 1
     return 0
 
 
