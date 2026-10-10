@@ -609,6 +609,53 @@ core fixtures and the generated parts, a cube with a cubic void among them,
 so that edge uses in a reversed shell are compared) all 132 solids match,
 278 edges replaced by healing.
 
+### Solids of a definition
+
+`ProductStructure::shape` reads a product definition's own shape: from each
+of its shape representations, the items each lists, following two kinds of
+link. A plain `shape_representation_relationship` (simple, or with exactly
+the `representation_relationship` and `shape_representation_relationship`
+partials) that no `context_dependent_shape_representation` names, and whose
+two sides name one context instance, is one shape in one space, from either
+side: Unigraphics and most NIST files write the definition's representation
+as `rep_1`, AutoCAD as `rep_2`. A `mapped_item` that `ProductStructure` did
+not match to a usage places the map's representation; `ShapeItem::transform`
+reads it as `Placements` reads a usage placed by one, each frame in its own
+context's units. A solid is any item with a `manifold_solid_brep`,
+`brep_with_voids` or `faceted_brep` partial (`topology` then refuses the
+last); every other item is listed with its type; placements are not.
+
+Skipped, as not the definition's own: a relationship a usage names, if it
+leads to a shape representation of the usage's other definition; a mapped
+item matched to a usage; a constructive geometry relationship, if it leads
+to constructive geometry (supplemental geometry, as the CAx-IF practice has
+it); and the maps that point back. Each skip checks what is on the far side,
+and a link that fails the check is reported. Every other link that may hold
+more shape is reported with its reason, never guessed past: a transformed
+relationship no usage names (no usage says which side is placed; Open
+CASCADE reads such a part as empty), a relationship that is not a plain
+shape relationship, one across two context instances (two coordinate
+spaces), a representation another definition also reaches, a mapped-item
+cycle, a walk past 64 links or a million visits, a malformed reference, and
+a shape stated in another file: an `applied_document_reference` to the
+definition, an 'external definition' property of a representation (as
+`split --master` writes component stubs), a `shape_representation_reference`
+or an edition 3 reference. So an empty shape that is complete states no
+geometry, and an incomplete one says stepq cannot tell. Which definitions
+reach each representation is recorded once, by `ProductStructure::new`, in
+time linear in the file: a representation is expanded when one definition
+first reaches it and again when a second does, never after.
+
+On all 55 fixtures every one of the 1,660 definitions is complete, and the
+1,261 solid instances are each reached once, from one definition and one
+shape representation. `tools/verify-read.py shapes` compares each
+definition's subtree (its own solids, and each component's as often as it
+is used) with Open CASCADE's shape label of the same name, counting the one
+tessellated solid as Open CASCADE does; where names do not tell definitions
+apart, as in the moon buggy, whose products are all "Moon Buggy" and whose
+mapped components Open CASCADE leaves unnamed, the whole file's counts must
+agree. CI runs it on the core fixtures and the generated parts.
+
 ### What is not read
 
 Three forms, never a silent default. An entity stepq does not interpret is

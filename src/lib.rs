@@ -77,6 +77,7 @@
 //! | none; `examples/geometry.rs` | [`geometry::Reader`]: points, directions, placements, elementary surfaces, lines, circles and surface curves, in mm and rad; [`geometry::Rigid`] |
 //! | none; `examples/occurrences.rs` | [`model::Placements`]: each assembly usage's transform and every occurrence under a root, in mm |
 //! | none; `examples/topology.rs` | [`topology::Solid`]: the shells, faces, loops, edges and vertices of a solid, as stated |
+//! | none; `examples/shapes.rs` | [`model::ProductStructure::shape`]: a definition's own solids and other items, and every link not followed |
 //!
 //! `docs/COMMANDS.md` in the repository documents every command and option.
 //!

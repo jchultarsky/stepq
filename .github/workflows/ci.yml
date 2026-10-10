@@ -173,9 +173,14 @@ jobs:
       # CASCADE does not would otherwise pass. Re-pin it when the fixtures or
       # the generated parts change.
       - run: tools/verify-read.py topology --healing=278 tests/fixtures "$RUNNER_TEMP/occt-cases"
+      # Reads every product definition's own shape and requires it complete,
+      # with as many solids in its subtree as Open CASCADE's shape label of
+      # the same name holds (by the whole file's counts where names do not
+      # tell definitions apart, as in the moon buggy).
+      - run: tools/verify-read.py shapes tests/fixtures "$RUNNER_TEMP/occt-cases"
       # The fixture tests with their pinned counts; a missing core fixture
       # fails them here instead of skipping.
-      - run: cargo test --all-features --test units --test geometry --test placements --test topology --test fixtures
+      - run: cargo test --all-features --test units --test geometry --test placements --test topology --test shape --test fixtures
         env:
           STEPQ_REQUIRE_FIXTURES: "1"
 

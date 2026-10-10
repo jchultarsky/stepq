@@ -10,7 +10,8 @@ it wrong is as silent as dropping an entity (docs/ARCHITECTURE.md, "Reading
 stated geometry"). So every reader is held to Open CASCADE's reading of the
 same files, at development time only. stepq's side comes from an example
 built with the serde feature (examples/units.rs, examples/geometry.rs,
-examples/occurrences.rs, examples/topology.rs; one JSON object per line), Open CASCADE's from the
+examples/occurrences.rs, examples/topology.rs, examples/shapes.rs; one
+JSON object per line), Open CASCADE's from the
 function of the same name as the check in tools/verify-occt.py. Unit
 contexts are joined on Open CASCADE's entity number, which is the instance's
 1-based position in the file, and the entity types must agree; faces and
@@ -22,6 +23,7 @@ their paths.
     tools/verify-read.py curves --healing=SEAMS,PIECES,OTHER [PATH...]
     tools/verify-read.py occurrences --expect=MATCHED,DIVERGENT [PATH...]
     tools/verify-read.py topology --healing=EDGES [PATH...]
+    tools/verify-read.py shapes [PATH...]
 
 PATH is a STEP file or a directory searched for them, following symbolic
 links; directories skip files over 16 MB unless STEPQ_LARGE_FIXTURES=1, and a
@@ -103,6 +105,19 @@ undefined (stepq reads ref_direction_stated = false).
             no entity is counted, not compared, and --healing pins how many
             over all files, as CI does for its set. A solid refused as
             malformed is reported; any other refusal of a solid fails.
+
+  shapes    Every product definition's own shape (examples/shapes.rs):
+            each must be complete, nothing left unfollowed, and the solids
+            of its subtree (its own, and each component's as often as it is
+            used, tessellated solids included, as Open CASCADE reads them)
+            must equal those of Open CASCADE's shape label of the same name
+            (the product's name, else its id), as multisets per name, since
+            names repeat. Open CASCADE's labels for the solids, shells and
+            compounds of a shape, and unnamed labels, are dropped; any other
+            name on one side only fails. Where names do not tell definitions
+            apart (Open CASCADE leaves the moon buggy's parts unnamed), the
+            whole file's multisets must agree instead, every label but the
+            shells and compounds of a shape taken.
 
 Exit status: 0 if every comparison holds, 1 if one fails or the pinned
 tallies differ, 2 if a file cannot be read by either side, a directory named
@@ -975,6 +990,81 @@ def compare_solid(line: dict, solid, tally: TopologyTally) -> list[str]:
     return problems
 
 
+@dataclass
+class ShapeTally(Tally):
+    """What the shapes check compared, over every file."""
+
+    definitions: int = 0
+    by_file: int = 0
+    expansions: int = 0
+    notes: list = field(default_factory=list)
+
+
+def check_shapes(path: Path, tally: ShapeTally) -> list[str]:
+    """Compares the solids of every definition's subtree with those of
+    Open CASCADE's shape labels, by name."""
+    try:
+        theirs = occt.shapes(path)
+    except OSError as error:
+        raise Unreadable(str(error)) from error
+    ours = stepq_lines("shapes", path)
+    tally.items += len(ours)
+    problems = []
+    ours_by_name: dict[str, list[int]] = {}
+    for line in ours:
+        name = occt_product_name({"name": line["product_name"], "id": line["product_id"]})
+        if line["not_followed"]:
+            reasons = ", ".join(
+                f"#{n['instance']} ({n['entity']}) {n['reason']['kind']}" for n in line["not_followed"]
+            )
+            problems.append(f"definition #{line['definition']} ({name}): not followed: {reasons}")
+        # Open CASCADE reads a tessellated solid as a solid; stepq lists it
+        # among the other items.
+        ours_by_name.setdefault(name, []).append(line["total"] + line["tessellated"])
+    theirs_by_name: dict[str, list[int]] = {}
+    for label in theirs:
+        if label.name in EXPANSION_LABELS or label.name is None:
+            tally.expansions += 1
+            continue
+        theirs_by_name.setdefault(label.name, []).append(label.solids)
+    by_name, matched = [], 0
+    for name in sorted(set(ours_by_name) | set(theirs_by_name)):
+        ours_solids = sorted(ours_by_name.get(name, []))
+        theirs_solids = sorted(theirs_by_name.get(name, []))
+        if ours_solids != theirs_solids:
+            by_name.append(
+                f"{name!r}: stepq's definitions hold {ours_solids} solids, Open CASCADE's "
+                f"labels {theirs_solids}"
+            )
+        else:
+            matched += len(ours_solids)
+    if by_name:
+        # Open CASCADE leaves the products it reaches through mapped items
+        # unnamed (the moon buggy, whose products are all called "Moon
+        # Buggy"): the whole file's counts must then agree, every label but
+        # the shells and compounds of a shape taken.
+        ours_all = sorted(total for totals in ours_by_name.values() for total in totals)
+        theirs_all = sorted(
+            label.solids for label in theirs if label.name not in ("SHELL", "COMPOUND")
+        )
+        if ours_all == theirs_all:
+            tally.by_file += len(ours_all)
+            tally.notes.append(
+                f"{len(ours_all)} definitions matched by the whole file's counts, as names "
+                f"do not tell them apart, such as {by_name[0]}"
+            )
+        else:
+            problems.extend(by_name)
+            problems.append(
+                f"the whole file: stepq's definitions hold {ours_all} solids, Open CASCADE's "
+                f"labels {theirs_all}"
+            )
+    else:
+        tally.definitions += matched
+    tally.agreeing += not problems
+    return problems
+
+
 CHECKS = {
     # check: (the example that prints stepq's side, the comparison, its tally)
     "units": ("units", check_units, Tally),
@@ -982,6 +1072,7 @@ CHECKS = {
     "curves": ("geometry", check_curves, GeometryTally),
     "occurrences": ("occurrences", check_occurrences, OccurrenceTally),
     "topology": ("topology", check_topology, TopologyTally),
+    "shapes": ("shapes", check_shapes, ShapeTally),
 }
 
 
@@ -1050,7 +1141,7 @@ def main() -> int:
             print(f"OK   {label}", flush=True)
         for note in getattr(tally, "notes", []):
             print(f"     {note}", flush=True)
-        if isinstance(tally, (GeometryTally, OccurrenceTally, TopologyTally)):
+        if isinstance(tally, (GeometryTally, OccurrenceTally, TopologyTally, ShapeTally)):
             tally.notes.clear()
 
     print()
@@ -1084,6 +1175,15 @@ def main() -> int:
             f"{tally.worst_rotation:.2g}, |dt| {tally.worst_translation:.2g} mm (tolerances "
             f"{ROTATION_TOL:g}, {TRANSLATION_TOL:g} x max(1 mm, |t|)); {tally.expansions} of "
             "Open CASCADE's labels for the solids, shells and compounds of a shape dropped"
+        )
+    elif isinstance(tally, ShapeTally):
+        print(
+            f"{name}: {tally.agreeing} of {tally.files} files agree; stepq reads {tally.items} "
+            f"definitions, and {tally.definitions} hold as many solids, their components' "
+            f"included, as Open CASCADE's labels of the same names, {tally.by_file} as the "
+            "whole file's labels where names do not tell them apart; "
+            f"{tally.expansions} of Open CASCADE's labels for the solids, shells and compounds "
+            "of a shape, or unnamed, dropped"
         )
     elif isinstance(tally, TopologyTally):
         print(
