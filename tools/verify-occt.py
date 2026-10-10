@@ -23,6 +23,7 @@ is also a subcommand that prints Open CASCADE's side as tab-separated lines:
     tools/verify-occt.py surfaces FILE...
     tools/verify-occt.py curves FILE...
     tools/verify-occt.py occurrences FILE...
+    tools/verify-occt.py topology FILE...
 
 Exit status: 0 if every comparison holds, 1 if one fails, 2 if a file cannot
 be read. Needs uv (https://docs.astral.sh/uv/), which installs cadquery-ocp
@@ -527,6 +528,147 @@ def occurrences(path: Path) -> list[Occurrence]:
     return found
 
 
+@dataclass
+class Topology:
+    """Open CASCADE's reading of one solid's topology. Faces, edges and
+    vertices are named by entity number (the 1-based position in the file
+    of the entity Open CASCADE read them from); faces and edges it made
+    itself, or bound to no entity, are counted in `unbound`."""
+
+    # The solid's entity number.
+    rank: int
+    # Each face's entity number, and whether it is REVERSED in the solid
+    # (its orientation composed with its shell's).
+    reversed: dict[int, bool]
+    # Each edge's entity number, and the entity numbers of the faces that
+    # use it.
+    faces_of_edge: dict[int, list[int]]
+    # Each edge's entity number, and the entity number of its first vertex
+    # by parameter (None if that vertex is bound to no entity).
+    first_vertex: dict[int, int | None]
+    # (face, edge, FORWARD) for each use of a bound edge by a bound face:
+    # the edge's orientation in the face as the solid holds it.
+    uses: list[tuple[int, int, bool]]
+    # (face, edge) for each edge closed in a face: a seam.
+    closed: list[tuple[int, int]]
+    # Faces and edges bound to no entity: made by healing.
+    unbound: int
+
+    def line(self) -> str:
+        """Tab-separated: rank, faces, edges, seams, unbound sub-shapes."""
+        return "\t".join(
+            str(value)
+            for value in (
+                self.rank,
+                len(self.reversed),
+                len(self.faces_of_edge),
+                len(self.closed),
+                self.unbound,
+            )
+        )
+
+
+def topology(path: Path) -> list[Topology]:
+    """Every solid Open CASCADE reads from a file's root transfers, once
+    each, with its faces, edges and vertices bound back to the entities
+    they were read from (TransferReader.EntityFromShapeResult on the
+    unplaced shape). Its STEP reader heals as it reads, so it may hold
+    edges and vertices the file does not state."""
+    from OCP.BRep import BRep_Tool
+    from OCP.collections import (
+        IndexedDataMap_TopoDS_Shape_List_TopoDS_Shape_TopTools_ShapeMapHasher as Ancestors,
+    )
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_Reader
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_FORWARD, TopAbs_REVERSED
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    reader = STEPControl_Reader()
+    if reader.ReadFile(str(path)) != IFSelect_RetDone:
+        raise OSError(f"Open CASCADE could not read {path}")
+    model = reader.StepModel()
+    # Number() returns 0 through these bindings, so entities are told apart
+    # by identity; the list keeps each binding alive.
+    entities = [model.Value(rank) for rank in range(1, model.NbEntities() + 1)]
+    ranks = {id(entity): rank for rank, entity in enumerate(entities, 1)}
+    reader.TransferRoots()
+    transfers = reader.WS().TransferReader()
+
+    # EntityFromShapeResult searches every transfer result, so each shape
+    # is looked up once: unplaced and forward, as the transfer bound it.
+    looked_up: dict = {}
+
+    def rank(shape) -> int | None:
+        key = shape.Located(TopLoc_Location()).Oriented(TopAbs_FORWARD)
+        if key not in looked_up:
+            entity = transfers.EntityFromShapeResult(key, 1)
+            looked_up[key] = None if entity is None else ranks.get(id(entity))
+        return looked_up[key]
+
+    def explore(shape, kind):
+        explorer = TopExp_Explorer(shape, kind)
+        while explorer.More():
+            yield explorer.Current()
+            explorer.Next()
+
+    solids, seen = [], set()
+    for index in range(1, reader.NbShapes() + 1):
+        for found in explore(reader.Shape(index), TopAbs_SOLID):
+            solid = found.Located(TopLoc_Location())
+            solid_rank = rank(solid)
+            if solid_rank is None or solid_rank in seen:
+                continue
+            seen.add(solid_rank)
+            unbound = 0
+            reversed_, uses, closed = {}, [], []
+            for shape in explore(solid, TopAbs_FACE):
+                face = TopoDS.Face(shape)
+                face_rank = rank(face)
+                if face_rank is None:
+                    unbound += 1
+                    continue
+                reversed_[face_rank] = face.Orientation() == TopAbs_REVERSED
+                # Explored from the face as the solid holds it, so each
+                # edge's orientation is composed with the face's.
+                for edge_shape in explore(face, TopAbs_EDGE):
+                    edge = TopoDS.Edge(edge_shape)
+                    edge_rank = rank(edge)
+                    if edge_rank is None:
+                        continue
+                    uses.append((face_rank, edge_rank, edge.Orientation() == TopAbs_FORWARD))
+                    if BRep_Tool.IsClosed_s(edge, face):
+                        closed.append((face_rank, edge_rank))
+            ancestors = Ancestors()
+            TopExp.MapShapesAndAncestors_s(solid, TopAbs_EDGE, TopAbs_FACE, ancestors)
+            faces_of_edge, first_vertex = {}, {}
+            for i in range(1, ancestors.Extent() + 1):
+                edge = TopoDS.Edge(ancestors.FindKey(i))
+                edge_rank = rank(edge)
+                if edge_rank is None:
+                    unbound += 1
+                    continue
+                faces_of_edge[edge_rank] = sorted(
+                    {r for r in (rank(face) for face in ancestors.FindFromIndex(i)) if r}
+                )
+                along = TopoDS.Edge(edge.Oriented(TopAbs_FORWARD))
+                first_vertex[edge_rank] = rank(TopExp.FirstVertex_s(along))
+            solids.append(
+                Topology(
+                    rank=solid_rank,
+                    reversed=reversed_,
+                    faces_of_edge=faces_of_edge,
+                    first_vertex=first_vertex,
+                    uses=uses,
+                    closed=closed,
+                    unbound=unbound,
+                )
+            )
+    return solids
+
+
 def compare(
     source: Summary, outputs: list[Summary], ignore_names: frozenset[str] = frozenset()
 ) -> list[str]:
@@ -575,6 +717,12 @@ def main() -> int:
         "product-name path, then the 3x4 transform to the root row by row, in mm",
     )
     occurrence_list.add_argument("files", nargs="+", type=Path)
+    solid_list = commands.add_parser(
+        "topology",
+        help="print each solid Open CASCADE reads: file, the solid's entity number, faces, "
+        "edges, seams, and faces and edges bound to no entity",
+    )
+    solid_list.add_argument("files", nargs="+", type=Path)
     for name, function, what in (
         ("surfaces", surfaces, "face"),
         ("curves", curves, "edge"),
@@ -598,6 +746,11 @@ def main() -> int:
             for path in args.files:
                 for occurrence in occurrences(path):
                     print(f"{path}\t{occurrence.line()}")
+            return 0
+        if args.command == "topology":
+            for path in args.files:
+                for solid in topology(path):
+                    print(f"{path}\t{solid.line()}")
             return 0
         if args.command in ("surfaces", "curves"):
             for path in args.files:

@@ -840,12 +840,128 @@ def check_occurrences(path: Path, tally: OccurrenceTally) -> list[str]:
     return problems
 
 
+@dataclass
+class TopologyTally(Tally):
+    """What the topology check compared, over every file."""
+
+    solids: int = 0
+    faces: int = 0
+    edges: int = 0
+    uses: int = 0
+    seams: int = 0
+    healed: int = 0
+    unsupported: int = 0
+    malformed: int = 0
+    notes: list = field(default_factory=list)
+
+
+def check_topology(path: Path, tally: TopologyTally) -> list[str]:
+    """Compares the topology of every solid of one file with Open
+    CASCADE's, solid by solid, joined on entity numbers."""
+    try:
+        theirs = {solid.rank: solid for solid in occt.topology(path)}
+    except OSError as error:
+        raise Unreadable(str(error)) from error
+    ours = stepq_lines("topology", path)
+    problems = []
+    listed = {line["rank"] for line in ours}
+    for line in ours:
+        label = f"#{line['id']} ({line['entity']})"
+        if "error" in line:
+            solid = line["entity"] in ("MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS")
+            if line["error_kind"] == "malformed":
+                tally.malformed += 1
+                tally.notes.append(f"{label}: stepq refuses it: {line['error']}")
+            elif line["error_kind"] == "unsupported" and not solid:
+                tally.unsupported += 1
+            else:
+                problems.append(f"{label}: stepq refuses it: {line['error']}")
+            continue
+        tally.items += 1
+        solid = theirs.get(line["rank"])
+        if solid is None:
+            problems.append(f"{label}: Open CASCADE reads no solid from it")
+            continue
+        tally.solids += 1
+        problems.extend(f"{label}: {problem}" for problem in compare_solid(line, solid, tally))
+    for rank in sorted(set(theirs) - listed):
+        problems.append(f"Open CASCADE reads a solid from entity {rank}, which stepq does not list")
+    tally.agreeing += not problems
+    return problems
+
+
+def compare_solid(line: dict, solid, tally: TopologyTally) -> list[str]:
+    """The differences between stepq's reading of one solid and Open
+    CASCADE's."""
+    problems = []
+    faces = {face["rank"]: face for face in line.get("faces", [])}
+    if set(faces) != set(solid.reversed):
+        only_ours = sorted(set(faces) - set(solid.reversed))[:5]
+        only_theirs = sorted(set(solid.reversed) - set(faces))[:5]
+        problems.append(
+            f"the faces differ: only stepq's {only_ours}, only Open CASCADE's {only_theirs}"
+        )
+    for rank, face in faces.items():
+        if rank in solid.reversed:
+            tally.faces += 1
+            if solid.reversed[rank] == face["face_sense"]:
+                problems.append(
+                    f"face {rank}: stepq's face_sense is {face['face_sense']}, but Open "
+                    f"CASCADE holds it {'REVERSED' if solid.reversed[rank] else 'FORWARD'}"
+                )
+    listed = {edge["rank"] for edge in line.get("edges", [])}
+    for rank in sorted(set(solid.faces_of_edge) - listed)[:5]:
+        problems.append(f"edge {rank}: Open CASCADE reads it from the file, stepq does not list it")
+    closed = set(solid.closed)
+    theirs_uses: dict[tuple[int, int], list[bool]] = {}
+    for face, edge, forward in solid.uses:
+        theirs_uses.setdefault((face, edge), []).append(forward)
+    for edge in line.get("edges", []):
+        rank = edge["rank"]
+        if rank not in solid.faces_of_edge:
+            # Open CASCADE replaced or split it while healing.
+            tally.healed += 1
+            continue
+        tally.edges += 1
+        using = sorted({face for face, _ in edge["uses"]})
+        if using != solid.faces_of_edge[rank]:
+            problems.append(
+                f"edge {rank}: used by faces {using}, by {solid.faces_of_edge[rank]} in Open "
+                "CASCADE"
+            )
+        first = edge["start"] if edge["same_sense"] else edge["end"]
+        if solid.first_vertex[rank] != first:
+            problems.append(
+                f"edge {rank}: its first vertex along the curve is entity {first}, "
+                f"{solid.first_vertex[rank]} in Open CASCADE"
+            )
+        if edge["seam"]:
+            tally.seams += 1
+            face = edge["uses"][0][0]
+            if (face, rank) not in closed:
+                problems.append(f"edge {rank}: a seam of face {face}, not closed there in Open CASCADE")
+        ours_uses: dict[int, list[bool]] = {}
+        for face, forward in edge["uses"]:
+            # Along the curve where the boundary runs from the edge's start
+            # to its end and the edge follows its curve, or neither does.
+            ours_uses.setdefault(face, []).append(forward == edge["same_sense"])
+        for face, along in ours_uses.items():
+            tally.uses += len(along)
+            if sorted(along) != sorted(theirs_uses.get((face, rank), [])):
+                problems.append(
+                    f"edge {rank} in face {face}: runs along its curve {sorted(along)}, "
+                    f"{sorted(theirs_uses.get((face, rank), []))} in Open CASCADE"
+                )
+    return problems
+
+
 CHECKS = {
     # check: (the example that prints stepq's side, the comparison, its tally)
     "units": ("units", check_units, Tally),
     "surfaces": ("geometry", check_surfaces, GeometryTally),
     "curves": ("geometry", check_curves, GeometryTally),
     "occurrences": ("occurrences", check_occurrences, OccurrenceTally),
+    "topology": ("topology", check_topology, TopologyTally),
 }
 
 
@@ -909,7 +1025,7 @@ def main() -> int:
             print(f"OK   {label}", flush=True)
         for note in getattr(tally, "notes", []):
             print(f"     {note}", flush=True)
-        if isinstance(tally, (GeometryTally, OccurrenceTally)):
+        if isinstance(tally, (GeometryTally, OccurrenceTally, TopologyTally)):
             tally.notes.clear()
 
     print()
@@ -943,6 +1059,16 @@ def main() -> int:
             f"{tally.worst_rotation:.2g}, |dt| {tally.worst_translation:.2g} mm (tolerances "
             f"{ROTATION_TOL:g}, {TRANSLATION_TOL:g} x max(1 mm, |t|)); {tally.expansions} of "
             "Open CASCADE's labels for the solids, shells and compounds of a shape dropped"
+        )
+    elif isinstance(tally, TopologyTally):
+        print(
+            f"{name}: {tally.agreeing} of {tally.files} files agree; stepq reads {tally.items} "
+            f"solids, and {tally.solids} match Open CASCADE's: {tally.faces} faces in the same "
+            f"sense, {tally.edges} edges used by the same faces from the same first vertex, "
+            f"{tally.uses} uses of them in the same direction and {tally.seams} seams closed; "
+            f"{tally.healed} edges Open CASCADE replaced while healing (not compared); "
+            f"{tally.unsupported} surface models and other solids stepq does not read; "
+            f"{tally.malformed} solids stepq refuses as malformed"
         )
     else:
         print(

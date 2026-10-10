@@ -58,6 +58,10 @@ pub enum Error {
     /// An assembly usage, or an occurrence, cannot be placed as stated.
     #[error(transparent)]
     Placement(#[from] crate::model::PlacementError),
+
+    /// A solid's topology cannot be read as stated.
+    #[error(transparent)]
+    Topology(#[from] crate::topology::TopologyError),
 }
 
 impl Error {

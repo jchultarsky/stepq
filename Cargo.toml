@@ -41,6 +41,10 @@ required-features = ["serde"]
 name = "occurrences"
 required-features = ["serde"]
 
+[[example]]
+name = "topology"
+required-features = ["serde"]
+
 [features]
 default = ["cli"]
 cli = ["dep:clap", "dep:anyhow", "serde"]

@@ -135,11 +135,12 @@ jobs:
       # input and that each assembly equals its components.
       - run: tools/verify-split.py
       # Writes the files only Open CASCADE writes (never committed): the same
-      # plate in millimetres, inches, feet, centimetres and metres, and a part
+      # plate in millimetres, inches, feet, centimetres and metres, a part
       # with every elementary surface, a cone point and a void in millimetres
-      # and inches; and, under assemblies/, a nested assembly with a repeated
-      # sub-assembly and arbitrary rotations, and two cases made from it that
-      # ISO 10303 and Open CASCADE place differently.
+      # and inches, and a cube with a cubic void; and, under assemblies/, a
+      # nested assembly with a repeated sub-assembly and arbitrary rotations,
+      # and two cases made from it that ISO 10303 and Open CASCADE place
+      # differently.
       - run: tools/gen-occt-cases.py "$RUNNER_TEMP/occt-cases"
       # Reads every unit context through stepq and Open CASCADE and compares
       # their factors and uncertainties.
@@ -162,10 +163,16 @@ jobs:
       # occurrence stepq dropped that Open CASCADE leaves unnamed would
       # otherwise pass. Re-pin them when the fixtures or the generated cases
       # change.
-      - run: tools/verify-read.py occurrences --expect=375,4 tests/fixtures "$RUNNER_TEMP/occt-cases"
+      - run: tools/verify-read.py occurrences --expect=376,4 tests/fixtures "$RUNNER_TEMP/occt-cases"
+      # Reads the topology of every solid through both and joins them on
+      # entity numbers: the same faces, each in the same sense; each edge
+      # Open CASCADE keeps used by the same faces, from the same first
+      # vertex, in the same directions; seams closed in their faces. Edges
+      # Open CASCADE replaced while healing are counted, not compared.
+      - run: tools/verify-read.py topology tests/fixtures "$RUNNER_TEMP/occt-cases"
       # The fixture tests with their pinned counts; a missing core fixture
       # fails them here instead of skipping.
-      - run: cargo test --all-features --test units --test geometry --test placements --test fixtures
+      - run: cargo test --all-features --test units --test geometry --test placements --test topology --test fixtures
         env:
           STEPQ_REQUIRE_FIXTURES: "1"
 

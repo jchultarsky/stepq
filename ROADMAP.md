@@ -99,7 +99,7 @@ against Open CASCADE by `tools/verify-read.py`.
       surfaces, lines, circles and surface curves (`stepq::geometry`).
 - [x] Placements and occurrences: each usage's transform and every
       occurrence under a root (`model::Placements`).
-- [ ] Topology: the B-rep of one solid as stated, with composed face
+- [x] Topology: the B-rep of one solid as stated, with composed face
       senses and edge uses (`stepq::topology`).
 - [ ] Solids of a definition, with every link not followed
       (`ProductStructure::shape`).

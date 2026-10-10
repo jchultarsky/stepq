@@ -29,6 +29,11 @@ Writes, into OUT_DIR:
       and inches; every edge is a surface or seam curve over a line or
       circle, with .PCURVE_S1. as its master, as Open CASCADE writes them.
 
+  box_void.step
+      A 20 mm cube with a 6 mm cubic void off its centre, in millimetres.
+      The spherical void above is bounded by a vertex loop alone; this one
+      has edges, so the topology check sees edge uses in a reversed shell.
+
 and, into OUT_DIR/assemblies, for the occurrences check (CI runs the surface
 and curve checks on the parts alone, whose counts it pins):
 
@@ -101,6 +106,17 @@ def cone_void():
     # A spherical void well inside the block.
     void = BRepPrimAPI_MakeSphere(gp_Pnt(42, 20, 12), 5.0).Shape()
     return BRepAlgoAPI_Cut(part, void).Shape()
+
+
+def box_void():
+    """A cube with a cubic void, which has faces and edges."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    block = BRepPrimAPI_MakeBox(20.0, 20.0, 20.0).Shape()
+    void = BRepPrimAPI_MakeBox(gp_Pnt(5, 6, 7), 6.0, 6.0, 6.0).Shape()
+    return BRepAlgoAPI_Cut(block, void).Shape()
 
 
 def nested_assembly():
@@ -356,6 +372,11 @@ def write_cone_void(out: Path) -> list[Path]:
     return [write(part, unit, out / f"cone_void_{unit.lower()}.step") for unit in ("MM", "INCH")]
 
 
+def write_box_void(out: Path) -> list[Path]:
+    """Writes the cube with a cubic void in mm."""
+    return [write(box_void(), "MM", out / "box_void.step")]
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print(__doc__.split("\n\n")[2], file=sys.stderr)
@@ -363,7 +384,12 @@ def main() -> int:
     out = Path(sys.argv[1])
     out.mkdir(parents=True, exist_ok=True)
     quiet()
-    for path in write_plates(out) + write_cone_void(out) + write_assemblies(out / "assemblies"):
+    for path in (
+        write_plates(out)
+        + write_cone_void(out)
+        + write_box_void(out)
+        + write_assemblies(out / "assemblies")
+    ):
         print(path)
     return 0
 

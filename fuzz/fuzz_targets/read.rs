@@ -6,7 +6,10 @@
 //! of unit length and every placement's axes are square to each other,
 //! every usage's and occurrence's transform is finite with a rotation that
 //! is square and of unit scale, each occurrence's path ends at its
-//! definition, and every error formats. Each later reader is added here.
+//! definition, every solid's topology refers only to its own shells,
+//! faces, edges and vertices, its loops close and each use of an edge is
+//! by a loop that holds it, and every error formats. Each later reader is
+//! added here.
 
 #![no_main]
 
@@ -14,6 +17,7 @@ use libfuzzer_sys::fuzz_target;
 use stepq::geometry::{Axis2Placement3d, Curve, GeometryError, Reader, Rigid, Surface};
 use stepq::model::{Graph, PlacementError, Placements, ProductStructure};
 use stepq::p21::parse;
+use stepq::topology::{Loop, Solid};
 use stepq::units::{ContextUnits, Unit, UnitError, representation_context, unit};
 
 /// Geometry readers built per input: enough to read in a few contexts
@@ -57,6 +61,14 @@ fuzz_target!(|data: &[u8]| {
         }
     }
     check_placements(&graph);
+    for &id in &ids {
+        match Solid::read(&graph, id) {
+            Ok(solid) => check_solid(&solid),
+            Err(error) => {
+                let _ = error.to_string();
+            }
+        }
+    }
     for &id in &ids {
         check_unit(unit(&graph, id));
         if let Err(error) = representation_context(&graph, id) {
@@ -289,4 +301,72 @@ fn check_placements(graph: &Graph<'_>) {
             }
         }
     }
+}
+
+fn check_solid(solid: &Solid) {
+    let id = solid.instance;
+    let (faces, edges, vertices) = (
+        solid.faces().len(),
+        solid.edges().len(),
+        solid.vertices().len(),
+    );
+    assert!(!solid.shells().is_empty());
+    // The shells' faces partition the faces, in order.
+    let mut next = 0;
+    for (index, shell) in solid.shells().iter().enumerate() {
+        assert_eq!(shell.faces.start, next, "#{id}");
+        assert!(!shell.faces.is_empty(), "#{id}: an empty shell");
+        next = shell.faces.end;
+        for face in shell.faces.clone() {
+            assert_eq!(solid.faces()[face].shell, index, "#{id}");
+        }
+    }
+    assert_eq!(next, faces, "#{id}");
+    for edge in solid.edges() {
+        assert!(edge.start < vertices && edge.end < vertices, "#{id}");
+    }
+    for (index, face) in solid.faces().iter().enumerate() {
+        assert!(!face.bounds.is_empty(), "#{id}");
+        assert!(face.bounds.iter().filter(|b| b.outer).count() <= 1, "#{id}");
+        for bound in &face.bounds {
+            match &bound.bound {
+                Loop::EdgeLoop { edges: list, .. } => {
+                    assert!(!list.is_empty(), "#{id}");
+                    for (k, oriented) in list.iter().enumerate() {
+                        assert!(oriented.edge < edges, "#{id}");
+                        let next = &list[(k + 1) % list.len()];
+                        assert_eq!(oriented.end, next.start, "#{id}: a loop that does not close");
+                    }
+                }
+                Loop::VertexLoop { vertex, .. } => assert!(*vertex < vertices, "#{id}"),
+                _ => {}
+            }
+        }
+        let _ = solid.face_sense(index);
+        assert!(!solid.neighbours(index).contains(&index), "#{id}");
+        assert!(solid.face_vertices(index).iter().all(|&v| v < vertices), "#{id}");
+    }
+    // Each use names a loop that holds the edge there.
+    let mut uses = 0;
+    for edge in 0..edges {
+        for used in solid.uses(edge) {
+            let bound = &solid.faces()[used.face].bounds[used.bound];
+            let Loop::EdgeLoop { edges: list, .. } = &bound.bound else {
+                panic!("#{id}: a use of an edge by a vertex loop");
+            };
+            assert_eq!(list[used.index].edge, edge, "#{id}");
+            uses += 1;
+        }
+        let _ = solid.is_seam(edge);
+    }
+    let held: usize = solid
+        .faces()
+        .iter()
+        .flat_map(|face| &face.bounds)
+        .map(|bound| match &bound.bound {
+            Loop::EdgeLoop { edges: list, .. } => list.len(),
+            _ => 0,
+        })
+        .sum();
+    assert_eq!(uses, held, "#{id}: every oriented edge is one use");
 }
