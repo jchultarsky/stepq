@@ -535,8 +535,10 @@ class Topology:
     of the entity Open CASCADE read them from); faces and edges it made
     itself, or bound to no entity, are counted in `unbound`."""
 
-    # The solid's entity number.
+    # The solid's entity number, and the class Open CASCADE read it as,
+    # such as StepShape_ManifoldSolidBrep.
     rank: int
+    entity: str
     # Each face's entity number, and whether it is REVERSED in the solid
     # (its orientation composed with its shell's).
     reversed: dict[int, bool]
@@ -658,6 +660,7 @@ def topology(path: Path) -> list[Topology]:
             solids.append(
                 Topology(
                     rank=solid_rank,
+                    entity=type(entities[solid_rank - 1]).__name__,
                     reversed=reversed_,
                     faces_of_edge=faces_of_edge,
                     first_vertex=first_vertex,

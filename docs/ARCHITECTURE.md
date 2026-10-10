@@ -581,12 +581,15 @@ the wrong type. So is a wrong attribute count (checked against all four
 schemas by a unit test), an empty set, a flag other than `.T.` or `.F.`, a
 derived attribute written as a value, an `edge_list` that repeats an
 oriented edge, a loop that does not close by vertex instance, a face with
-two outer bounds, and a face, bound or loop that two places hold. That last
-rule keeps reading linear in the size of the file, however it is crafted; a
-solid whose faces share a bound is not manifold anyway, and no fixture has
-one. Not checked, and left to the caller: that the solid is manifold, that
-its geometry agrees with its topology, and which bound is the outer one when
-no `face_outer_bound` says so.
+two outer bounds or that lists one bound twice, and a face that the solid
+holds twice. Faces that share a bound or a loop are valid STEP, but each
+bound and loop is read once, as each oriented edge, edge and vertex is, so
+such a solid is unsupported; no fixture has one. Reading one solid therefore
+takes time linear in the size of the file, however it is crafted, though a
+caller that reads every solid of a file pays again for what solids share.
+Not checked, and left to the caller: that the solid is manifold, that its
+geometry agrees with its topology, and which bound is the outer one when no
+`face_outer_bound` says so.
 
 On all 55 fixtures, 1,260 solids read (257,358 faces, 715,015 edges, 463,162
 vertices, 33 seams), every edge used twice in opposite directions; the 87
@@ -597,11 +600,14 @@ numbers: the same faces, each REVERSED in Open CASCADE exactly where
 `face_sense` is false; each edge Open CASCADE keeps used by the same faces,
 its first vertex by parameter the edge's start where `same_sense` holds and
 its end otherwise, each use FORWARD in its face exactly where `forward`
-equals `same_sense`; and each seam closed in its face. Open CASCADE heals as
-it reads, replacing or splitting some edges; those are counted, not
-compared. On CI's set (the core fixtures and the generated parts, a cube
-with a cubic void among them, so that edge uses in a reversed shell are
-compared) all 132 solids match, 278 edges replaced by healing.
+equals `same_sense`; and each seam closed in its face. The solid must be
+of the same type in both, and an edge Open CASCADE binds that stepq does
+not list fails. Open CASCADE heals as it reads, replacing or splitting some
+edges; those are counted, not compared, so CI pins their count
+(`--healing`): an edge stepq invented would otherwise pass. On CI's set (the
+core fixtures and the generated parts, a cube with a cubic void among them,
+so that edge uses in a reversed shell are compared) all 132 solids match,
+278 edges replaced by healing.
 
 ### What is not read
 

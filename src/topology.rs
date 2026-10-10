@@ -24,6 +24,8 @@
 //! type, a wrong attribute count, a loop that does not close, an empty set,
 //! a repeated oriented edge, a derived attribute written explicitly) is
 //! [`TopologyError::Malformed`]; each names the innermost instance at fault.
+//! Each instance is read once, so a read takes time linear in the size of
+//! the file, however it is crafted.
 //! Not checked: that the solid is manifold, that its geometry agrees with
 //! its topology, and which bound of a face is its outer one when no
 //! `face_outer_bound` says so.
@@ -61,6 +63,7 @@
 //! # Ok::<(), stepq::Error>(())
 //! ```
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Range;
@@ -77,7 +80,9 @@ use crate::record;
 /// [`vertices`](Self::vertices). The outer shell comes first, then the
 /// voids, each shell's faces in the order written; edges and vertices are
 /// in the order first reached. Each element keeps the `#id` it was read
-/// from.
+/// from. Serialized, a solid holds what the file states; the values read
+/// from it ([`face_sense`](Self::face_sense), [`uses`](Self::uses)) are
+/// methods.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
@@ -277,7 +282,8 @@ impl Solid {
             edges: Vec::new(),
             vertices: Vec::new(),
             listed_faces: HashSet::new(),
-            bounding: HashSet::new(),
+            bounding: HashMap::new(),
+            oriented_index: HashMap::new(),
             edge_index: HashMap::new(),
             vertex_index: HashMap::new(),
         };
@@ -386,7 +392,8 @@ impl Solid {
     ///
     /// Panics if `face` is out of range.
     pub fn neighbours(&self, face: usize) -> Vec<usize> {
-        let mut found: Vec<usize> = self.faces[face]
+        // Each edge once, so the work is bounded by the edges' uses.
+        let mut edges: Vec<usize> = self.faces[face]
             .bounds
             .iter()
             .filter_map(|bound| match &bound.bound {
@@ -394,7 +401,13 @@ impl Solid {
                 Loop::VertexLoop { .. } => None,
             })
             .flatten()
-            .flat_map(|oriented| self.uses(oriented.edge).iter().map(|u| u.face))
+            .map(|oriented| oriented.edge)
+            .collect();
+        edges.sort_unstable();
+        edges.dedup();
+        let mut found: Vec<usize> = edges
+            .into_iter()
+            .flat_map(|edge| self.uses(edge).iter().map(|u| u.face))
             .filter(|&other| other != face)
             .collect();
         found.sort_unstable();
@@ -489,7 +502,9 @@ pub enum TopologyError {
     /// `manifold_solid_brep` or `brep_with_voids` (a `faceted_brep`, a
     /// surface model), a face that is not an `advanced_face`, a subtype of
     /// a topological entity read here that adds to it (an AP214
-    /// `seam_edge`, a `tessellated_closed_shell`), or any complex instance.
+    /// `seam_edge`, a `tessellated_closed_shell`), a bound or loop that
+    /// bounds more than one face (each is read once), or any complex
+    /// instance.
     Unsupported {
         /// The instance not read.
         instance: u64,
@@ -502,7 +517,8 @@ pub enum TopologyError {
     /// its attribute, a wrong number of attributes, an empty set, a flag
     /// other than `.T.` or `.F.`, a derived attribute written explicitly, a
     /// loop that does not close or that repeats an oriented edge, a face
-    /// with two outer bounds, a face, bound or loop held twice, a void that
+    /// with two outer bounds or one bound listed twice, a face held twice by
+    /// the solid, a void that
     /// is not an `oriented_closed_shell`, or what an `advanced_face`'s,
     /// `oriented_edge`'s or `oriented_closed_shell`'s rules forbid.
     Malformed {
@@ -596,7 +612,7 @@ const SHELL_ELEMENT: Slot = Slot {
     unsupported: &["TESSELLATED_CLOSED_SHELL"],
     ruled_out: &[(
         "ORIENTED_CLOSED_SHELL",
-        "an oriented_closed_shell's element must not be oriented itself (its WR1)",
+        "an oriented_closed_shell's element must not be oriented itself",
     )],
     others_unsupported: false,
 };
@@ -631,7 +647,7 @@ const LOOP: Slot = Slot {
     unsupported: &["KINEMATIC_LOOP"],
     ruled_out: &[(
         "POLY_LOOP",
-        "an advanced_face is bounded by edge and vertex loops only (its WR7)",
+        "an advanced_face is bounded by edge and vertex loops only",
     )],
     others_unsupported: false,
 };
@@ -653,18 +669,16 @@ const EDGE_ELEMENT: Slot = Slot {
     ruled_out: &[
         (
             "ORIENTED_EDGE",
-            "an oriented_edge's element must not be oriented itself (its WR1)",
+            "an oriented_edge's element must not be oriented itself",
         ),
-        (
-            "SUBEDGE",
-            "the edges of an advanced_face are edge_curves (its WR1)",
-        ),
+        ("SUBEDGE", "the edges of an advanced_face are edge_curves"),
     ],
     others_unsupported: false,
 };
 
-/// An `advanced_face` bounds itself by `vertex_point`s only (its WR3 and
-/// WR6), so any other vertex is malformed, not merely unsupported.
+/// An `advanced_face`'s vertices are `vertex_point`s only (a rule of it
+/// in every schema), so any other vertex is malformed, not merely
+/// unsupported.
 const VERTEX: Slot = Slot {
     attribute: "edge_start, edge_end or loop_vertex",
     expected: "vertex_point",
@@ -759,8 +773,10 @@ struct Walk<'g, 'a> {
     vertices: Vec<Vertex>,
     /// The faces listed by a shell so far.
     listed_faces: HashSet<u64>,
-    /// The bounds and loops that bound a face so far.
-    bounding: HashSet<u64>,
+    /// The bounds and loops that bound a face so far, and that face.
+    bounding: HashMap<u64, u64>,
+    /// Each oriented edge read so far: its edge and orientation.
+    oriented_index: HashMap<u64, (usize, bool)>,
     edge_index: HashMap<u64, usize>,
     vertex_index: HashMap<u64, usize>,
 }
@@ -882,14 +898,14 @@ impl<'g> Walk<'g, '_> {
         let mut bounds = Vec::with_capacity(bound_ids.len());
         for bound_id in bound_ids {
             let bound = self.read(id, bound_id, &BOUNDS)?;
-            self.bounds_once(&bound, "bounds")?;
+            self.bounds_once(&bound, id)?;
             let outer = bound.name == "FACE_OUTER_BOUND";
             if outer && bounds.iter().any(|b: &FaceBound| b.outer) {
                 return Err(face.malformed("has more than one face_outer_bound"));
             }
             let loop_id = bound.reference(1, "bound")?;
             let orientation = bound.boolean(2, "orientation")?;
-            let bound = self.bound_loop(bound_id, loop_id)?;
+            let bound = self.bound_loop(id, bound_id, loop_id)?;
             bounds.push(FaceBound {
                 instance: bound_id,
                 outer,
@@ -906,20 +922,35 @@ impl<'g> Walk<'g, '_> {
         })
     }
 
-    /// Requires a bound or loop to bound one face only. Reading each once
-    /// keeps the work linear in the file, however it is crafted; a solid
-    /// whose faces share a bound or a loop is not manifold anyway.
-    fn bounds_once(&mut self, read: &Read<'_>, what: &str) -> Result<(), TopologyError> {
-        if self.bounding.insert(read.id) {
-            Ok(())
-        } else {
-            Err(read.malformed(format!("{what} more than one face, or one face twice")))
+    /// Requires a bound or loop to bound one face, `#face`, once. A face
+    /// whose bounds list one bound twice contradicts its `SET`; faces that
+    /// share a bound or loop are valid STEP, but not read: each is read
+    /// once, which keeps the work linear in the file however it is crafted.
+    fn bounds_once(&mut self, read: &Read<'_>, face: u64) -> Result<(), TopologyError> {
+        match self.bounding.entry(read.id) {
+            Entry::Vacant(entry) => {
+                entry.insert(face);
+                Ok(())
+            }
+            Entry::Occupied(entry)
+                if *entry.get() == face
+                    && matches!(read.name, "FACE_BOUND" | "FACE_OUTER_BOUND") =>
+            {
+                Err(read.malformed(format!(
+                    "the bounds of #{face} list it more than once (a SET)"
+                )))
+            }
+            Entry::Occupied(_) => Err(TopologyError::Unsupported {
+                instance: read.id,
+                entity: read.name.to_owned(),
+                expected: "a bound or loop of one face",
+            }),
         }
     }
 
-    fn bound_loop(&mut self, bound: u64, id: u64) -> Result<Loop, TopologyError> {
+    fn bound_loop(&mut self, face: u64, bound: u64, id: u64) -> Result<Loop, TopologyError> {
         let read = self.read(bound, id, &LOOP)?;
-        self.bounds_once(&read, "bounds")?;
+        self.bounds_once(&read, face)?;
         if read.name == "VERTEX_LOOP" {
             let vertex = read.reference(1, "loop_vertex")?;
             return Ok(Loop::VertexLoop {
@@ -936,12 +967,7 @@ impl<'g> Walk<'g, '_> {
                     "edge_list holds #{oriented_id} more than once (it is a LIST OF UNIQUE)"
                 )));
             }
-            let oriented = self.read(id, oriented_id, &EDGE_LIST)?;
-            oriented.derived(1, "edge_start")?;
-            oriented.derived(2, "edge_end")?;
-            let element = oriented.reference(3, "edge_element")?;
-            let orientation = oriented.boolean(4, "orientation")?;
-            let edge = self.edge(oriented_id, element)?;
+            let (edge, orientation) = self.oriented_edge(id, oriented_id)?;
             let Edge { start, end, .. } = self.edges[edge];
             let (start, end) = if orientation {
                 (start, end)
@@ -974,6 +1000,22 @@ impl<'g> Walk<'g, '_> {
             instance: id,
             edges,
         })
+    }
+
+    /// The edge and orientation of the oriented edge `#id`, read once
+    /// however many loops list it.
+    fn oriented_edge(&mut self, from: u64, id: u64) -> Result<(usize, bool), TopologyError> {
+        if let Some(&read) = self.oriented_index.get(&id) {
+            return Ok(read);
+        }
+        let oriented = self.read(from, id, &EDGE_LIST)?;
+        oriented.derived(1, "edge_start")?;
+        oriented.derived(2, "edge_end")?;
+        let element = oriented.reference(3, "edge_element")?;
+        let orientation = oriented.boolean(4, "orientation")?;
+        let edge = self.edge(id, element)?;
+        self.oriented_index.insert(id, (edge, orientation));
+        Ok((edge, orientation))
     }
 
     fn edge(&mut self, from: u64, id: u64) -> Result<usize, TopologyError> {
@@ -1246,6 +1288,20 @@ mod tests {
     #[test]
     fn unsupported_types_are_named() {
         refused(vec![
+            // Faces that share a loop or a bound: valid, but each is read once.
+            (
+                PIN.replace("#60=FACE_BOUND('',#61,.F.);", "#60=FACE_BOUND('',#52,.F.);"),
+                15,
+                unsupported(52, "EDGE_LOOP", "a bound or loop of one face"),
+            ),
+            (
+                PIN.replace(
+                    "#59=ADVANCED_FACE('',(#60),#63,.T.);",
+                    "#59=ADVANCED_FACE('',(#51),#63,.T.);",
+                ),
+                15,
+                unsupported(51, "FACE_BOUND", "a bound or loop of one face"),
+            ),
             (
                 PIN.replace("MANIFOLD_SOLID_BREP", "FACETED_BREP"),
                 15,
@@ -1303,7 +1359,7 @@ mod tests {
                 malformed(
                     52,
                     "POLY_LOOP",
-                    "an advanced_face is bounded by edge and vertex loops only (its WR7)",
+                    "an advanced_face is bounded by edge and vertex loops only",
                 ),
             ),
             (
@@ -1315,7 +1371,7 @@ mod tests {
                 malformed(
                     21,
                     "SUBEDGE",
-                    "the edges of an advanced_face are edge_curves (its WR1)",
+                    "the edges of an advanced_face are edge_curves",
                 ),
             ),
             (
@@ -1327,7 +1383,7 @@ mod tests {
                 malformed(
                     38,
                     "ORIENTED_EDGE",
-                    "an oriented_edge's element must not be oriented itself (its WR1)",
+                    "an oriented_edge's element must not be oriented itself",
                 ),
             ),
             (
@@ -1343,7 +1399,7 @@ mod tests {
                 malformed(
                     901,
                     "ORIENTED_CLOSED_SHELL",
-                    "an oriented_closed_shell's element must not be oriented itself (its WR1)",
+                    "an oriented_closed_shell's element must not be oriented itself",
                 ),
             ),
             (
@@ -1434,12 +1490,12 @@ mod tests {
                 ),
             ),
             (
-                PIN.replace("#60=FACE_BOUND('',#61,.F.);", "#60=FACE_BOUND('',#52,.F.);"),
+                PIN.replace("(#18),#45", "(#18,#18),#45"),
                 15,
                 malformed(
-                    52,
-                    "EDGE_LOOP",
-                    "bounds more than one face, or one face twice",
+                    18,
+                    "FACE_BOUND",
+                    "the bounds of #17 list it more than once (a SET)",
                 ),
             ),
             // Not defined.
@@ -1545,6 +1601,7 @@ mod tests {
         use crate::express::Schema;
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/schemas");
         let mut checked = 0;
+        let mut in_some_schema = HashSet::new();
         for file in [
             "ap242e4_mim_lf.exp",
             "ap214e3.exp",
@@ -1573,22 +1630,21 @@ mod tests {
                     .or_else(|| COUNTS.iter().find(|(e, _)| e == entity).map(|(_, n)| *n));
                 assert_eq!(count, Some(layout.len()), "{entity}");
             }
-            // Every type a slot reads, refuses or tells apart is a type of
-            // the schema, where the schema has it.
-            for slot in [
-                &SOLID,
-                &OUTER,
-                &VOIDS,
-                &SHELL_ELEMENT,
-                &FACES,
-                &BOUNDS,
-                &LOOP,
-                &EDGE_LIST,
-                &EDGE_ELEMENT,
-                &VERTEX,
-            ] {
+            // Every type a slot reads is a type of each schema.
+            for slot in SLOTS {
                 for name in slot.read {
                     assert!(schema.entity(name).is_some(), "{file}: {name}");
+                }
+            }
+            for slot in SLOTS {
+                let told_apart = slot
+                    .unsupported
+                    .iter()
+                    .chain(slot.ruled_out.iter().map(|(n, _)| n));
+                for name in told_apart {
+                    if schema.entity(name).is_some() {
+                        in_some_schema.insert(*name);
+                    }
                 }
             }
             checked += 1;
@@ -1598,8 +1654,34 @@ mod tests {
                 "skipping: no schema under {} (run tools/fetch-schemas.sh)",
                 dir.display()
             );
+            return;
+        }
+        // Every type a slot refuses or tells apart is a type of some schema
+        // (AP214's seam_edge is in no other): a misspelt name would fall
+        // through to the generic message.
+        for slot in SLOTS {
+            let told_apart = slot
+                .unsupported
+                .iter()
+                .chain(slot.ruled_out.iter().map(|(n, _)| n));
+            for name in told_apart {
+                assert!(in_some_schema.contains(name), "{name} is in no schema");
+            }
         }
     }
+
+    const SLOTS: [&Slot; 10] = [
+        &SOLID,
+        &OUTER,
+        &VOIDS,
+        &SHELL_ELEMENT,
+        &FACES,
+        &BOUNDS,
+        &LOOP,
+        &EDGE_LIST,
+        &EDGE_ELEMENT,
+        &VERTEX,
+    ];
 
     #[test]
     fn errors_format_and_wrap() {

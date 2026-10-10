@@ -95,11 +95,12 @@ assemblies; then the topology of a solid.
   the schema derives its faces, so a hole reads as a hole in a void as in
   the outer shell. Valid STEP it does not read (a `faceted_brep`, a surface
   model, a `face_surface`, AP214's `seam_edge`, any complex instance) is
-  `TopologyError::Unsupported`; what contradicts the schema (a wrong type or
-  attribute count, an empty set, a loop that does not close, a repeated
-  oriented edge, two outer bounds, a face, bound or loop held twice) is
-  `Malformed`; each names the innermost instance, and `stepq::Error` gains a
-  `Topology` variant. On all 55 fixtures 1,260 solids read (257,358 faces,
+  `TopologyError::Unsupported`, as are faces that share a bound or loop,
+  since each instance is read once and a read stays linear in the file;
+  what contradicts the schema (a wrong type or attribute count, an empty
+  set, a loop that does not close, a repeated oriented edge, two outer
+  bounds, a face held twice) is `Malformed`; each names the innermost
+  instance, and `stepq::Error` gains a `Topology` variant. On all 55 fixtures 1,260 solids read (257,358 faces,
   715,015 edges, each used twice in opposite directions), the 87 surface
   models are refused as unsupported, and one Creo part whose loop does not
   close is refused as malformed. `tools/verify-read.py topology` joins every
@@ -108,7 +109,7 @@ assemblies; then the topology of a solid.
   direction of every use and that seams are closed; CI runs it on the core
   fixtures and the generated parts, where all 132 solids match. Open
   CASCADE replaces some edges while healing, which are counted, not
-  compared. `tools/gen-occt-cases.py` adds a cube with a cubic void, so that
+  compared; CI pins their count (`--healing=278`). `tools/gen-occt-cases.py` adds a cube with a cubic void, so that
   uses in a reversed shell are compared, and CI's occurrence pin moves to
   376. `examples/topology.rs` prints stepq's side.
 

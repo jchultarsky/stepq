@@ -10,7 +10,7 @@ it wrong is as silent as dropping an entity (docs/ARCHITECTURE.md, "Reading
 stated geometry"). So every reader is held to Open CASCADE's reading of the
 same files, at development time only. stepq's side comes from an example
 built with the serde feature (examples/units.rs, examples/geometry.rs,
-examples/occurrences.rs; one JSON object per line), Open CASCADE's from the
+examples/occurrences.rs, examples/topology.rs; one JSON object per line), Open CASCADE's from the
 function of the same name as the check in tools/verify-occt.py. Unit
 contexts are joined on Open CASCADE's entity number, which is the instance's
 1-based position in the file, and the entity types must agree; faces and
@@ -21,6 +21,7 @@ their paths.
     tools/verify-read.py CHECK [PATH...]
     tools/verify-read.py curves --healing=SEAMS,PIECES,OTHER [PATH...]
     tools/verify-read.py occurrences --expect=MATCHED,DIVERGENT [PATH...]
+    tools/verify-read.py topology --healing=EDGES [PATH...]
 
 PATH is a STEP file or a directory searched for them, following symbolic
 links; directories skip files over 16 MB unless STEPQ_LARGE_FIXTURES=1, and a
@@ -88,6 +89,20 @@ undefined (stepq reads ref_direction_stated = false).
             of each is printed for the record. --expect pins how many
             occurrences match and how many are refused as divergent over all
             files, as CI does for its set.
+
+  topology  Every solid stepq reads (examples/topology.rs) against the one
+            Open CASCADE reads from the same entity, which must be of the
+            same type, joined on entity numbers: the same faces, each
+            REVERSED in Open CASCADE exactly where stepq's face_sense is
+            false; each edge Open CASCADE binds to an entity listed by
+            stepq too, used by the same faces, its first vertex by parameter
+            the edge's start where same_sense holds and its end otherwise,
+            each use FORWARD exactly where forward equals same_sense, and
+            each seam closed in its face. Open CASCADE replaces or splits
+            some edges while healing; an edge stepq lists that it binds to
+            no entity is counted, not compared, and --healing pins how many
+            over all files, as CI does for its set. A solid refused as
+            malformed is reported; any other refusal of a solid fails.
 
 Exit status: 0 if every comparison holds, 1 if one fails or the pinned
 tallies differ, 2 if a file cannot be read by either side, a directory named
@@ -868,7 +883,8 @@ def check_topology(path: Path, tally: TopologyTally) -> list[str]:
     for line in ours:
         label = f"#{line['id']} ({line['entity']})"
         if "error" in line:
-            solid = line["entity"] in ("MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS")
+            # A complex solid's partials are joined with +.
+            solid = bool({"MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS"} & set(line["entity"].split("+")))
             if line["error_kind"] == "malformed":
                 tally.malformed += 1
                 tally.notes.append(f"{label}: stepq refuses it: {line['error']}")
@@ -881,6 +897,10 @@ def check_topology(path: Path, tally: TopologyTally) -> list[str]:
         solid = theirs.get(line["rank"])
         if solid is None:
             problems.append(f"{label}: Open CASCADE reads no solid from it")
+            continue
+        expected = "StepShape_" + "".join(part.title() for part in line["entity"].split("_"))
+        if solid.entity != expected:
+            problems.append(f"{label}: Open CASCADE reads entity {line['rank']} as {solid.entity}")
             continue
         tally.solids += 1
         problems.extend(f"{label}: {problem}" for problem in compare_solid(line, solid, tally))
@@ -976,8 +996,13 @@ def main() -> int:
     for arg in sys.argv[2:]:
         if arg.startswith("--healing="):
             counts = arg.split("=", 1)[1].split(",")
-            if name != "curves" or len(counts) != 3 or not all(c.isdigit() for c in counts):
-                print(f"{arg}: only curves takes --healing=SEAMS,PIECES,OTHER", file=sys.stderr)
+            wanted = {"curves": 3, "topology": 1}.get(name)
+            if len(counts) != wanted or not all(c.isdigit() for c in counts):
+                print(
+                    f"{arg}: only curves takes --healing=SEAMS,PIECES,OTHER, and topology "
+                    "--healing=EDGES",
+                    file=sys.stderr,
+                )
                 return 2
             healing = tuple(int(c) for c in counts)
         elif arg.startswith("--expect="):
@@ -1093,7 +1118,11 @@ def main() -> int:
             )
             return 1
     if healing is not None:
-        found = (tally.seams, tally.pieces, tally.other_extra)
+        found = (
+            (tally.healed,)
+            if isinstance(tally, TopologyTally)
+            else (tally.seams, tally.pieces, tally.other_extra)
+        )
         if found != healing:
             print(
                 f"Open CASCADE's healing tallies are {found}, pinned at {healing}: an edge "

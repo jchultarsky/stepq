@@ -168,8 +168,11 @@ jobs:
       # entity numbers: the same faces, each in the same sense; each edge
       # Open CASCADE keeps used by the same faces, from the same first
       # vertex, in the same directions; seams closed in their faces. Edges
-      # Open CASCADE replaced while healing are counted, not compared.
-      - run: tools/verify-read.py topology tests/fixtures "$RUNNER_TEMP/occt-cases"
+      # Open CASCADE replaced while healing are counted, not compared, so
+      # their count is pinned for this set: an edge stepq lists that Open
+      # CASCADE does not would otherwise pass. Re-pin it when the fixtures or
+      # the generated parts change.
+      - run: tools/verify-read.py topology --healing=278 tests/fixtures "$RUNNER_TEMP/occt-cases"
       # The fixture tests with their pinned counts; a missing core fixture
       # fails them here instead of skipping.
       - run: cargo test --all-features --test units --test geometry --test placements --test topology --test fixtures
