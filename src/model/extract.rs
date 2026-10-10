@@ -939,7 +939,8 @@ ENDSEC;END-ISO-10303-21;";
         let mut everything = everything;
         everything.sort_unstable();
         assert_eq!(ids(&graph, extraction.nodes()), everything);
-        assert!(orphans(&graph, &[extraction]).is_empty());
+        let left = orphans(&graph, &[extraction]);
+        assert!(left.is_empty(), "{left:?}");
     }
 
     #[test]
@@ -1098,7 +1099,7 @@ ENDSEC;END-ISO-10303-21;";
     #[test]
     fn rules_are_well_formed() {
         for rule in RULES {
-            assert!(!rule.entities.is_empty());
+            assert!(!rule.entities.is_empty(), "{rule:?}");
             assert!(
                 rule.entities
                     .iter()

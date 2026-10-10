@@ -9,13 +9,11 @@ use std::collections::HashMap;
 
 use super::Graph;
 use crate::p21::{Exchange, Instance, Param, Record};
+use crate::policy::MAX_ASSEMBLY_DEPTH;
+use crate::record::{primary_record, reference, upper};
 
 const NAUO: &str = "NEXT_ASSEMBLY_USAGE_OCCURRENCE";
 const QACU: &str = "QUANTIFIED_ASSEMBLY_COMPONENT_USAGE";
-
-/// Assembly trees deeper than this are not descended further, so crafted
-/// input cannot exhaust the stack.
-const MAX_DEPTH: usize = 1024;
 
 /// The product structure of a file: its product definitions and the
 /// assembly usages that nest them.
@@ -463,7 +461,7 @@ impl ProductStructure {
             return node;
         }
         let too_deep = state.options.depth.is_some_and(|depth| level >= depth);
-        if too_deep || state.path[definition] || level >= MAX_DEPTH || state.budget == 0 {
+        if too_deep || state.path[definition] || level >= MAX_ASSEMBLY_DEPTH || state.budget == 0 {
             node.truncated = true;
             return node;
         }
@@ -502,7 +500,7 @@ impl ProductStructure {
                 totals.push((definition, quantity));
             }
         };
-        if depth < MAX_DEPTH {
+        if depth < MAX_ASSEMBLY_DEPTH {
             visiting[definition] = true;
             for &index in &self.children[definition] {
                 let usage = &self.usages[index];
@@ -817,23 +815,6 @@ fn first_reference(graph: &Graph<'_>, node: usize, index: usize) -> Option<u64> 
     reference(record.param(index).as_ref())
 }
 
-/// The partial record named `name`, or the first record.
-fn primary_record<'e>(
-    exchange: &'e Exchange<'_>,
-    instance: &Instance,
-    name: &str,
-) -> Option<Record<'e>> {
-    let mut records = exchange.records(instance);
-    records
-        .clone()
-        .find(|r| r.is(name))
-        .or_else(|| records.next())
-}
-
-fn reference(param: Option<&Param<'_>>) -> Option<u64> {
-    param.and_then(Param::reference)
-}
-
 /// A string attribute's decoded value; `None` if absent, not a string, or
 /// blank.
 fn text(param: Option<&Param<'_>>) -> Option<String> {
@@ -845,10 +826,6 @@ fn text(param: Option<&Param<'_>>) -> Option<String> {
         Cow::into_owned,
     );
     (!value.trim().is_empty()).then_some(value)
-}
-
-fn upper(name: &[u8]) -> String {
-    String::from_utf8_lossy(name).to_ascii_uppercase()
 }
 
 #[cfg(test)]
@@ -955,7 +932,8 @@ ENDSEC;END-ISO-10303-21;"
         );
         assert_eq!(product.description, None, "blank strings are omitted");
         assert_eq!(structure.definitions()[0].shape_representations, [50]);
-        assert!(structure.definitions()[3].shape_representations.is_empty());
+        let shapes = &structure.definitions()[3].shape_representations;
+        assert!(shapes.is_empty(), "{shapes:?}");
         assert_eq!(structure.roots(), [0]);
     }
 
@@ -1080,7 +1058,8 @@ ENDSEC;END-ISO-10303-21;"
                 (3, "4".to_owned(), false)
             ]
         );
-        assert!(structure.bill_of_materials(3).is_empty());
+        let bom = structure.bill_of_materials(3);
+        assert!(bom.is_empty(), "{bom:?}");
     }
 
     #[test]

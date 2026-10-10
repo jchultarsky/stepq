@@ -1,10 +1,12 @@
 # Roadmap
 
 Ordered by leverage per line of code. Nothing here needs a geometry
-kernel; that is the constraint that keeps the project finishable.
+kernel: stepq reads what a file states and never computes what it does
+not. That constraint keeps the project finishable.
 
 0.1.0 contains the parser, structure and split milestones below; 0.2.0
-adds the inspect milestone and 0.3.0 the reshape milestone. A few items
+adds the inspect milestone, 0.3.0 the reshape milestone and 0.5.0 the
+read milestone, which 0.6.0 completes with PMI to faces. A few items
 in the earlier milestones shipped later — the multi-level `bom` and
 persistent identifiers in 0.2.0, `split --bodies` in 0.3.0, and the grown
 rule table, which completes the split milestone, in 0.4.0; see
@@ -85,7 +87,30 @@ rule table, which completes the split milestone, in 0.4.0; see
       external references themselves rather than a separate manifest.
 - [x] Part 21 edition 3 anchors/references.
 
+## Read (0.5.0)
+
+Values the file states, read in millimetres and radians and never computed
+(`docs/ARCHITECTURE.md`, "Reading stated geometry"). Each reader is checked
+against Open CASCADE by `tools/verify-read.py`.
+
+- [x] Unit factors per representation context, read or refused kind by
+      kind, with each context's uncertainties (`stepq::units`).
+- [ ] Geometry values: points, directions, axis placements, elementary
+      surfaces, lines, circles and surface curves (`stepq::geometry`).
+- [ ] Placements and occurrences: each usage's transform and every
+      occurrence under a root (`model::Placements`).
+- [ ] Topology: the B-rep of one solid as stated, with composed face
+      senses and edge uses (`stepq::topology`).
+- [ ] Solids of a definition, with every link not followed
+      (`ProductStructure::shape`).
+
+## PMI to faces (0.6.0)
+
+- [ ] The faces and edges each tolerance, dimension and datum applies to,
+      through shape aspects and their relationships (`pmi::AspectItems`),
+      and `stepq pmi --geometry`.
+
 ## Not planned
 
-Tessellation, mass properties, bounding boxes, unit conversion, healing,
-any conversion to or from another format. Use a kernel.
+Tessellation, intersections, trimmed areas, mass properties, bounding
+boxes, healing, any conversion to or from another format. Use a kernel.

@@ -206,8 +206,12 @@ mod tests {
         assert_eq!(graph.references(3), [0, 2]);
         assert_eq!(graph.referenced_by(0), [3]);
         assert_eq!(graph.referenced_by(2), [0, 1, 3]);
-        assert!(graph.referenced_by(3).is_empty());
-        assert!(graph.unresolved().is_empty());
+        assert!(
+            graph.referenced_by(3).is_empty(),
+            "{:?}",
+            graph.referenced_by(3)
+        );
+        assert!(graph.unresolved().is_empty(), "{:?}", graph.unresolved());
     }
 
     #[test]
@@ -231,7 +235,7 @@ mod tests {
         let graph = Graph::build(parse(src.as_bytes()).unwrap());
         assert_eq!(graph.unresolved(), [(0, 8), (1, 9)]);
         assert_eq!(graph.references(0), [1]);
-        assert!(graph.references(1).is_empty());
+        assert!(graph.references(1).is_empty(), "{:?}", graph.references(1));
     }
 
     #[test]

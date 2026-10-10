@@ -2,8 +2,9 @@
 //!
 //! Query, inspect, split and reshape STEP (ISO 10303-21) files.
 //!
-//! `stepq` works on the *entity graph* of a Part 21 file. It never
-//! evaluates geometry: there is no tessellation, no volume, no healing.
+//! `stepq` works on the *entity graph* of a Part 21 file. It reads the
+//! geometry a file states — placements, axes, radii, unit factors — but
+//! never evaluates it: there is no tessellation, no volume, no healing.
 //! Everything it does — splitting assemblies, extracting a bill of
 //! materials, validating structure — is a graph operation over the
 //! original entity instances, which are preserved byte-for-byte.
@@ -72,6 +73,7 @@
 //! | `diff` | [`diff::diff`] |
 //! | `strip` | [`strip::strip`], applied by [`p21::Writer::replacements`] |
 //! | `pmi` | [`pmi::pmi`] |
+//! | none; `examples/units.rs` | [`units::ContextUnits`], [`units::unit`]: unit factors per representation context |
 //!
 //! `docs/COMMANDS.md` in the repository documents every command and option.
 //!
@@ -98,7 +100,10 @@ pub mod lint;
 pub mod model;
 pub mod p21;
 pub mod pmi;
+mod policy;
 pub mod props;
+mod record;
 pub mod strip;
+pub mod units;
 
 pub use error::{Error, Result};

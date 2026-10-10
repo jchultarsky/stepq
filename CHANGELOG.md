@@ -8,6 +8,45 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+The read milestone begins, under a reworded rule: stepq reads what a file
+states and never computes what it does not. First, unit factors.
+
+### Added
+
+- `stepq::units`: the unit factors a file states. `units::unit` reads any
+  SI or conversion-based unit of length, plane angle or solid angle, and
+  `units::ContextUnits` what a representation context assigns — its length
+  unit to millimetres, plane angle to radians and solid angle to
+  steradians, each read or refused on its own, its uncertainties and its
+  coordinate space dimension — for a context, a representation, or a
+  solid, shell or face, whose holding contexts must agree (a holder stepq
+  cannot follow is reported, never stepped over). Factors are
+  used as stated (a degree of `0.0174532925` radian stays that) and nothing
+  is assumed: what cannot be read is a `units::UnitError` with the reason,
+  and `stepq::Error` gains a `Unit` variant. On all 55 fixtures, the 1,670
+  contexts' factors and uncertainties equal Open CASCADE 8.0.1's, bit for
+  bit but one.
+- `tools/verify-read.py units` compares every unit context with Open
+  CASCADE's reading (through `examples/units.rs`), and
+  `tools/gen-occt-cases.py` writes the same plate in five length units for
+  it. CI runs both, and the fixture tests with
+  `STEPQ_REQUIRE_FIXTURES=1`, which fails them if a core fixture is
+  missing.
+- A `read` fuzz target, which runs every reader on every instance. CI starts
+  it from hand-written seeds (`fuzz/seeds/read`) that reach every reader.
+
+### Changed
+
+- The rule, in the README, `docs/ARCHITECTURE.md`, `ROADMAP.md` and
+  `CONTRIBUTING.md`: stepq reads what a file states — a point, an axis, a
+  radius, a placement, a unit factor — and never computes what it does not.
+  Normalising a direction, applying the stated unit factor of the value's
+  own context and composing stated placements count as reading;
+  intersections, trimmed areas, tessellation, volumes, bounding boxes and
+  healing stay out. A value that cannot be read with certainty is reported,
+  never guessed. Output does not change: unchanged entities are still
+  written byte for byte.
+
 ## [0.4.1] - 2026-09-17
 
 Wording fixes in `split`'s output and help.

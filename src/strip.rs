@@ -10,6 +10,7 @@
 use std::collections::HashSet;
 
 use crate::p21::{Exchange, Param, Record, Replacements};
+use crate::record::upper;
 
 /// What [`strip`] plans to change.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -112,10 +113,6 @@ pub fn strip(exchange: &Exchange<'_>, anonymize: bool) -> Stripped {
         replacements: plan.replacements,
         instances: touched.len(),
     }
-}
-
-fn upper(name: &[u8]) -> String {
-    String::from_utf8_lossy(name).to_ascii_uppercase()
 }
 
 #[derive(Default)]

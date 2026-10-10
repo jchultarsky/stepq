@@ -588,7 +588,7 @@ END-ISO-10303-21;
         assert!(!exchange.is_external(2));
         // #9 is defined by another file, not dangling.
         let graph = crate::model::Graph::new(exchange).unwrap();
-        assert!(graph.unresolved().is_empty());
+        assert!(graph.unresolved().is_empty(), "{:?}", graph.unresolved());
         assert_eq!(graph.references(0), [1]);
     }
 

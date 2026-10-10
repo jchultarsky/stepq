@@ -7,11 +7,11 @@
 //! `property_definition_representation`s tie to it. Values are returned as
 //! written: numbers are the source text, never re-parsed and re-printed.
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crate::model::{Graph, ProductStructure};
-use crate::p21::{Exchange, Instance, Literal, Param, Record};
+use crate::p21::{Exchange, Literal, Param, Record};
+use crate::record::{entity, text, upper};
 
 /// Everything [`properties`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,19 +221,6 @@ pub fn properties(graph: &Graph<'_>, structure: &ProductStructure) -> Properties
     }
 }
 
-/// The entities, upper-cased and joined with `+`, of instance `#id`.
-pub(crate) fn entity(exchange: &Exchange<'_>, instance: &Instance) -> String {
-    exchange
-        .records(instance)
-        .map(|record| upper(record.name()))
-        .collect::<Vec<_>>()
-        .join("+")
-}
-
-fn upper(name: &[u8]) -> String {
-    String::from_utf8_lossy(name).to_ascii_uppercase()
-}
-
 /// What `#target` is and which of `definitions` it belongs to.
 pub(crate) fn subject(exchange: &Exchange<'_>, definitions: &HashSet<u64>, target: u64) -> Subject {
     let entity = exchange
@@ -396,15 +383,6 @@ fn literal_text(literal: Literal<'_>) -> String {
         }
     }
     String::from_utf8_lossy(source).into_owned()
-}
-
-/// A string attribute, decoded; `None` if unset or not a string.
-pub(crate) fn text(param: Option<Param<'_>>) -> Option<String> {
-    let literal = param?.literal()?;
-    if literal.text().first() != Some(&b'\'') {
-        return None;
-    }
-    literal.decode().ok().map(Cow::into_owned)
 }
 
 #[cfg(test)]

@@ -278,7 +278,7 @@ END-ISO-10303-21;
         assert_eq!(header.name.as_deref(), Some("bracket.stp"));
         assert_eq!(header.time_stamp.as_deref(), Some("2026-09-12T10:00:00"));
         assert_eq!(header.author, ["J. Doe"]);
-        assert!(header.organization.is_empty());
+        assert!(header.organization.is_empty(), "{:?}", header.organization);
         assert_eq!(header.preprocessor_version.as_deref(), Some("ST-DEVELOPER"));
         assert_eq!(header.originating_system.as_deref(), Some("CAD 1.0"));
         assert_eq!(header.authorization, None);

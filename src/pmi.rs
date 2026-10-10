@@ -12,7 +12,8 @@ use std::collections::HashSet;
 
 use crate::model::{Graph, ProductStructure};
 use crate::p21::{Exchange, Literal, Param, Record};
-use crate::props::{Subject, Value, representation_items, subject, text, value};
+use crate::props::{Subject, Value, representation_items, subject, value};
+use crate::record::{text, upper};
 
 /// Everything [`pmi`] found, each list in file order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,10 +279,6 @@ pub fn pmi(graph: &Graph<'_>, structure: &ProductStructure) -> Pmi {
     found
 }
 
-fn upper(name: &[u8]) -> String {
-    String::from_utf8_lossy(name).to_ascii_uppercase()
-}
-
 /// The enumeration values in a set or list, lower case.
 fn enumerations(param: Option<Param<'_>>) -> Vec<String> {
     param
@@ -518,7 +515,7 @@ ENDSEC;END-ISO-10303-21;";
         let flatness = &found.tolerances[1];
         assert_eq!(flatness.kind, "flatness");
         assert_eq!(flatness.magnitude, Some(length(82, None, "0.05")));
-        assert!(flatness.datums.is_empty());
+        assert!(flatness.datums.is_empty(), "{:?}", flatness.datums);
         assert_eq!(flatness.target, on(61, "SHAPE_ASPECT"));
     }
 
