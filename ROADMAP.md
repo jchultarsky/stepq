@@ -106,7 +106,7 @@ against Open CASCADE by `tools/verify-read.py`.
 
 ## PMI to faces (0.6.0)
 
-- [ ] The faces and edges each tolerance, dimension and datum applies to,
+- [x] The faces and edges each tolerance, dimension and datum applies to,
       through shape aspects and their relationships (`pmi::AspectItems`),
       and `stepq pmi --geometry`.
 

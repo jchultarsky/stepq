@@ -814,12 +814,13 @@ size and location dimensions with nominal values, plus-minus bounds or
 limits, and their features. Values are printed as written in the file.
 
 ```
-stepq pmi FILE
+stepq pmi FILE [--geometry]
 ```
 
 | Option | |
 |---|---|
 | `FILE` | STEP file to inspect, or `-` for standard input. |
+| `--geometry` | Also list the representation items each datum, tolerance and dimension stands for. |
 
 The table lists, under each product definition, its datums, then its
 tolerances, then its dimensions, each in instance order. With
@@ -828,7 +829,34 @@ tolerances, then its dimensions, each in instance order. With
 tolerances, then dimensions, each in instance order. A file without
 semantic PMI prints `no semantic PMI`.
 
-Library: [`stepq::pmi::pmi`](https://docs.rs/stepq/latest/stepq/pmi/fn.pmi.html).
+With `--geometry`, each datum, tolerance and dimension is followed by the
+faces, edges, curves and points its shape aspect stands for, grouped by
+entity type, each once, and by every point where stepq stopped short of
+them with the reason: a relationship whose meaning only a description
+gives, a whole-shape target, a usage it does not read. A location lists
+its two ends (`from:`, `to:`). The links followed are only those the
+schema fixes: a usage naming items, a composite's components, a derived
+aspect's sources, a datum's features and targets, and a target's feature
+(see `docs/ARCHITECTURE.md`, "PMI to faces"). A value stated on a group
+applies to the group, not to each face. In JSON each datum, tolerance and
+dimension gains a `geometry` resolution (and a location
+`related_geometry`), with each item's route and the kinds of step its
+routes take; in CSV, `items`, `unresolved`, `related_items` and
+`related_unresolved` columns.
+
+```console
+$ stepq pmi nist_stc_10_asme1_ap242-e2.stp --geometry
+…
+  tolerance   cylindricity 0.1  Feature Control Frame (109)  [on COMPOSITE_GROUP_SHAPE_ASPECT #808]
+              ADVANCED_FACE #7046 #7047 #7045
+…
+  datum       H
+              no items; not resolved: #121 (DATUM_FEATURE): relationship #759 to #2923 has no stated meaning
+```
+
+Library: [`stepq::pmi::pmi`](https://docs.rs/stepq/latest/stepq/pmi/fn.pmi.html), and
+[`stepq::pmi::AspectItems`](https://docs.rs/stepq/latest/stepq/pmi/struct.AspectItems.html)
+for `--geometry`.
 
 ```console
 $ stepq pmi pmi-part.stp

@@ -25,6 +25,7 @@ is also a subcommand that prints Open CASCADE's side as tab-separated lines:
     tools/verify-occt.py occurrences FILE...
     tools/verify-occt.py topology FILE...
     tools/verify-occt.py shapes FILE...
+    tools/verify-occt.py gdt FILE...
 
 Exit status: 0 if every comparison holds, 1 if one fails, 2 if a file cannot
 be read. Needs uv (https://docs.astral.sh/uv/), which installs cadquery-ocp
@@ -727,6 +728,100 @@ def shapes(path: Path) -> list[LabelShape]:
     return found
 
 
+@dataclass
+class Gdt:
+    """One dimension, tolerance or datum of Open CASCADE's GD&T reading,
+    with the shapes it refers to as (entity number, class name) pairs."""
+
+    # dimension, tolerance or datum.
+    kind: str
+    # Open CASCADE's type, such as Position or Location_LinearDistance.
+    type: str
+    # A dimension's or tolerance's value, in mm; None for a datum.
+    value: float | None
+    # A datum's label.
+    label: str | None
+    first: list = field(default_factory=list)
+    second: list = field(default_factory=list)
+
+    def line(self) -> str:
+        """Tab-separated: kind, type, value or label, first and second
+        entity numbers, comma-separated."""
+        ranks = lambda refs: ",".join(str(rank) for rank, _ in refs)
+        shown = self.label if self.kind == "datum" else self.value
+        return f"{self.kind}\t{self.type}\t{shown}\t{ranks(self.first)}\t{ranks(self.second)}"
+
+
+def gdt(path: Path) -> list[Gdt]:
+    """Every dimension, tolerance and datum Open CASCADE reads in GD&T mode
+    (STEPCAFControl_Reader.SetGDTMode), with the shapes each refers to
+    (XCAFDoc_DimTolTool.GetRefShapeLabel) bound back to entity numbers."""
+    from OCP.collections import Sequence_TDF_Label
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPCAFControl import STEPCAFControl_Reader
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.XCAFDoc import (
+        XCAFDoc_Datum,
+        XCAFDoc_DimTolTool,
+        XCAFDoc_Dimension,
+        XCAFDoc_DocumentTool,
+        XCAFDoc_GeomTolerance,
+        XCAFDoc_ShapeTool,
+    )
+
+    document = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    reader = STEPCAFControl_Reader()
+    reader.SetGDTMode(True)
+    if reader.ReadFile(str(path)) != IFSelect_RetDone or not reader.Transfer(document):
+        raise OSError(f"Open CASCADE could not read {path}")
+    session = reader.ChangeReader().WS()
+    transfers = session.TransferReader()
+    model = session.Model()
+    # Number() returns 0 through these bindings, so entities are told apart
+    # by identity; the list keeps each binding alive.
+    entities = [model.Value(rank) for rank in range(1, model.NbEntities() + 1)]
+    ranks = {id(entity): rank for rank, entity in enumerate(entities, 1)}
+
+    def refs(labels) -> list:
+        found = []
+        for index in range(1, labels.Length() + 1):
+            shape = XCAFDoc_ShapeTool.GetShape_s(labels.Value(index))
+            entity = transfers.EntityFromShapeResult(shape, 1)
+            if entity is None:
+                entity = transfers.EntityFromShapeResult(shape, -1)
+            if entity is not None and id(entity) in ranks:
+                found.append((ranks[id(entity)], type(entity).__name__))
+        return found
+
+    tool = XCAFDoc_DocumentTool.DimTolTool_s(document.Main())
+    found = []
+    for kind, getter, attribute in (
+        ("dimension", tool.GetDimensionLabels, XCAFDoc_Dimension),
+        ("tolerance", tool.GetGeomToleranceLabels, XCAFDoc_GeomTolerance),
+        ("datum", tool.GetDatumLabels, XCAFDoc_Datum),
+    ):
+        labels = Sequence_TDF_Label()
+        getter(labels)
+        for index in range(1, labels.Length() + 1):
+            label = labels.Value(index)
+            first, second = Sequence_TDF_Label(), Sequence_TDF_Label()
+            XCAFDoc_DimTolTool.GetRefShapeLabel_s(label, first, second)
+            type_, value, name = "", None, None
+            if label.IsAttribute(attribute.GetID_s()):
+                read = attribute.Set_s(label).GetObject()
+                if kind == "datum":
+                    name = read.GetName().ToCString() if read.GetName() is not None else None
+                else:
+                    # XCAFDimTolObjects_DimensionType_Size_Radius -> Size_Radius.
+                    type_ = str(read.GetType()).split(".")[-1].split("Type_", 1)[-1]
+                    value = read.GetValue()
+            found.append(
+                Gdt(kind=kind, type=type_, value=value, label=name, first=refs(first), second=refs(second))
+            )
+    return found
+
+
 def compare(
     source: Summary, outputs: list[Summary], ignore_names: frozenset[str] = frozenset()
 ) -> list[str]:
@@ -786,6 +881,12 @@ def main() -> int:
         help="print each shape label, assemblies included: file, name, solids of its shape",
     )
     label_list.add_argument("files", nargs="+", type=Path)
+    gdt_list = commands.add_parser(
+        "gdt",
+        help="print each dimension, tolerance and datum Open CASCADE reads in GD&T mode: file, "
+        "kind, type, value or label, and the entity numbers of the shapes it refers to",
+    )
+    gdt_list.add_argument("files", nargs="+", type=Path)
     for name, function, what in (
         ("surfaces", surfaces, "face"),
         ("curves", curves, "edge"),
@@ -809,6 +910,11 @@ def main() -> int:
             for path in args.files:
                 for occurrence in occurrences(path):
                     print(f"{path}\t{occurrence.line()}")
+            return 0
+        if args.command == "gdt":
+            for path in args.files:
+                for read in gdt(path):
+                    print(f"{path}\t{read.line()}")
             return 0
         if args.command == "shapes":
             for path in args.files:

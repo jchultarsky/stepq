@@ -180,15 +180,21 @@ jobs:
       # name and by the whole file are pinned for this set; re-pin them when
       # the fixtures or the generated cases change.
       - run: tools/verify-read.py shapes --expect=154,20 tests/fixtures "$RUNNER_TEMP/occt-cases"
+      # Reads every tolerance, dimension and datum in GD&T mode and pairs them
+      # with `stepq pmi --geometry`'s, links only stepq makes left out: each
+      # tolerance one to one, each dimension with one of stepq's, each datum
+      # label by its items. The few differences allowed are named, with
+      # their reasons, in the script; the counts are pinned for this set.
+      - run: tools/verify-read.py pmi --expect=328,250,54 tests/fixtures
       # The unit tests that check attribute positions and type lists against
       # the four schemas, which only skip where the schemas are not fetched.
       - run: tools/fetch-schemas.sh
-      - run: cargo test --all-features --lib -- topology::tests::attribute_positions_match_the_schemas model::shape::tests::relationship_and_mapped_item_types_match_the_schemas
+      - run: cargo test --all-features --lib -- topology::tests::attribute_positions_match_the_schemas model::shape::tests::relationship_and_mapped_item_types_match_the_schemas pmi::items::tests::type_lists_and_positions_match_the_schemas record::tests::shape_aspects_keep_of_shape_third
         env:
           STEPQ_REQUIRE_FIXTURES: "1"
       # The fixture tests with their pinned counts; a missing core fixture
       # fails them here instead of skipping.
-      - run: cargo test --all-features --test units --test geometry --test placements --test topology --test shape --test fixtures
+      - run: cargo test --all-features --test units --test geometry --test placements --test topology --test shape --test pmi_items --test fixtures
         env:
           STEPQ_REQUIRE_FIXTURES: "1"
 

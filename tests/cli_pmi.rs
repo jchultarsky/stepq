@@ -164,3 +164,84 @@ fn a_file_without_pmi_says_so() {
         .success()
         .stdout(predicate::str::diff("no semantic PMI\n"));
 }
+
+/// The sample with faces named for the hole and the face, and for datum A's
+/// feature.
+fn with_usages() -> String {
+    SAMPLE.replace(
+        "ENDSEC;END-ISO-10303-21;",
+        "#200=ADVANCED_FACE('',(),#209,.T.);#201=ADVANCED_FACE('',(),#209,.T.);
+#202=ADVANCED_FACE('',(),#209,.T.);#203=SHAPE_REPRESENTATION('',(#200,#201,#202),#1);
+#204=GEOMETRIC_ITEM_SPECIFIC_USAGE('','',#60,#203,#200);
+#205=GEOMETRIC_ITEM_SPECIFIC_USAGE('','',#61,#203,#201);
+#206=DATUM_FEATURE('','',#20,.T.);#207=SHAPE_ASPECT_RELATIONSHIP('','',#206,#30);
+#208=GEOMETRIC_ITEM_SPECIFIC_USAGE('','',#206,#203,#202);
+ENDSEC;END-ISO-10303-21;",
+    )
+}
+
+#[test]
+fn pmi_geometry_lists_what_each_stands_for() {
+    stepq()
+        .args(["pmi", "--geometry", "-"])
+        .write_stdin(with_usages())
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(
+            "part [P]  #12\n  \
+             datum       A\n              \
+             ADVANCED_FACE #202\n  \
+             datum       B\n              \
+             no items; not resolved: #31 (DATUM): nothing names its items\n  \
+             tolerance   position 0.75 (maximum_material_requirement) | A | B (maximum_material_requirement)  Position.1  [on SHAPE_ASPECT #60]\n              \
+             ADVANCED_FACE #200\n  \
+             tolerance   flatness 0.05  Flatness.1  [on SHAPE_ASPECT #61]\n              \
+             ADVANCED_FACE #201\n  \
+             dimension   diameter 35. (-0.2 .. 0.)  [on SHAPE_ASPECT #60]\n              \
+             ADVANCED_FACE #200\n  \
+             dimension   linear distance  [from SHAPE_ASPECT #60 to SHAPE_ASPECT #61]\n              \
+             from: ADVANCED_FACE #200\n              \
+             to: ADVANCED_FACE #201\n\
+             \n\
+             2 datums, 2 tolerances, 2 dimensions\n",
+        ));
+}
+
+#[test]
+fn pmi_geometry_json_and_csv() {
+    let out = stepq()
+        .args(["pmi", "--geometry", "--format", "json", "-"])
+        .write_stdin(with_usages())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(json["datums"][0]["geometry"]["items"][0]["item"], 202);
+    assert_eq!(
+        json["datums"][0]["geometry"]["items"][0]["via"][0]["kind"],
+        "datum_feature"
+    );
+    assert_eq!(
+        json["datums"][1]["geometry"]["unresolved"][0]["reason"]["kind"],
+        "no_usage"
+    );
+    let location = &json["dimensions"][1];
+    assert_eq!(location["geometry"]["items"][0]["item"], 200);
+    assert_eq!(location["related_geometry"]["items"][0]["item"], 201);
+    assert!(json["tolerances"][0].get("related_geometry").is_none());
+
+    stepq()
+        .args(["pmi", "--geometry", "--format", "csv", "-"])
+        .write_stdin(with_usages())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "target,target_type,items,unresolved,related_items,related_unresolved\n",
+        ))
+        .stdout(predicate::str::contains(
+            ",#31,DATUM,,#31 nothing names its items,,\n",
+        ))
+        .stdout(predicate::str::contains(",#60,SHAPE_ASPECT,#200,,#201,\n"));
+}

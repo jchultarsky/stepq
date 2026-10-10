@@ -12,7 +12,7 @@ The read milestone begins, under a reworded rule: stepq reads what a file
 states and never computes what it does not. First, unit factors; then the
 geometry values they scale; then the placements that put components into
 assemblies; then the topology of a solid; then the solids of a
-definition.
+definition; then the faces PMI applies to.
 
 ### Added
 
@@ -138,6 +138,23 @@ definition.
   `tools/verify-read.py shapes` matches every definition's subtree solids
   with Open CASCADE 8.0.1's shape labels, and CI runs it on the core
   fixtures and pins its counts. `examples/shapes.rs` prints stepq's side.
+- `pmi::AspectItems`: the representation items a datum's, tolerance's or
+  dimension's shape aspect stands for. `resolve` lists each face, edge,
+  curve or point once, with a shortest route and the kinds of step its
+  routes take (a composite's component, a derived aspect's source, a
+  datum's feature or target, a target's feature), and every point where a
+  route stopped, with the reason; `naming` lists the definitions that name
+  an item. Only links the schema fixes are followed; every other link,
+  usage or target is reported, never guessed. Each aspect is expanded once,
+  so a resolution is linear in the file. On the 17 NIST AP242 files, 637 of
+  683 tolerance and dimension ends reach a face, 42 other items and 4
+  nothing, for stated reasons; `tools/verify-read.py pmi` pairs all 328 of
+  Open CASCADE 8.0.1's tolerances one to one with stepq's and matches its
+  dimensions and datums but three named exceptions, and CI pins the counts.
+- `stepq pmi --geometry`: each datum, tolerance and dimension with the
+  items it stands for and where stepq stopped, in table, JSON (`geometry`,
+  `related_geometry`) and CSV (`items`, `unresolved`, `related_items`,
+  `related_unresolved`).
 
 ### Changed
 
@@ -156,6 +173,19 @@ definition.
   which misplaces 131 of the 139 occurrences in the Pro/ENGINEER fixtures.
 
 ### Fixed
+
+- `stepq pmi` (`pmi::pmi`) reads `directed_dimensional_location`,
+  `dimensional_size_with_datum_feature` and
+  `dimensional_location_with_datum_feature`, which it skipped: NIST STC-07
+  gains dimensions #14028, #14030, #16317, #16368, #16419 and #16470.
+- `stepq pmi` and `stepq props` tie a target to its product definition
+  through a complex shape aspect (whose first partial, such as
+  `COMPOSITE_SHAPE_ASPECT()`, holds nothing) and through every simple
+  `shape_aspect` subtype, such as `centre_of_symmetry` and the dimensions
+  with datum features. 36 NIST tolerance and dimension ends that printed
+  under "not attached to a product definition" are now under their part,
+  and so are 161 properties and identifiers `stepq props` lists in ten
+  NIST files; nothing else in either output changes.
 
 - `ProductStructure` places a usage through a mapped item written as a
   complex instance: it read the item's `mapping_source` and

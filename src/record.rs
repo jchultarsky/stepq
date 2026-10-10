@@ -178,6 +178,119 @@ pub(crate) fn is_context_record(record: Record<'_>) -> bool {
     name.ends_with("REPRESENTATION_CONTEXT") || name.ends_with("ASSIGNED_CONTEXT")
 }
 
+/// `shape_aspect` and its subtypes in the four schemas whose simple
+/// records keep `of_shape` as attribute 2, as `shape_aspect` itself does.
+/// The few that list another supertype first (the assembly joints, an
+/// AP242 `instanced_feature`) are not here.
+pub(crate) const SHAPE_ASPECTS: &[&str] = &[
+    "ALL_AROUND_SHAPE_ASPECT",
+    "APEX",
+    "APPLIED_AREA",
+    "ASSEMBLY_BOND_DEFINITION",
+    "ASSEMBLY_SHAPE_CONSTRAINT",
+    "ASSEMBLY_SHAPE_JOINT",
+    "BASIC_ROUND_HOLE_OCCURRENCE",
+    "BASIC_ROUND_HOLE_OCCURRENCE_IN_ASSEMBLY",
+    "BEAD_END",
+    "BETWEEN_SHAPE_ASPECT",
+    "BOSS_TOP",
+    "CENTRE_OF_SYMMETRY",
+    "CHAMFER",
+    "CHAMFER_OFFSET",
+    "CIRCULAR_CLOSED_PROFILE",
+    "CLOSED_PATH_PROFILE",
+    "COMMON_DATUM",
+    "COMPONENT_FEATURE",
+    "COMPONENT_MATING_CONSTRAINT_CONDITION",
+    "COMPONENT_PATH_SHAPE_ASPECT",
+    "COMPONENT_TERMINAL",
+    "COMPOSITE_GROUP_SHAPE_ASPECT",
+    "COMPOSITE_SHAPE_ASPECT",
+    "COMPOSITE_UNIT_SHAPE_ASPECT",
+    "CONNECTION_ZONE_INTERFACE_PLANE_RELATIONSHIP",
+    "CONNECTIVITY_DEFINITION",
+    "CONSTITUENT_SHAPE_ASPECT",
+    "CONTACTING_FEATURE",
+    "CONTACT_FEATURE",
+    "CONTINUOUS_SHAPE_ASPECT",
+    "COUNTERBORE_HOLE_OCCURRENCE",
+    "COUNTERBORE_HOLE_OCCURRENCE_IN_ASSEMBLY",
+    "COUNTERDRILL_HOLE_OCCURRENCE",
+    "COUNTERDRILL_HOLE_OCCURRENCE_IN_ASSEMBLY",
+    "COUNTERSINK_HOLE_OCCURRENCE",
+    "COUNTERSINK_HOLE_OCCURRENCE_IN_ASSEMBLY",
+    "CROSS_SECTIONAL_ALTERNATIVE_SHAPE_ELEMENT",
+    "CROSS_SECTIONAL_GROUP_SHAPE_ELEMENT",
+    "CROSS_SECTIONAL_GROUP_SHAPE_ELEMENT_WITH_LACING",
+    "CROSS_SECTIONAL_GROUP_SHAPE_ELEMENT_WITH_TUBULAR_COVER",
+    "CROSS_SECTIONAL_OCCURRENCE_SHAPE_ELEMENT",
+    "CROSS_SECTIONAL_PART_SHAPE_ELEMENT",
+    "DATUM",
+    "DATUM_FEATURE",
+    "DATUM_REFERENCE_COMPARTMENT",
+    "DATUM_REFERENCE_ELEMENT",
+    "DATUM_SYSTEM",
+    "DATUM_SYSTEM_FOR_COMPOSITE_GROUP_ELEMENT",
+    "DATUM_TARGET",
+    "DERIVED_SHAPE_ASPECT",
+    "DIMENSIONAL_LOCATION_WITH_DATUM_FEATURE",
+    "DIMENSIONAL_SIZE_WITH_DATUM_FEATURE",
+    "DIRECTED_ANGLE",
+    "DIRECTED_TOLERANCE_ZONE",
+    "DIRECTION_FEATURE_TOLERANCE_ZONE",
+    "EDGE_ROUND",
+    "EXTENSION",
+    "FACE_SURFACE_SHAPE_ASPECT",
+    "FILLET",
+    "GENERAL_DATUM_REFERENCE",
+    "GEOMETRIC_ALIGNMENT",
+    "GEOMETRIC_CONTACT",
+    "GEOMETRIC_INTERSECTION",
+    "HARNESS_NODE",
+    "HARNESS_SEGMENT",
+    "HOLE_BOTTOM",
+    "JOGGLE_TERMINATION",
+    "LINEAR_PROFILE",
+    "MODIFIED_PATTERN",
+    "NGON_CLOSED_PROFILE",
+    "OPEN_PATH_PROFILE",
+    "ORIENTED_TOLERANCE_ZONE",
+    "PARALLEL_OFFSET",
+    "PARTIAL_CIRCULAR_PROFILE",
+    "PATH_FEATURE_COMPONENT",
+    "PERPENDICULAR_TO",
+    "PHYSICAL_COMPONENT_FEATURE",
+    "PHYSICAL_COMPONENT_INTERFACE_TERMINAL",
+    "PHYSICAL_COMPONENT_TERMINAL",
+    "PLACED_DATUM_TARGET_FEATURE",
+    "PLACED_FEATURE",
+    "POCKET_BOTTOM",
+    "PROFILE_FLOOR",
+    "RECTANGULAR_CLOSED_PROFILE",
+    "RIB_TOP_FLOOR",
+    "ROUNDED_U_PROFILE",
+    "SHAPE_ASPECT",
+    "SHAPE_ASPECT_OCCURRENCE",
+    "SLOT_END",
+    "SPOTFACE_OCCURRENCE",
+    "SPOTFACE_OCCURRENCE_IN_ASSEMBLY",
+    "SQUARE_U_PROFILE",
+    "SURFACE_SHAPE_ASPECT",
+    "SYMMETRIC_SHAPE_ASPECT",
+    "TANGENT",
+    "TAPER",
+    "TEE_PROFILE",
+    "TERMINAL_FEATURE",
+    "TERMINAL_LOCATION_GROUP",
+    "THREAD_RUNOUT",
+    "TOLERANCE_ZONE",
+    "TOLERANCE_ZONE_WITH_DATUM",
+    "TRANSITION_FEATURE",
+    "TRANSPORT_FEATURE",
+    "TWISTED_CROSS_SECTIONAL_GROUP_SHAPE_ELEMENT",
+    "VEE_PROFILE",
+];
+
 /// A topological container: an entity that holds faces, shells or other
 /// containers in some of its attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,6 +538,69 @@ mod tests {
             "two contexts: neither is read"
         );
         assert_eq!(representation(&x, 6), Err(NotRepresentation::Layout));
+    }
+
+    /// `SHAPE_ASPECTS` is exactly the subtypes of `shape_aspect` whose
+    /// `of_shape` is attribute 2 in every schema (`tools/fetch-schemas.sh`;
+    /// skipped without them, failed with `STEPQ_REQUIRE_FIXTURES=1`).
+    #[test]
+    fn shape_aspects_keep_of_shape_third() {
+        use crate::express::Schema;
+        use std::collections::{BTreeMap, BTreeSet};
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/schemas");
+        let mut layouts: BTreeMap<String, bool> = BTreeMap::new();
+        let mut read = 0;
+        for file in [
+            "ap242e4_mim_lf.exp",
+            "ap214e3.exp",
+            "ap203e2_mim_lf.exp",
+            "ap203.exp",
+        ] {
+            let Ok(src) = std::fs::read(dir.join(file)) else {
+                continue;
+            };
+            read += 1;
+            let schema = Schema::parse(&src).unwrap();
+            let mut found = BTreeSet::from(["SHAPE_ASPECT".to_owned()]);
+            let mut stack = vec!["SHAPE_ASPECT".to_owned()];
+            while let Some(name) = stack.pop() {
+                for entity in schema.entities() {
+                    if entity
+                        .supertypes
+                        .iter()
+                        .any(|s| s.eq_ignore_ascii_case(&name))
+                        && found.insert(entity.name.clone())
+                    {
+                        stack.push(entity.name.clone());
+                    }
+                }
+            }
+            for name in found {
+                let third = schema
+                    .slots(&name)
+                    .unwrap()
+                    .get(2)
+                    .map(|slot| slot.name.clone());
+                let ok = third.as_deref() == Some("OF_SHAPE");
+                *layouts.entry(name).or_insert(true) &= ok;
+            }
+        }
+        let required =
+            std::env::var_os("STEPQ_REQUIRE_FIXTURES").is_some_and(|v| v != "0" && !v.is_empty());
+        if read < 4 {
+            assert!(
+                !required,
+                "{read} of 4 schemas (run tools/fetch-schemas.sh)"
+            );
+            return;
+        }
+        let expected: BTreeSet<&str> = layouts
+            .iter()
+            .filter(|(_, ok)| **ok)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let listed: BTreeSet<&str> = SHAPE_ASPECTS.iter().copied().collect();
+        assert_eq!(listed, expected);
     }
 
     #[test]
