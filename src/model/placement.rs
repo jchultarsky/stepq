@@ -35,6 +35,8 @@ const MAPPED_ITEM_LAYOUT: &str =
 const NOT_HELD: &str = "no shape representation of the assembly lists the mapped item";
 const HELD_TWICE: &str = "more than one shape representation of the assembly lists the mapped \
      item, so the context of its target is not certain";
+const SHARED_MAPPED_ITEM: &str = "the mapped item places more than one usage, so which one \
+     it places is not certain";
 const MAP_LAYOUT: &str =
     "not a representation_map with an origin and a representation, as the schema gives it";
 const NOT_THE_COMPONENT: &str = "maps no shape representation of the component";
@@ -161,12 +163,14 @@ impl<'s> Placements<'s> {
         let mut frames = Frames {
             graph,
             readers: HashMap::new(),
+            items: HashMap::new(),
         };
-        let usages = structure
+        let mut usages: Vec<UsageRead> = structure
             .usages()
             .iter()
             .map(|usage| read_usage(&mut frames, structure, usage))
             .collect();
+        refuse_shared_mapped_items(structure, &mut usages);
         Self { structure, usages }
     }
 
@@ -464,13 +468,30 @@ fn is_finite(transform: &Rigid) -> bool {
         .all(|value| value.is_finite())
 }
 
-/// Readers per representation, each built once.
+/// Readers and item sets per representation, each built once: a file can
+/// hold thousands of usages placed through one representation.
 struct Frames<'g, 'a> {
     graph: &'g Graph<'a>,
     readers: HashMap<u64, Result<Reader<'g, 'a>, UnitError>>,
+    /// The items of each representation, `None` if it cannot be read as one.
+    items: HashMap<u64, Option<HashSet<u64>>>,
 }
 
 impl Frames<'_, '_> {
+    /// The items of `#representation`, or `None` if it cannot be read as a
+    /// representation.
+    fn items(&mut self, representation: u64) -> Option<&HashSet<u64>> {
+        let exchange = self.graph.exchange();
+        self.items
+            .entry(representation)
+            .or_insert_with(|| {
+                record::representation(exchange, representation)
+                    .ok()
+                    .map(|read| read.items.into_iter().collect())
+            })
+            .as_ref()
+    }
+
     /// The `axis2_placement_3d` `#item`, read in the context of
     /// `#representation`, for usage `#usage`.
     fn read(
@@ -557,6 +578,32 @@ fn read_usage(
             Some(refusal) => Err(refusal),
             None => result,
         },
+    }
+}
+
+/// A mapped item places one occurrence, so one that two usages claim (an
+/// assembly whose shape is defined twice, or a representation two components
+/// share) places neither for certain: each such usage is refused.
+fn refuse_shared_mapped_items(structure: &ProductStructure, usages: &mut [UsageRead]) {
+    let mapped_item = |usage: &Usage| match usage.placement {
+        Some(Placement::MappedItem { mapped_item, .. }) => Some(mapped_item),
+        _ => None,
+    };
+    let mut claims: HashMap<u64, usize> = HashMap::new();
+    for item in structure.usages().iter().filter_map(mapped_item) {
+        *claims.entry(item).or_default() += 1;
+    }
+    for (usage, read) in structure.usages().iter().zip(usages) {
+        let Some(item) = mapped_item(usage) else {
+            continue;
+        };
+        if claims.get(&item).is_some_and(|&count| count > 1) && read.result.is_ok() {
+            read.result = Err(PlacementError::Inconsistent {
+                usage: usage.instance,
+                instance: item,
+                reason: SHARED_MAPPED_ITEM,
+            });
+        }
     }
 }
 
@@ -741,17 +788,15 @@ impl<'g, 'a> Reading<'_, 'g, 'a> {
 
     /// Requires `#item` to be listed among the items of `#representation`.
     fn listed(
-        &self,
+        &mut self,
         item: u64,
         representation: u64,
         reason: &'static str,
     ) -> Result<(), PlacementError> {
-        let read = record::representation(self.exchange(), representation)
-            .map_err(|_| self.inconsistent(representation, NOT_A_REPRESENTATION))?;
-        if read.items.contains(&item) {
-            Ok(())
-        } else {
-            Err(self.inconsistent(item, reason))
+        match self.frames.items(representation) {
+            None => Err(self.inconsistent(representation, NOT_A_REPRESENTATION)),
+            Some(items) if items.contains(&item) => Ok(()),
+            Some(_) => Err(self.inconsistent(item, reason)),
         }
     }
 
@@ -795,15 +840,16 @@ impl<'g, 'a> Reading<'_, 'g, 'a> {
             return Err(self.inconsistent(item, MAPPED_ITEM_LAYOUT));
         };
 
-        let mut holders: Vec<u64> = self
-            .assembly_shapes
-            .iter()
-            .copied()
-            .filter(|&representation| {
-                record::representation(exchange, representation)
-                    .is_ok_and(|read| read.items.contains(&item))
-            })
-            .collect();
+        let mut holders: Vec<u64> = Vec::new();
+        for &representation in self.assembly_shapes {
+            if self
+                .frames
+                .items(representation)
+                .is_some_and(|items| items.contains(&item))
+            {
+                holders.push(representation);
+            }
+        }
         holders.sort_unstable();
         holders.dedup();
         let holder = match holders.as_slice() {
@@ -932,8 +978,9 @@ pub enum PlacementError {
     },
     /// Valid STEP that is not read as a placement: a
     /// `cartesian_transformation_operator` of any dimension, a
-    /// `functionally_defined_transformation`, any complex transformation,
-    /// relationship or map, a complex mapped item with more than a
+    /// `functionally_defined_transformation`, any complex transformation or
+    /// map, a simple relationship that is not a `representation_relationship`
+    /// (complex ones are read), a complex mapped item with more than a
     /// representation item's partials, and a transform item, mapping origin
     /// or mapping target that is not an `axis2_placement_3d`.
     Unsupported {
@@ -949,10 +996,11 @@ pub enum PlacementError {
     /// shape representations; `transform_item_k` is not listed directly in
     /// `rep_k`'s items; the usage has more than one
     /// `context_dependent_shape_representation`; not exactly one of the
-    /// assembly's shape representations lists a mapped item; a path places
-    /// a definition through one representation and holds its components in
-    /// another; a root's usages disagree on its representation; or a record
-    /// does not have the attributes the schema gives it.
+    /// assembly's shape representations lists a mapped item, or one mapped
+    /// item places more than one usage; a path places a definition through
+    /// one representation and holds its components in another; a root's
+    /// usages disagree on its representation; or a record does not have the
+    /// attributes the schema gives it.
     Inconsistent {
         /// The usage.
         usage: u64,
@@ -1537,6 +1585,57 @@ mod tests {
         let target = file.frame([0.0, 0.0, 7.0], Some(Z), Some(Y));
         file.mapped(assembly.1, part.1, origin, target);
         assert_close(&usage_of(&file, usage), rigid(QUARTER, [0.0, -1.0, 7.0]));
+    }
+
+    /// A mapped item places one occurrence. Two usages that both claim it
+    /// are refused, whether the assembly's shape is defined twice (so its
+    /// one mapped item is counted twice) or two components share the
+    /// representation it maps.
+    #[test]
+    fn a_mapped_item_places_only_one_usage() {
+        let shared = |usages: &[u64], item: u64, file: &File| {
+            for &usage in usages {
+                assert_eq!(
+                    usage_of(file, usage),
+                    Err(PlacementError::Inconsistent {
+                        usage,
+                        instance: item,
+                        reason: SHARED_MAPPED_ITEM,
+                    })
+                );
+            }
+        };
+
+        let mut file = File::new();
+        let assembly = file.definition("a", MM);
+        let shape = file.add(&format!("PRODUCT_DEFINITION_SHAPE('','',#{})", assembly.0));
+        file.add(&format!(
+            "SHAPE_DEFINITION_REPRESENTATION(#{shape},#{})",
+            assembly.1
+        ));
+        let part = file.definition("p", MM);
+        let first = file.usage(assembly.0, part.0);
+        let second = file.usage(assembly.0, part.0);
+        let origin = file.identity();
+        let target = file.frame([10.0, 0.0, 0.0], None, None);
+        let item = file.mapped(assembly.1, part.1, origin, target);
+        shared(&[first, second], item, &file);
+
+        let mut file = File::new();
+        let assembly = file.definition("a", MM);
+        let part = file.definition("p", MM);
+        let twin = file.add("PRODUCT_DEFINITION('q','',$,$)");
+        let shape = file.add(&format!("PRODUCT_DEFINITION_SHAPE('','',#{twin})"));
+        file.add(&format!(
+            "SHAPE_DEFINITION_REPRESENTATION(#{shape},#{})",
+            part.1
+        ));
+        let first = file.usage(assembly.0, part.0);
+        let second = file.usage(assembly.0, twin);
+        let origin = file.identity();
+        let target = file.frame([10.0, 0.0, 0.0], None, None);
+        let item = file.mapped(assembly.1, part.1, origin, target);
+        shared(&[first, second], item, &file);
     }
 
     /// Each frame is read in the context its position assigns: an inch

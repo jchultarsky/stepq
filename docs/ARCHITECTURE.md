@@ -493,7 +493,8 @@ every occurrence below it, and for nothing else:
   `NoTransformation` (a plain `shape_representation_relationship`).
 * `Unsupported`: every `cartesian_transformation_operator`, which can scale
   and mirror, a `functionally_defined_transformation`, complex
-  transformations, relationships and maps, a complex mapped item with more
+  transformations and maps, a simple relationship that is not a
+  `representation_relationship`, a complex mapped item with more
   than a representation item's partials (Creo's scaled camera images), and a
   frame that is not an `axis2_placement_3d`. None occurs in the fixtures.
 * `Inconsistent`, read strictly: `rep_1` and `rep_2` must be exactly one of
@@ -502,7 +503,10 @@ every occurrence below it, and for nothing else:
   `rep_k` use it, perhaps through another item; no fixture needs that), a
   usage must have one `context_dependent_shape_representation`
   (`ProductStructure` identifies the first), one of the assembly's shape
-  representations must list a mapped item, and a path must place each
+  representations must list a mapped item, which must place only one usage
+  (an assembly whose shape is defined twice, or a representation two
+  components share, lets one mapped item meet the count of two usages), and
+  a path must place each
   definition through the representation that holds its components, a root's
   usages agreeing on it. In the fixtures `transform_item_1` is listed in both
   representations 39 times (the AS1 files by AutoCAD, Matra and Unigraphics

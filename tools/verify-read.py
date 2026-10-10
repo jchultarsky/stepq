@@ -696,6 +696,18 @@ def stepq_key(line: dict) -> tuple:
     return tuple(zip(components, products))
 
 
+def same_products(line: dict, occurrence) -> bool:
+    """True if an occurrence's path is as deep as stepq's and every product
+    on it that Open CASCADE names has stepq's name. Open CASCADE leaves a
+    product unnamed (one of EXPANSION_LABELS) when it reaches it through a
+    mapped item, as in the moon buggy."""
+    ours = [occt_product_name(product) for product in line["products"]]
+    return len(ours) == len(occurrence.products) and all(
+        theirs == mine or theirs in EXPANSION_LABELS
+        for mine, theirs in zip(ours, occurrence.products)
+    )
+
+
 def occt_occurrence_key(occurrence) -> tuple:
     """The names on an Open CASCADE occurrence's path."""
     return tuple(zip(occurrence.instances, occurrence.products))
@@ -773,12 +785,13 @@ def check_occurrences(path: Path, tally: OccurrenceTally) -> list[str]:
         take(found, line, "by_name")
     by_value = []
     for line in unnamed:
-        depth = len(line["products"])
-        found = best(line, (i for i, o in enumerate(theirs) if len(o.instances) == depth))
+        # Where Open CASCADE names the products on the path, they must still
+        # be the same ones: a transform alone does not tell parts apart.
+        found = best(line, (i for i, o in enumerate(theirs) if same_products(line, o)))
         if found is None:
             problems.append(
                 f"{label(line)} ({'/'.join(name for name, _ in stepq_key(line))}): no "
-                "occurrence in Open CASCADE has its names, nor its transform at its depth"
+                "occurrence in Open CASCADE has its names, nor its products and transform"
             )
             continue
         take(found, line, "by_value")

@@ -249,7 +249,8 @@ const AS1_UG: [Pinned; 6] = [
 
 /// Creo's Open Rack power and battery units place inch components in
 /// millimetre assemblies, each frame read in its own representation's
-/// units. Under 16 MB, so they are read by default when fetched.
+/// units: a frame read in the other side's units moves these parts by
+/// metres. Under 16 MB, so they are read by default when fetched.
 #[test]
 fn inch_components_in_millimetre_assemblies() {
     for (file, usages, mixed) in [
@@ -285,26 +286,103 @@ fn inch_components_in_millimetre_assemblies() {
         let mut found = BTreeMap::new();
         for &root in structure.roots() {
             for occurrence in placements.occurrences(root) {
-                assert!(occurrence.transform.is_ok(), "{file}: {occurrence:?}");
+                let transform = occurrence
+                    .transform
+                    .clone()
+                    .unwrap_or_else(|error| panic!("{file}: {occurrence:?}: {error}"));
                 let component = occurrence.representation.unwrap();
                 if let Some((&usage, parent)) = occurrence.path.split_last() {
                     let assembly = representations[parent];
-                    let pair = (factor(assembly).to_bits(), factor(component).to_bits());
-                    if pair.0 != pair.1 {
-                        found.insert(usage, (f64::from_bits(pair.0), f64::from_bits(pair.1)));
+                    let factors = (factor(assembly), factor(component));
+                    #[expect(clippy::float_cmp, reason = "the factors are exact as stated")]
+                    let differ = factors.0 != factors.1;
+                    if differ {
+                        let instance = structure.usages()[usage].instance;
+                        found.insert(instance, (factors, transform));
                     }
                 }
                 representations.insert(occurrence.path, component);
             }
         }
-        let found: Vec<(f64, f64)> = found.into_values().collect();
-        assert_eq!(found, mixed, "{file}");
+        let instances: Vec<u64> = found.keys().copied().collect();
+        let expected: Vec<u64> = mixed.iter().map(|(usage, ..)| *usage).collect();
+        assert_eq!(instances, expected, "{file}");
+        for (usage, factors, matrix) in mixed {
+            let (found_factors, transform) = &found[usage];
+            assert_eq!(found_factors, factors, "{file}: usage #{usage}");
+            assert!(
+                close(transform, *matrix),
+                "{file}: usage #{usage}: {transform:?}"
+            );
+        }
     }
 }
 
-/// The (assembly, component) length factors of the PSU 3 kW's usages whose
-/// two representations differ in length unit: four inch components in
-/// millimetre assemblies.
-const MIXED_PSU: &[(f64, f64)] = &[(1.0, 25.4); 4];
-/// The same for the BBU 3 kW: two.
-const MIXED_BBU: &[(f64, f64)] = &[(1.0, 25.4); 2];
+/// A usage whose two representations differ in length unit: its `#id`, the
+/// (assembly, component) length factors, and the transform of its
+/// occurrence to the root, as Open CASCADE 8.0.1 places it (3x4, row by
+/// row, in mm).
+type Mixed = (u64, (f64, f64), Matrix);
+
+/// The PSU 3 kW's four inch components in millimetre assemblies, each the
+/// only occurrence of its usage.
+const MIXED_PSU: &[Mixed] = &[
+    (
+        164_006,
+        (1.0, 25.4),
+        [
+            [0., 0., 1., -25.3453],
+            [0., 1., 0., 38.9111],
+            [-1., 0., 0., 197.817],
+        ],
+    ),
+    (
+        164_019,
+        (1.0, 25.4),
+        [
+            [0., 0., 1., -25.3453],
+            [0., -1., 0., 1.0889],
+            [1., 0., 0., 194.007],
+        ],
+    ),
+    (
+        169_816,
+        (1.0, 25.4),
+        [
+            [0., 1., 0., 36.2111],
+            [0., 0., -1., 36.3957],
+            [-1., 0., 0., 234.817],
+        ],
+    ),
+    (
+        169_829,
+        (1.0, 25.4),
+        [
+            [0., -1., 0., -35.1111],
+            [0., 0., 1., 3.6043],
+            [-1., 0., 0., 234.817],
+        ],
+    ),
+];
+
+/// The same for the BBU 3 kW: two, in a sub-assembly (usage #200884).
+const MIXED_BBU: &[Mixed] = &[
+    (
+        200_758,
+        (1.0, 25.4),
+        [
+            [0., 1., 0., 79.049_775_342_59],
+            [0., 0., 1., 18.0297],
+            [1., 0., 0., -37.193_000_484_5],
+        ],
+    ),
+    (
+        200_775,
+        (1.0, 25.4),
+        [
+            [0., -1., 0., 3.127_575_342_59],
+            [0., 0., 1., 18.0297],
+            [-1., 0., 0., -33.383_000_484_7],
+        ],
+    ),
+];
