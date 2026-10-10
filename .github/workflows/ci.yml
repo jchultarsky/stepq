@@ -137,23 +137,35 @@ jobs:
       # Writes the files only Open CASCADE writes (never committed): the same
       # plate in millimetres, inches, feet, centimetres and metres, and a part
       # with every elementary surface, a cone point and a void in millimetres
-      # and inches.
+      # and inches; and, under assemblies/, a nested assembly with a repeated
+      # sub-assembly and arbitrary rotations, and two cases made from it that
+      # ISO 10303 and Open CASCADE place differently.
       - run: tools/gen-occt-cases.py "$RUNNER_TEMP/occt-cases"
       # Reads every unit context through stepq and Open CASCADE and compares
       # their factors and uncertainties.
       - run: tools/verify-read.py units tests/fixtures "$RUNNER_TEMP/occt-cases"
       # Reads the surface of every face and the 3D curve of every edge of a
       # face through both, in mm and rad, and matches them one to one (the
-      # cylinder axes and hole circles of M1's exit test). Open CASCADE's
-      # healing is excused rather than matched, so its tallies (lines and
-      # circles that are seams, pieces of split edges, other curves) are
-      # pinned for this set: an edge stepq stops reading changes them.
-      # Re-pin them when the fixtures or the generated cases change.
-      - run: tools/verify-read.py surfaces tests/fixtures "$RUNNER_TEMP/occt-cases"
-      - run: tools/verify-read.py curves --healing=5,267,770 tests/fixtures "$RUNNER_TEMP/occt-cases"
+      # cylinder axes and hole circles of M1's exit test), on the fixtures
+      # and the generated parts. Open CASCADE's healing is excused rather than
+      # matched, so its tallies (lines and circles that are seams, pieces of
+      # split edges, other curves) are pinned for this set: an edge stepq
+      # stops reading changes them. Re-pin them when the fixtures or the
+      # generated parts change.
+      - run: tools/verify-read.py surfaces tests/fixtures "$RUNNER_TEMP"/occt-cases/*.step
+      - run: tools/verify-read.py curves --healing=5,267,770 tests/fixtures "$RUNNER_TEMP"/occt-cases/*.step
+      # Places every occurrence under every root through both, in mm, and
+      # matches them one to one by the names on their paths, or by value
+      # where Open CASCADE leaves a component unnamed (M1's exit test, part
+      # 1). The divergence cases must be refused. The counts of occurrences
+      # matched and refused as divergent are pinned for this set, because an
+      # occurrence stepq dropped that Open CASCADE leaves unnamed would
+      # otherwise pass. Re-pin them when the fixtures or the generated cases
+      # change.
+      - run: tools/verify-read.py occurrences --expect=375,4 tests/fixtures "$RUNNER_TEMP/occt-cases"
       # The fixture tests with their pinned counts; a missing core fixture
       # fails them here instead of skipping.
-      - run: cargo test --all-features --test units --test geometry --test fixtures
+      - run: cargo test --all-features --test units --test geometry --test placements --test fixtures
         env:
           STEPQ_REQUIRE_FIXTURES: "1"
 

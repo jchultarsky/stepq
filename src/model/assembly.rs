@@ -2,7 +2,9 @@
 //! nest them.
 //!
 //! Built from the entity graph alone, following `docs/ARCHITECTURE.md`,
-//! "Assembly structure". See [`ProductStructure`] for the rules.
+//! "Assembly structure". See [`ProductStructure`] for the rules, and
+//! [`Placements`](super::Placements) for the transforms the placements
+//! state.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -10,7 +12,7 @@ use std::collections::HashMap;
 use super::Graph;
 use crate::p21::{Exchange, Instance, Param, Record};
 use crate::policy::MAX_ASSEMBLY_DEPTH;
-use crate::record::{primary_record, reference, upper};
+use crate::record::{self, primary_record, reference, upper};
 
 const NAUO: &str = "NEXT_ASSEMBLY_USAGE_OCCURRENCE";
 const QACU: &str = "QUANTIFIED_ASSEMBLY_COMPONENT_USAGE";
@@ -24,15 +26,17 @@ const QACU: &str = "QUANTIFIED_ASSEMBLY_COMPONENT_USAGE";
 ///   `QUANTIFIED_ASSEMBLY_COMPONENT_USAGE`, simple or complex. Its relating
 ///   and related definitions decide parent and child — never the direction
 ///   of a shape relationship, which real files reverse.
-/// * A placement is found in one of two ways, and identified, never
-///   evaluated:
+/// * A placement is found in one of two ways and identified here;
+///   [`Placements`](super::Placements) evaluates it:
 ///   - a `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION` ties the usage to a
 ///     representation relationship and its transformation;
 ///   - otherwise, a `MAPPED_ITEM` in the assembly's shape representation
 ///     maps the component's shape through a `REPRESENTATION_MAP`. Mapped
 ///     items say which component they place but not which usage, so they
 ///     are matched to that component's usages in file order, and only when
-///     there are exactly as many mapped items as usages.
+///     there are exactly as many mapped items as usages. The set of
+///     transforms is then exact; which usage gets which follows file
+///     order.
 ///
 /// See `docs/ARCHITECTURE.md`, "Assembly structure".
 #[derive(Debug, Clone, PartialEq)]
@@ -123,8 +127,8 @@ pub struct Usage {
     pub placement: Option<Placement>,
 }
 
-/// The entities that place a component in its assembly. Identified only;
-/// no transformation is evaluated.
+/// The entities that place a component in its assembly. Identified here;
+/// [`Placements`](super::Placements) evaluates them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "snake_case"))]
@@ -374,6 +378,12 @@ impl ProductStructure {
         self.children[definition]
             .iter()
             .map(|&index| &self.usages[index])
+    }
+
+    /// The indices into [`usages`](Self::usages) of the usages whose parent
+    /// is `definition`, in file order.
+    pub(crate) fn child_usages(&self, definition: usize) -> &[usize] {
+        &self.children[definition]
     }
 
     /// The components of `definition`, each with every usage of it, in order
@@ -735,29 +745,31 @@ fn shape_relationship(
 /// The `MAPPED_ITEM`s among the items of the assembly's shape
 /// representations whose `REPRESENTATION_MAP` maps one of the component's
 /// shape representations, in file order.
+///
+/// A representation, simple or complex, is read with
+/// [`record::representation`]. A simple `MAPPED_ITEM` holds `(name,
+/// mapping_source, mapping_target)`; in a complex instance `name` lives in
+/// the `REPRESENTATION_ITEM` partial, so the `MAPPED_ITEM` partial holds
+/// `(mapping_source, mapping_target)`.
 fn mapped_items(graph: &Graph<'_>, parent_shapes: &[u64], child_shapes: &[u64]) -> Vec<Placement> {
     let exchange = graph.exchange();
     let mut placements = Vec::new();
     for &shape in parent_shapes {
-        let items = graph
-            .node(shape)
-            .and_then(|node| exchange.records(graph.instance(node)).next())
-            .and_then(|record| record.param(1))
-            .and_then(|items| items.list());
-        for id in items
-            .into_iter()
-            .flatten()
-            .filter_map(|item| item.reference())
-        {
+        let items = record::representation(exchange, shape)
+            .map(|representation| representation.items)
+            .unwrap_or_default();
+        for id in items {
             let Some(node) = graph.node(id) else {
                 continue;
             };
-            let Some(item) = primary_record(exchange, graph.instance(node), "MAPPED_ITEM")
-                .filter(|r| r.is("MAPPED_ITEM"))
+            let instance = graph.instance(node);
+            let Some(item) =
+                primary_record(exchange, instance, "MAPPED_ITEM").filter(|r| r.is("MAPPED_ITEM"))
             else {
                 continue;
             };
-            let Some(map_id) = reference(item.param(1).as_ref()) else {
+            let first = usize::from(!instance.is_complex());
+            let Some(map_id) = reference(item.param(first).as_ref()) else {
                 continue;
             };
             let Some(map) = graph
@@ -772,12 +784,40 @@ fn mapped_items(graph: &Graph<'_>, parent_shapes: &[u64], child_shapes: &[u64]) 
                     mapped_item: id,
                     representation_map: map_id,
                     origin: reference(map.param(0).as_ref()),
-                    target: reference(item.param(2).as_ref()),
+                    target: reference(item.param(first + 1).as_ref()),
                 });
             }
         }
     }
     placements
+}
+
+/// The `#id`s of every `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION` of the
+/// usage at graph node `usage`, through any `PRODUCT_DEFINITION_SHAPE` of
+/// it, in the order [`shape_relationship`] meets them. That function takes
+/// the first that names a relationship; [`Placements`](super::Placements)
+/// refuses a usage with more than one.
+pub(super) fn context_dependent_shape_representations(graph: &Graph<'_>, usage: usize) -> Vec<u64> {
+    let usage_id = graph.instance(usage).id;
+    let mut found = Vec::new();
+    for &shape in graph.referenced_by(usage) {
+        if !record_references(graph, shape, "PRODUCT_DEFINITION_SHAPE", 2, usage_id) {
+            continue;
+        }
+        let shape_id = graph.instance(shape).id;
+        for &link in graph.referenced_by(shape) {
+            if record_references(
+                graph,
+                link,
+                "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION",
+                1,
+                shape_id,
+            ) {
+                found.push(graph.instance(link).id);
+            }
+        }
+    }
+    found
 }
 
 /// The numeric value of a `MEASURE_WITH_UNIT`, whose first attribute is a
@@ -1021,6 +1061,48 @@ ENDSEC;END-ISO-10303-21;"
             ]
         );
         assert_eq!(placements[0].as_ref().unwrap().reversed(), None);
+    }
+
+    /// In a complex instance the `MAPPED_ITEM` partial holds
+    /// `(mapping_source, mapping_target)` at positions 0 and 1. Reading them
+    /// at 1 and 2, as in a simple instance, left such usages unplaced; and
+    /// a complex representation's items are its `REPRESENTATION` partial's.
+    #[test]
+    fn complex_mapped_items_and_representations_place_usages() {
+        let src = mapped_sample("#200,#201")
+            .replace(
+                "#201=MAPPED_ITEM('',#150,#62);",
+                "#201=(GEOMETRIC_REPRESENTATION_ITEM()MAPPED_ITEM(#150,#62)\
+                 REPRESENTATION_ITEM(''));",
+            )
+            .replace(
+                "#50=ADVANCED_BREP_SHAPE_REPRESENTATION('a',(#200,#201),#1);",
+                "#50=(ADVANCED_BREP_SHAPE_REPRESENTATION()REPRESENTATION('a',(#200,#201),#1)\
+                 SHAPE_REPRESENTATION());",
+            );
+        let structure = structure_of(&src);
+        let placements: Vec<Option<Placement>> = structure
+            .usages()
+            .iter()
+            .map(|u| u.placement.clone())
+            .collect();
+        assert_eq!(
+            placements,
+            [
+                Some(Placement::MappedItem {
+                    mapped_item: 200,
+                    representation_map: 150,
+                    origin: Some(60),
+                    target: Some(60),
+                }),
+                Some(Placement::MappedItem {
+                    mapped_item: 201,
+                    representation_map: 150,
+                    origin: Some(60),
+                    target: Some(62),
+                }),
+            ]
+        );
     }
 
     #[test]

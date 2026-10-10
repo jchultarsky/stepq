@@ -75,6 +75,7 @@
 //! | `pmi` | [`pmi::pmi`] |
 //! | none; `examples/units.rs` | [`units::ContextUnits`], [`units::unit`]: unit factors per representation context |
 //! | none; `examples/geometry.rs` | [`geometry::Reader`]: points, directions, placements, elementary surfaces, lines, circles and surface curves, in mm and rad; [`geometry::Rigid`] |
+//! | none; `examples/occurrences.rs` | [`model::Placements`]: each assembly usage's transform and every occurrence under a root, in mm |
 //!
 //! `docs/COMMANDS.md` in the repository documents every command and option.
 //!

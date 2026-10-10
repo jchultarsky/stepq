@@ -22,6 +22,7 @@ is also a subcommand that prints Open CASCADE's side as tab-separated lines:
     tools/verify-occt.py units FILE...
     tools/verify-occt.py surfaces FILE...
     tools/verify-occt.py curves FILE...
+    tools/verify-occt.py occurrences FILE...
 
 Exit status: 0 if every comparison holds, 1 if one fails, 2 if a file cannot
 be read. Needs uv (https://docs.astral.sh/uv/), which installs cadquery-ocp
@@ -430,6 +431,102 @@ def curves(path: Path) -> list[Geometry]:
     return found
 
 
+@dataclass
+class Occurrence:
+    """Open CASCADE's reading of one occurrence: a shape label reached from a
+    free shape through component labels, with its location composed from the
+    root down."""
+
+    # The name of each component label on the path from the free shape, the
+    # free shape itself first (its own name); '?' where a label has none.
+    # Open CASCADE names a component after its NAUO: the description if not
+    # blank, else the name if not blank, else the id.
+    instances: tuple[str, ...]
+    # The name of the shape each label refers to: the product name, or its
+    # id if the name is blank; '?' if none. Open CASCADE also lists the
+    # solids, shells and compounds of a part's shape as labels of their own,
+    # named SOLID, SHELL or COMPOUND (or unnamed), which are not occurrences.
+    products: tuple[str, ...]
+    # The 3x4 transform to the free shape's frame, row by row, in mm.
+    matrix: tuple[float, ...]
+
+    def line(self) -> str:
+        return "\t".join(
+            ["/".join(self.instances), "/".join(self.products), *(repr(v) for v in self.matrix)]
+        )
+
+
+def occurrences(path: Path) -> list[Occurrence]:
+    """Every occurrence of every free shape, depth first, as XCAF holds them.
+
+    Each free shape (from GetFreeShapes) is a root; each component of an
+    assembly label (GetComponents, not recursively) leads to the label it
+    refers to (GetReferredShape), whose location (GetLocation) composes with
+    its parent's (TopLoc_Location.Multiplied). Open CASCADE reads lengths in
+    millimetres.
+    """
+    from OCP.collections import Sequence_TDF_Label
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPCAFControl import STEPCAFControl_Reader
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDF import TDF_Label
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+
+    document = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    reader = STEPCAFControl_Reader()
+    reader.SetNameMode(True)
+    if reader.ReadFile(str(path)) != IFSelect_RetDone or not reader.Transfer(document):
+        raise OSError(f"Open CASCADE could not read {path}")
+    shapes = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
+
+    def name_of(label) -> str:
+        # Asked first: FindAttribute on a label without a name segfaults in
+        # cadquery-ocp 8.0.1 (see read()).
+        if not label.IsAttribute(TDataStd_Name.GetID_s()):
+            return "?"
+        name = TDataStd_Name()
+        label.FindAttribute(TDataStd_Name.GetID_s(), name)
+        return name.Get().ToExtString()
+
+    def matrix(location) -> tuple[float, ...]:
+        transform = location.Transformation()
+        return tuple(transform.Value(row, col) for row in (1, 2, 3) for col in (1, 2, 3, 4))
+
+    found = []
+    free = Sequence_TDF_Label()
+    shapes.GetFreeShapes(free)
+    for i in range(1, free.Length() + 1):
+        label = free.Value(i)
+        name = name_of(label)
+        # An explicit stack, so that depth is not bounded by Python's.
+        stack = [(label, (name,), (name,), shapes.GetShape_s(label).Location())]
+        while stack:
+            label, instances, products, location = stack.pop()
+            found.append(Occurrence(instances, products, matrix(location)))
+            if not shapes.IsAssembly_s(label):
+                continue
+            components = Sequence_TDF_Label()
+            shapes.GetComponents_s(label, components, False)
+            children = []
+            for j in range(1, components.Length() + 1):
+                component = components.Value(j)
+                referred = TDF_Label()
+                if not shapes.GetReferredShape_s(component, referred):
+                    continue
+                children.append(
+                    (
+                        referred,
+                        (*instances, name_of(component)),
+                        (*products, name_of(referred)),
+                        location.Multiplied(shapes.GetLocation_s(component)),
+                    )
+                )
+            stack.extend(reversed(children))
+    return found
+
+
 def compare(
     source: Summary, outputs: list[Summary], ignore_names: frozenset[str] = frozenset()
 ) -> list[str]:
@@ -472,6 +569,12 @@ def main() -> int:
         "file, rank, entity, length, plane angle, solid angle, uncertainty (mm); '-' if none",
     )
     unit_contexts.add_argument("files", nargs="+", type=Path)
+    occurrence_list = commands.add_parser(
+        "occurrences",
+        help="print every occurrence of every free shape: file, instance-name path, "
+        "product-name path, then the 3x4 transform to the root row by row, in mm",
+    )
+    occurrence_list.add_argument("files", nargs="+", type=Path)
     for name, function, what in (
         ("surfaces", surfaces, "face"),
         ("curves", curves, "edge"),
@@ -490,6 +593,11 @@ def main() -> int:
             for path in args.files:
                 for context in units(path):
                     print(f"{path}\t{context.line()}")
+            return 0
+        if args.command == "occurrences":
+            for path in args.files:
+                for occurrence in occurrences(path):
+                    print(f"{path}\t{occurrence.line()}")
             return 0
         if args.command in ("surfaces", "curves"):
             for path in args.files:

@@ -16,12 +16,14 @@
 //! struct per entity type.
 //!
 //! On top of the [`Graph`]: [`ProductStructure`] reads the assembly tree
-//! and bill of materials, and [`extract`] computes the self-contained
-//! closure of a product definition.
+//! and bill of materials, [`Placements`] reads the transform of each
+//! assembly usage and composes them into occurrences, and [`extract`]
+//! computes the self-contained closure of a product definition.
 
 mod assembly;
 mod extract;
 mod graph;
+mod placement;
 
 pub use assembly::{
     BomLine, BomNode, BomTreeOptions, Definition, Placement, Product, ProductStructure, Usage,
@@ -31,3 +33,4 @@ pub use extract::{
     Extraction, RULES, Rule, RuleKind, extract, extract_excluding, orphans, unreachable,
 };
 pub use graph::Graph;
+pub use placement::{DivergentReason, Occurrence, Occurrences, PlacementError, Placements};

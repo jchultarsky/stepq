@@ -9,16 +9,18 @@ stepq reads what a file states and never computes what it does not; reading
 it wrong is as silent as dropping an entity (docs/ARCHITECTURE.md, "Reading
 stated geometry"). So every reader is held to Open CASCADE's reading of the
 same files, at development time only. stepq's side comes from an example
-built with the serde feature (examples/units.rs, examples/geometry.rs; one
-JSON object per line), Open CASCADE's from the function of the same name as
-the check in tools/verify-occt.py. Unit contexts are joined on Open
-CASCADE's entity number, which is the instance's 1-based position in the
-file, and the entity types must agree; faces and edges, which Open CASCADE
-does not bind to the entities it reads them from, are compared as multisets
-per file.
+built with the serde feature (examples/units.rs, examples/geometry.rs,
+examples/occurrences.rs; one JSON object per line), Open CASCADE's from the
+function of the same name as the check in tools/verify-occt.py. Unit
+contexts are joined on Open CASCADE's entity number, which is the instance's
+1-based position in the file, and the entity types must agree; faces and
+edges, which Open CASCADE does not bind to the entities it reads them from,
+are compared as multisets per file; occurrences are joined by the names on
+their paths.
 
     tools/verify-read.py CHECK [PATH...]
     tools/verify-read.py curves --healing=SEAMS,PIECES,OTHER [PATH...]
+    tools/verify-read.py occurrences --expect=MATCHED,DIVERGENT [PATH...]
 
 PATH is a STEP file or a directory searched for them, following symbolic
 links; directories skip files over 16 MB unless STEPQ_LARGE_FIXTURES=1, and a
@@ -65,9 +67,31 @@ of the stated location it is computed from), and report positions on (-1, 0,
 0) with no ref_direction in AP203 edition 1 files, whose x that schema leaves
 undefined (stepq reads ref_direction_stated = false).
 
-Exit status: 0 if every comparison holds, 1 if one fails or the healing
-tallies differ from those pinned, 2 if a file cannot be read by either side,
-a directory named holds no STEP file, or the arguments are wrong.
+  occurrences
+            Every occurrence under every root, as a transform to the root in
+            mm, against Open CASCADE's XCAF walk from its free shapes through
+            component labels. Each occurrence is keyed by the names on its
+            path: per level, the name Open CASCADE gives the component label
+            (its NAUO's description if not blank, else its name, else its
+            id) and the product's name (else its id), the root's own name
+            first. Occurrences are matched one to one by that key, by value
+            among those that share one, and by value at the same depth for
+            the rest (Open CASCADE leaves components placed through mapped
+            items unnamed). A match needs every rotation entry within 1e-12
+            and the translation within 1e-9 x max(1 mm, |t|). It fails on any
+            occurrence left unmatched on either side, except Open CASCADE's
+            labels for the solids, shells and compounds of a shape (named
+            SOLID, SHELL or COMPOUND, or unnamed), which are dropped, and on
+            any refusal by stepq. In a generated divergence case (a file
+            named divergent_*), stepq must refuse at least one occurrence as
+            divergent and refuse nothing otherwise; Open CASCADE's placement
+            of each is printed for the record. --expect pins how many
+            occurrences match and how many are refused as divergent over all
+            files, as CI does for its set.
+
+Exit status: 0 if every comparison holds, 1 if one fails or the pinned
+tallies differ, 2 if a file cannot be read by either side, a directory named
+holds no STEP file, or the arguments are wrong.
 """
 
 from __future__ import annotations
@@ -625,11 +649,190 @@ def check_curves(path: Path, tally: GeometryTally) -> list[str]:
     return problems
 
 
+# The tolerances of the occurrences check: each rotation entry absolutely,
+# the translation relative to max(1 mm, |t|).
+ROTATION_TOL = 1e-12
+TRANSLATION_TOL = 1e-9
+
+# Names Open CASCADE gives the labels it adds for the solids, shells and
+# compounds of a part's shape. They are not occurrences: left unmatched, they
+# are dropped.
+EXPANSION_LABELS = frozenset({"SOLID", "SHELL", "COMPOUND", "?"})
+
+
+@dataclass
+class OccurrenceTally(Tally):
+    """What the occurrences check compared, over every file."""
+
+    by_name: int = 0
+    by_value: int = 0
+    divergent: int = 0
+    expansions: int = 0
+    worst_rotation: float = 0.0
+    worst_translation: float = 0.0
+    notes: list = field(default_factory=list)
+
+
+def occt_component_name(usage: dict) -> str:
+    """The name Open CASCADE gives the component label of a usage: its
+    description if not blank, else its name, else its id. stepq reports a
+    blank string as null."""
+    for key in ("description", "name", "id"):
+        if usage.get(key):
+            return usage[key]
+    return ""
+
+
+def occt_product_name(product: dict) -> str:
+    """The name Open CASCADE gives a product's shape label: its name if not
+    blank, else its id, which may be blank too."""
+    return product.get("name") or product.get("id") or ""
+
+
+def stepq_key(line: dict) -> tuple:
+    """The names on an occurrence's path, as Open CASCADE would name them."""
+    products = [occt_product_name(product) for product in line["products"]]
+    components = [products[0]] + [occt_component_name(usage) for usage in line["usages"]]
+    return tuple(zip(components, products))
+
+
+def occt_occurrence_key(occurrence) -> tuple:
+    """The names on an Open CASCADE occurrence's path."""
+    return tuple(zip(occurrence.instances, occurrence.products))
+
+
+def deviation(ours: list[float], theirs: tuple[float, ...]) -> tuple[float, float, bool]:
+    """The largest rotation difference, the translation difference in mm, and
+    whether both are within tolerance."""
+    rotation = max(abs(ours[i] - theirs[i]) for i in (0, 1, 2, 4, 5, 6, 8, 9, 10))
+    moved = [ours[i] - theirs[i] for i in (3, 7, 11)]
+    translation = math.sqrt(_dot(moved, moved))
+    scale = max(1.0, _size([theirs[i] for i in (3, 7, 11)]))
+    return rotation, translation, (
+        rotation <= ROTATION_TOL and translation <= TRANSLATION_TOL * scale
+    )
+
+
+def check_occurrences(path: Path, tally: OccurrenceTally) -> list[str]:
+    """Matches every occurrence of one file with Open CASCADE's."""
+    try:
+        theirs = occt.occurrences(path)
+    except OSError as error:
+        raise Unreadable(str(error)) from error
+    ours = stepq_lines("occurrences", path)
+    tally.items += len(ours)
+    divergence_case = path.name.startswith("divergent_")
+    problems = []
+    by_key: dict[tuple, list[int]] = {}
+    for i, occurrence in enumerate(theirs):
+        by_key.setdefault(occt_occurrence_key(occurrence), []).append(i)
+    used: set[int] = set()
+
+    def label(line: dict) -> str:
+        return "/".join(f"#{usage}" for usage in line["path"]) or f"root #{line['root']}"
+
+    def take(i: int, line: dict, how: str) -> None:
+        rotation, translation, _ = deviation(line["matrix"], theirs[i].matrix)
+        used.add(i)
+        setattr(tally, how, getattr(tally, how) + 1)
+        tally.worst_rotation = max(tally.worst_rotation, rotation)
+        tally.worst_translation = max(tally.worst_translation, translation)
+
+    def best(line: dict, candidates) -> int | None:
+        found, smallest = None, math.inf
+        for i in candidates:
+            if i in used:
+                continue
+            rotation, translation, ok = deviation(line["matrix"], theirs[i].matrix)
+            if ok and max(rotation, translation) < smallest:
+                found, smallest = i, max(rotation, translation)
+        return found
+
+    unnamed, refused = [], []
+    for line in ours:
+        key = stepq_key(line)
+        if "error" in line:
+            refused.append(line)
+            continue
+        named = by_key.get(key, [])
+        if not named:
+            unnamed.append(line)
+            continue
+        found = best(line, named)
+        if found is None:
+            closest = min(
+                (deviation(line["matrix"], theirs[i].matrix)[:2] for i in named),
+                key=max,
+            )
+            problems.append(
+                f"{label(line)} ({'/'.join(name for name, _ in key)}): no occurrence of that "
+                f"name in Open CASCADE has its transform (closest |dR| {closest[0]:.2g}, "
+                f"|dt| {closest[1]:.2g} mm)"
+            )
+            continue
+        take(found, line, "by_name")
+    by_value = []
+    for line in unnamed:
+        depth = len(line["products"])
+        found = best(line, (i for i, o in enumerate(theirs) if len(o.instances) == depth))
+        if found is None:
+            problems.append(
+                f"{label(line)} ({'/'.join(name for name, _ in stepq_key(line))}): no "
+                "occurrence in Open CASCADE has its names, nor its transform at its depth"
+            )
+            continue
+        take(found, line, "by_value")
+        by_value.append(
+            f"{'/'.join(name for name, _ in stepq_key(line))} as "
+            f"{'/'.join(theirs[found].instances)} ({'/'.join(theirs[found].products)})"
+        )
+    if by_value:
+        tally.notes.append(
+            f"{len(by_value)} matched by value only, such as {by_value[0]}"
+        )
+    # Refused occurrences take, for the record, an occurrence of their names
+    # that no placed one matched.
+    divergent = 0
+    for line in refused:
+        partner = next((i for i in by_key.get(stepq_key(line), []) if i not in used), None)
+        if partner is not None:
+            used.add(partner)
+        if divergence_case and line["error"]["kind"] == "divergent":
+            divergent += 1
+            placed = (
+                "places it at [" + ", ".join(f"{v:.6g}" for v in theirs[partner].matrix) + "]"
+                if partner is not None
+                else "has no occurrence of that name"
+            )
+            tally.notes.append(
+                f"{label(line)}: stepq refuses it as divergent ({line['reason']}); "
+                f"Open CASCADE {placed}"
+            )
+        else:
+            problems.append(f"{label(line)}: stepq refuses it: {line['reason']}")
+    tally.divergent += divergent
+    for i, occurrence in enumerate(theirs):
+        if i in used:
+            continue
+        if occurrence.products[-1] in EXPANSION_LABELS:
+            tally.expansions += 1
+            continue
+        problems.append(
+            f"Open CASCADE's {'/'.join(occurrence.instances)} "
+            f"({'/'.join(occurrence.products)}) has no match in stepq"
+        )
+    if divergence_case and not divergent:
+        problems.append("a divergence case, but stepq refuses no occurrence as divergent")
+    tally.agreeing += not problems
+    return problems
+
+
 CHECKS = {
     # check: (the example that prints stepq's side, the comparison, its tally)
     "units": ("units", check_units, Tally),
     "surfaces": ("geometry", check_surfaces, GeometryTally),
     "curves": ("geometry", check_curves, GeometryTally),
+    "occurrences": ("occurrences", check_occurrences, OccurrenceTally),
 }
 
 
@@ -640,16 +843,24 @@ def main() -> int:
         return 2
     name = sys.argv[1]
     example, check, tally_type = CHECKS[name]
-    args, healing = [], None
+    args, healing, expect = [], None, None
     for arg in sys.argv[2:]:
-        if not arg.startswith("--healing="):
+        if arg.startswith("--healing="):
+            counts = arg.split("=", 1)[1].split(",")
+            if name != "curves" or len(counts) != 3 or not all(c.isdigit() for c in counts):
+                print(f"{arg}: only curves takes --healing=SEAMS,PIECES,OTHER", file=sys.stderr)
+                return 2
+            healing = tuple(int(c) for c in counts)
+        elif arg.startswith("--expect="):
+            counts = arg.split("=", 1)[1].split(",")
+            if name != "occurrences" or len(counts) != 2 or not all(c.isdigit() for c in counts):
+                print(
+                    f"{arg}: only occurrences takes --expect=MATCHED,DIVERGENT", file=sys.stderr
+                )
+                return 2
+            expect = tuple(int(c) for c in counts)
+        else:
             args.append(arg)
-            continue
-        counts = arg.split("=", 1)[1].split(",")
-        if name != "curves" or len(counts) != 3 or not all(c.isdigit() for c in counts):
-            print(f"{arg}: only curves takes --healing=SEAMS,PIECES,OTHER", file=sys.stderr)
-            return 2
-        healing = tuple(int(c) for c in counts)
     try:
         files = step_files([Path(arg) for arg in args] or [ROOT / "tests" / "fixtures"])
     except NoFiles as error:
@@ -685,7 +896,7 @@ def main() -> int:
             print(f"OK   {label}", flush=True)
         for note in getattr(tally, "notes", []):
             print(f"     {note}", flush=True)
-        if isinstance(tally, GeometryTally):
+        if isinstance(tally, (GeometryTally, OccurrenceTally)):
             tally.notes.clear()
 
     print()
@@ -710,6 +921,16 @@ def main() -> int:
                 f"  {tally.defaulted_minus_x} positions on (-1, 0, 0) with no ref_direction in "
                 "AP203 edition 1 files, read with ref_direction_stated = false"
             )
+    elif isinstance(tally, OccurrenceTally):
+        print(
+            f"{name}: {tally.agreeing} of {tally.files} files agree; stepq reads {tally.items} "
+            f"occurrences: {tally.by_name} match Open CASCADE's by their names and "
+            f"{tally.by_value} by value only (components Open CASCADE leaves unnamed), and "
+            f"{tally.divergent} are refused as divergent in the divergence cases; worst |dR| "
+            f"{tally.worst_rotation:.2g}, |dt| {tally.worst_translation:.2g} mm (tolerances "
+            f"{ROTATION_TOL:g}, {TRANSLATION_TOL:g} x max(1 mm, |t|)); {tally.expansions} of "
+            "Open CASCADE's labels for the solids, shells and compounds of a shape dropped"
+        )
     else:
         print(
             f"{name}: {tally.agreeing} of {tally.items} contexts agree in {tally.files} files; "
@@ -722,6 +943,16 @@ def main() -> int:
     if failed:
         print(f"{failed} of {len(files)} files differ", file=sys.stderr)
         return 1
+    if expect is not None:
+        found = (tally.by_name + tally.by_value, tally.divergent)
+        if found != expect:
+            print(
+                f"{found[0]} occurrences match and {found[1]} are divergent, pinned at "
+                f"{expect[0]} and {expect[1]}: an occurrence may be missing, or the files or "
+                "Open CASCADE changed",
+                file=sys.stderr,
+            )
+            return 1
     if healing is not None:
         found = (tally.seams, tally.pieces, tally.other_extra)
         if found != healing:

@@ -97,7 +97,7 @@ against Open CASCADE by `tools/verify-read.py`.
       kind, with each context's uncertainties (`stepq::units`).
 - [x] Geometry values: points, directions, axis placements, elementary
       surfaces, lines, circles and surface curves (`stepq::geometry`).
-- [ ] Placements and occurrences: each usage's transform and every
+- [x] Placements and occurrences: each usage's transform and every
       occurrence under a root (`model::Placements`).
 - [ ] Topology: the B-rep of one solid as stated, with composed face
       senses and edge uses (`stepq::topology`).

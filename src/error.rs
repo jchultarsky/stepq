@@ -54,6 +54,10 @@ pub enum Error {
     /// stated.
     #[error(transparent)]
     Geometry(#[from] crate::geometry::GeometryError),
+
+    /// An assembly usage, or an occurrence, cannot be placed as stated.
+    #[error(transparent)]
+    Placement(#[from] crate::model::PlacementError),
 }
 
 impl Error {
