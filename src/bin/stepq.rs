@@ -16,7 +16,7 @@ use stepq::model::{
     BomNode, BomTreeOptions, Definition, Graph, Placement, ProductStructure, Usage,
 };
 use stepq::p21::{Exchange, Instance, parse};
-use stepq::pmi::{Dimension, DimensionKind, Pmi, Tolerance};
+use stepq::pmi::{AspectItems, Datum, Dimension, DimensionKind, Pmi, Resolution, Tolerance};
 use stepq::props::{Identifier, Property, PropertyKind, Subject, Value};
 
 /// Query, inspect, split and reshape STEP (ISO 10303-21) files.
@@ -306,9 +306,17 @@ enum Command {
     /// are printed as written in the file. With --format json, one document
     /// with datums, tolerances and dimensions; with --format csv, one row per
     /// item.
+    ///
+    /// With --geometry, each datum, tolerance and dimension also lists the
+    /// representation items its shape aspect stands for (faces, edges,
+    /// curves, points), each once, and every point where stepq stopped
+    /// short of them, with the reason.
     Pmi {
         /// STEP file to inspect, or `-` for standard input.
         file: PathBuf,
+        /// List the items each datum, tolerance and dimension stands for.
+        #[arg(long)]
+        geometry: bool,
     },
 }
 
@@ -475,7 +483,7 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             force,
         } => strip(file, out, *anonymize, *force, cli.format),
         Command::Assemble { file, out, force } => assemble(file, out, *force, cli.format),
-        Command::Pmi { file } => pmi(file, cli.format),
+        Command::Pmi { file, geometry } => pmi(file, *geometry, cli.format),
     };
     done.map(|()| ExitCode::SUCCESS)
 }
@@ -550,17 +558,47 @@ fn info(path: &Path, format: Format, top: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn pmi(path: &Path, format: Format) -> anyhow::Result<()> {
+/// What each datum, tolerance target and dimension end stands for, by
+/// `#id`, for `stepq pmi --geometry`.
+type Geometry = std::collections::HashMap<u64, Resolution>;
+
+fn pmi_geometry(graph: &Graph<'_>, found: &Pmi) -> Geometry {
+    let index = AspectItems::new(graph);
+    let mut ids: Vec<u64> = found.datums.iter().map(|datum| datum.instance).collect();
+    ids.extend(
+        found
+            .tolerances
+            .iter()
+            .map(|tolerance| tolerance.target.instance),
+    );
+    for dimension in &found.dimensions {
+        ids.push(dimension.target.instance);
+        ids.extend(dimension.related.as_ref().map(|related| related.instance));
+    }
+    // Each target once, however many tolerances share it. A resolution
+    // takes time linear in the file, so targets that share much of it,
+    // through composites of a common part, pay again for it.
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter()
+        .map(|id| (id, index.resolve(graph, id)))
+        .collect()
+}
+
+fn pmi(path: &Path, geometry: bool, format: Format) -> anyhow::Result<()> {
     let src = read_input(path)?;
     let name = display_name(path);
     let exchange = parse(&src).with_context(|| format!("parsing {name}"))?;
     let graph = Graph::build(exchange);
     let structure = ProductStructure::new(&graph);
     let found = stepq::pmi::pmi(&graph, &structure);
+    let geometry = geometry.then(|| pmi_geometry(&graph, &found));
 
     let mut out = BufWriter::new(io::stdout().lock());
     match format {
-        Format::Table | Format::Tree => write_pmi_table(&mut out, &structure, &found)?,
+        Format::Table | Format::Tree => {
+            write_pmi_table(&mut out, &structure, &found, geometry.as_ref())?;
+        }
         Format::Json => {
             #[derive(serde::Serialize)]
             struct Document<'a> {
@@ -568,19 +606,127 @@ fn pmi(path: &Path, format: Format) -> anyhow::Result<()> {
                 #[serde(flatten)]
                 pmi: &'a Pmi,
             }
-            serde_json::to_writer_pretty(
-                &mut out,
-                &Document {
-                    file: &name,
-                    pmi: &found,
-                },
-            )?;
+            #[derive(serde::Serialize)]
+            struct WithGeometry<'a, T> {
+                #[serde(flatten)]
+                item: &'a T,
+                geometry: &'a Resolution,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                related_geometry: Option<&'a Resolution>,
+            }
+            #[derive(serde::Serialize)]
+            struct GeometryDocument<'a> {
+                file: &'a str,
+                datums: Vec<WithGeometry<'a, Datum>>,
+                tolerances: Vec<WithGeometry<'a, Tolerance>>,
+                dimensions: Vec<WithGeometry<'a, Dimension>>,
+            }
+            match &geometry {
+                None => serde_json::to_writer_pretty(
+                    &mut out,
+                    &Document {
+                        file: &name,
+                        pmi: &found,
+                    },
+                )?,
+                Some(geometry) => {
+                    fn with<'a, T>(
+                        geometry: &'a Geometry,
+                        item: &'a T,
+                        id: u64,
+                        related: Option<u64>,
+                    ) -> WithGeometry<'a, T> {
+                        WithGeometry {
+                            item,
+                            geometry: &geometry[&id],
+                            related_geometry: related.map(|id| &geometry[&id]),
+                        }
+                    }
+                    serde_json::to_writer_pretty(
+                        &mut out,
+                        &GeometryDocument {
+                            file: &name,
+                            datums: found
+                                .datums
+                                .iter()
+                                .map(|d| with(geometry, d, d.instance, None))
+                                .collect(),
+                            tolerances: found
+                                .tolerances
+                                .iter()
+                                .map(|t| with(geometry, t, t.target.instance, None))
+                                .collect(),
+                            dimensions: found
+                                .dimensions
+                                .iter()
+                                .map(|d| {
+                                    with(
+                                        geometry,
+                                        d,
+                                        d.target.instance,
+                                        d.related.as_ref().map(|r| r.instance),
+                                    )
+                                })
+                                .collect(),
+                        },
+                    )?;
+                }
+            }
             writeln!(out)?;
         }
-        Format::Csv => write_pmi_csv(&mut out, &structure, &found)?,
+        Format::Csv => write_pmi_csv(&mut out, &structure, &found, geometry.as_ref())?,
     }
     out.flush()?;
     Ok(())
+}
+
+/// The items a resolution reaches, grouped by entity type in the order
+/// first found, then where it stopped: `ADVANCED_FACE #7 #8; TRIMMED_CURVE
+/// #9; not resolved: #121 (DATUM_FEATURE): …`.
+fn resolution_text(resolution: &Resolution) -> String {
+    let mut groups: Vec<(&str, Vec<String>)> = Vec::new();
+    for item in &resolution.items {
+        let id = format!("#{}", item.item);
+        match groups.iter_mut().find(|(entity, _)| *entity == item.entity) {
+            Some((_, ids)) => ids.push(id),
+            None => groups.push((&item.entity, vec![id])),
+        }
+    }
+    let mut parts: Vec<String> = groups
+        .into_iter()
+        .map(|(entity, ids)| format!("{entity} {}", ids.join(" ")))
+        .collect();
+    if parts.is_empty() {
+        parts.push("no items".to_owned());
+    }
+    if !resolution.unresolved.is_empty() {
+        let stops: Vec<String> = resolution
+            .unresolved
+            .iter()
+            .map(|stop| format!("#{} ({}): {}", stop.aspect, stop.entity, stop.reason))
+            .collect();
+        parts.push(format!("not resolved: {}", stops.join(", ")));
+    }
+    parts.join("; ")
+}
+
+/// The items of a resolution as `#1 #2`, and where it stopped as `#a reason`,
+/// for a CSV row.
+fn resolution_fields(resolution: Option<&Resolution>) -> (String, String) {
+    let Some(resolution) = resolution else {
+        return (String::new(), String::new());
+    };
+    let items: Vec<String> = resolution
+        .items
+        .iter()
+        .map(|item| format!("#{}", item.item))
+        .collect();
+    let stops: Vec<String> = resolution
+        .unresolved
+        .iter()
+        .map(|stop| format!("#{} {}", stop.aspect, stop.reason))
+        .collect();
+    (csv_field(&items.join(" ")), csv_field(&stops.join("; ")))
 }
 
 /// `position 0.75 (modifier) | A | B (modifier)  name`.
@@ -641,11 +787,18 @@ fn write_pmi_table(
     out: &mut impl Write,
     structure: &ProductStructure,
     found: &Pmi,
+    geometry: Option<&Geometry>,
 ) -> io::Result<()> {
     if found.is_empty() {
         return writeln!(out, "no semantic PMI");
     }
     let on = |subject: &Subject| format!("[on {} #{}]", subject.entity, subject.instance);
+    // With --geometry, a line per resolution under each item.
+    let items = |label: &str, id: u64| {
+        geometry.map_or_else(String::new, |geometry| {
+            format!("\n{:14}{label}{}", "", resolution_text(&geometry[&id]))
+        })
+    };
     // (group, kind, instance, line), printed by product definition, then
     // datums, tolerances and dimensions, each in instance order.
     let mut rows: Vec<(usize, u8, u64, String)> = Vec::new();
@@ -654,7 +807,12 @@ fn write_pmi_table(
             props_group(structure, datum.subject.product_definition),
             0,
             datum.instance,
-            format!("  {:<10}  {}", "datum", datum.label),
+            format!(
+                "  {:<10}  {}{}",
+                "datum",
+                datum.label,
+                items("", datum.instance)
+            ),
         ));
     }
     for tolerance in &found.tolerances {
@@ -663,10 +821,11 @@ fn write_pmi_table(
             1,
             tolerance.instance,
             format!(
-                "  {:<10}  {}  {}",
+                "  {:<10}  {}  {}{}",
                 "tolerance",
                 tolerance_text(tolerance),
-                on(&tolerance.target)
+                on(&tolerance.target),
+                items("", tolerance.target.instance)
             ),
         ));
     }
@@ -679,12 +838,16 @@ fn write_pmi_table(
             ),
             None => on(target),
         };
+        let resolved = match &dimension.related {
+            Some(related) => items("from: ", target.instance) + &items("to: ", related.instance),
+            None => items("", target.instance),
+        };
         rows.push((
             props_group(structure, target.product_definition),
             2,
             dimension.instance,
             format!(
-                "  {:<10}  {}  {features}",
+                "  {:<10}  {}  {features}{resolved}",
                 "dimension",
                 dimension_text(dimension)
             ),
@@ -723,10 +886,27 @@ fn write_pmi_table(
     )
 }
 
+/// A tolerance's datum reference frame for CSV: `A|B(maximum_material_requirement)`.
+fn datum_frame(tolerance: &Tolerance) -> String {
+    let datums: Vec<String> = tolerance
+        .datums
+        .iter()
+        .map(|datum| {
+            if datum.modifiers.is_empty() {
+                datum.label.clone()
+            } else {
+                format!("{}({})", datum.label, datum.modifiers.join(" "))
+            }
+        })
+        .collect();
+    datums.join("|")
+}
+
 fn write_pmi_csv(
     out: &mut impl Write,
     structure: &ProductStructure,
     found: &Pmi,
+    geometry: Option<&Geometry>,
 ) -> io::Result<()> {
     let product = |definition: Option<u64>| {
         definition
@@ -735,10 +915,27 @@ fn write_pmi_csv(
             .unwrap_or_default()
     };
     let id = |instance: Option<u64>| instance.map(|id| format!("#{id}")).unwrap_or_default();
-    writeln!(
+    write!(
         out,
         "category,product_definition,product,instance,type,name,value,lower,upper,datums,modifiers,target,target_type"
     )?;
+    if geometry.is_some() {
+        write!(out, ",items,unresolved,related_items,related_unresolved")?;
+    }
+    writeln!(out)?;
+    // With --geometry, the row's resolution columns, then the line's end.
+    let end = |out: &mut dyn Write, target: u64, related: Option<u64>| -> io::Result<()> {
+        if let Some(geometry) = geometry {
+            let (items, unresolved) = resolution_fields(geometry.get(&target));
+            let (related_items, related_unresolved) =
+                resolution_fields(related.and_then(|id| geometry.get(&id)));
+            write!(
+                out,
+                ",{items},{unresolved},{related_items},{related_unresolved}"
+            )?;
+        }
+        writeln!(out)
+    };
     // Datums, tolerances, then dimensions, each in instance order.
     let mut datums: Vec<_> = found.datums.iter().collect();
     datums.sort_by_key(|datum| datum.instance);
@@ -748,7 +945,7 @@ fn write_pmi_csv(
     dimensions.sort_by_key(|dimension| dimension.instance);
     for datum in datums {
         let subject = &datum.subject;
-        writeln!(
+        write!(
             out,
             "datum,{},{},#{},,{},,,,,,#{},{}",
             id(subject.product_definition),
@@ -758,21 +955,11 @@ fn write_pmi_csv(
             subject.instance,
             csv_field(&subject.entity)
         )?;
+        end(out, datum.instance, None)?;
     }
     for tolerance in tolerances {
         let target = &tolerance.target;
-        let datums: Vec<String> = tolerance
-            .datums
-            .iter()
-            .map(|datum| {
-                if datum.modifiers.is_empty() {
-                    datum.label.clone()
-                } else {
-                    format!("{}({})", datum.label, datum.modifiers.join(" "))
-                }
-            })
-            .collect();
-        writeln!(
+        write!(
             out,
             "tolerance,{},{},#{},{},{},{},,,{},{},#{},{}",
             id(target.product_definition),
@@ -786,17 +973,18 @@ fn write_pmi_csv(
                     .as_ref()
                     .map_or("", |m| m.value.as_str())
             ),
-            csv_field(&datums.join("|")),
+            csv_field(&datum_frame(tolerance)),
             csv_field(&tolerance.modifiers.join(" ")),
             target.instance,
             csv_field(&target.entity)
         )?;
+        end(out, target.instance, None)?;
     }
     for dimension in dimensions {
         let target = &dimension.target;
         let bound = |value: Option<&Value>| value.map_or(String::new(), |v| csv_field(&v.value));
         let nominal: Vec<&str> = dimension.values.iter().map(|v| v.value.as_str()).collect();
-        writeln!(
+        write!(
             out,
             "dimension,{},{},#{},{},{},{},{},{},,,#{},{}",
             id(target.product_definition),
@@ -812,6 +1000,11 @@ fn write_pmi_csv(
             bound(dimension.tolerance.as_ref().and_then(|b| b.upper.as_ref())),
             target.instance,
             csv_field(&target.entity)
+        )?;
+        end(
+            out,
+            target.instance,
+            dimension.related.as_ref().map(|related| related.instance),
         )?;
     }
     Ok(())

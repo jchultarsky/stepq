@@ -24,6 +24,7 @@ their paths.
     tools/verify-read.py occurrences --expect=MATCHED,DIVERGENT [PATH...]
     tools/verify-read.py topology --healing=EDGES [PATH...]
     tools/verify-read.py shapes --expect=BY_NAME,BY_FILE [PATH...]
+    tools/verify-read.py pmi --expect=TOLERANCES,DIMENSIONS,DATUMS,ALLOWED [PATH...]
 
 PATH is a STEP file or a directory searched for them, following symbolic
 links; directories skip files over 16 MB unless STEPQ_LARGE_FIXTURES=1, and a
@@ -121,6 +122,22 @@ undefined (stepq reads ref_direction_stated = false).
             compounds of a shape taken. A product named like one of those
             labels is compared by name. --expect pins how many definitions
             match by name and how many by the whole file, as CI does.
+
+  pmi       Every tolerance, dimension and datum Open CASCADE reads in GD&T
+            mode against `stepq pmi --geometry --format json`, joined on
+            entity numbers, each entity's type checked. Links only stepq makes
+            are left out first: items reached only through a derived aspect,
+            and every member of a usage's set after the first. Then each of
+            Open CASCADE's tolerances must pair one to one with one of
+            stepq's of the same kind and items, with the same magnitude up to
+            a length unit; each of its dimensions (presentation-only ones
+            aside) must pair one to one with one of stepq's, its first
+            shapes stepq's target end and its second the related end; and
+            each datum label's items must equal the union of stepq's datums
+            with that label. A difference fails unless PMI_ALLOWED names it,
+            with exactly the items stepq reads beyond Open CASCADE and the
+            reason. --expect pins how many tolerances, dimensions and datum
+            labels match and how many differences are allowed, as CI does.
 
 Exit status: 0 if every comparison holds, 1 if one fails or the pinned
 tallies differ, 2 if a file cannot be read by either side, a directory named
@@ -1075,6 +1092,251 @@ def check_shapes(path: Path, tally: ShapeTally) -> list[str]:
     return problems
 
 
+# Open CASCADE's tolerance types, as `stepq pmi` names the characteristic.
+TOLERANCE_KINDS = {
+    "Angularity": "angularity",
+    "CircularRunout": "circular runout",
+    "CircularityOrRoundness": "roundness",
+    "Coaxiality": "coaxiality",
+    "Concentricity": "concentricity",
+    "Cylindricity": "cylindricity",
+    "Flatness": "flatness",
+    "Parallelism": "parallelism",
+    "Perpendicularity": "perpendicularity",
+    "Position": "position",
+    "ProfileOfLine": "line profile",
+    "ProfileOfSurface": "surface profile",
+    "Straightness": "straightness",
+    "Symmetry": "symmetry",
+    "TotalRunout": "total runout",
+}
+
+# Datums, by label, and dimensions, by `#id`, where stepq reads exactly these
+# items beyond Open CASCADE's (for a dimension, its related end), and why.
+# The check fails on any other difference.
+PMI_ALLOWED = {
+    ("nist_ctc_04_asme1_ap242-e1.stp", "#20263"): (
+        {17569, 17576, 17583, 17590},
+        "its related end is curve sets in a constructive geometry representation "
+        "(supplemental), which Open CASCADE does not bind",
+    ),
+    ("nist_ftc_10_asme1_ap242-e2.stp", "K"): (
+        {17450, 17481},
+        "datum target areas named against a surface model, which Open CASCADE does not bind",
+    ),
+    ("nist_ftc_10_asme1_ap242-e2.stp", "L"): (
+        {17528, 17559},
+        "datum target areas named against a surface model, which Open CASCADE does not bind",
+    ),
+}
+
+
+def matching(candidates: list[list[int]]) -> list[int | None]:
+    """A maximum one-to-one matching of each left index to one of its
+    candidates (Kuhn's algorithm): the candidate each is matched to, or
+    None."""
+    owner: dict[int, int] = {}
+
+    def augment(left: int, seen: set[int]) -> bool:
+        for right in candidates[left]:
+            if right in seen:
+                continue
+            seen.add(right)
+            if right not in owner or augment(owner[right], seen):
+                owner[right] = left
+                return True
+        return False
+
+    for left in range(len(candidates)):
+        augment(left, set())
+    matched: list[int | None] = [None] * len(candidates)
+    for right, left in owner.items():
+        matched[left] = right
+    return matched
+
+
+@dataclass
+class PmiTally(Tally):
+    """What the pmi check compared, over every file."""
+
+    tolerances: int = 0
+    dimensions: int = 0
+    datums: int = 0
+    stepq_only: int = 0
+    dimensions_only_stepq: int = 0
+    allowed: int = 0
+    notes: list = field(default_factory=list)
+
+
+def file_ranks(path: Path) -> tuple[dict[int, int], dict[int, str]]:
+    """Each instance's entity number (its 1-based position in the file) by
+    `#id`, and each simple instance's entity type by `#id`."""
+    text = path.read_text(errors="replace")
+    data = text[text.find("DATA;") :]
+    ranks, types = {}, {}
+    for match in re.finditer(r"^\s*#(\d+)\s*=\s*([A-Za-z_0-9]*)", data, re.M):
+        id_ = int(match.group(1))
+        ranks[id_] = len(ranks) + 1
+        if match.group(2):
+            types[id_] = match.group(2).upper()
+    return ranks, types
+
+
+def comparable(resolution: dict | None) -> frozenset[int]:
+    """The items of a resolution that Open CASCADE could read: not those
+    reached only through a derived aspect, and of each usage's items only
+    the first (Open CASCADE reads the first member of a set)."""
+    if not resolution:
+        return frozenset()
+    found, usages = set(), set()
+    for item in resolution["items"]:
+        if all("derived_from" in kinds for kinds in item["route_kinds"]):
+            continue
+        if item["usage"] in usages:
+            continue
+        usages.add(item["usage"])
+        found.add(item["item"])
+    return frozenset(found)
+
+
+def check_pmi(path: Path, tally: PmiTally) -> list[str]:
+    """Pairs Open CASCADE's GD&T with `stepq pmi --geometry`'s: each
+    tolerance one to one, each dimension with one of stepq's, each datum
+    label by the union of its items."""
+    try:
+        theirs = occt.gdt(path)
+    except OSError as error:
+        raise Unreadable(str(error)) from error
+    binary = ROOT / "target" / "release" / "stepq"
+    run = subprocess.run(
+        [str(binary), "pmi", "--geometry", "--format", "json", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if run.returncode != 0:
+        raise Unreadable(f"stepq: {run.stderr.strip()}")
+    ours = json.loads(run.stdout)
+    ranks, types = file_ranks(path)
+    ids = {rank: id_ for id_, rank in ranks.items()}
+    problems = []
+
+    def set_of(refs: list) -> frozenset[int]:
+        found = set()
+        for rank, class_name in refs:
+            id_ = ids.get(rank)
+            if id_ is None:
+                problems.append(f"Open CASCADE refers to entity {rank}, which is not in the file")
+                continue
+            expected = "StepShape_" + "".join(part.title() for part in types.get(id_, "").split("_"))
+            if id_ in types and not class_name.startswith("StepShape_") and not class_name.startswith("StepGeom_"):
+                problems.append(f"#{id_}: Open CASCADE reads it as {class_name}")
+            elif id_ in types and class_name not in (expected, expected.replace("StepShape_", "StepGeom_")):
+                problems.append(f"#{id_} ({types[id_]}): Open CASCADE reads it as {class_name}")
+            found.add(id_)
+        return frozenset(found)
+
+    name = path.name
+    # Tolerances, one to one by kind and item set.
+    unused = list(ours["tolerances"])
+    for read in (g for g in theirs if g.kind == "tolerance" and (g.first or g.second)):
+        items = set_of(read.first) | set_of(read.second)
+        kind = TOLERANCE_KINDS.get(read.type, read.type)
+        match = next(
+            (t for t in unused if t["kind"] == kind and comparable(t["geometry"]) == items), None
+        )
+        if match is None:
+            problems.append(f"Open CASCADE's {kind} tolerance on {sorted(items)} has no match in stepq")
+            continue
+        unused.remove(match)
+        tally.tolerances += 1
+        magnitude = (match.get("magnitude") or {}).get("value")
+        if magnitude is not None and read.value:
+            ratio = float(magnitude.rstrip(".") or 0) / read.value if read.value else 1
+            if not any(math.isclose(ratio, r, rel_tol=1e-6) for r in (1.0, 1 / 25.4, 25.4)):
+                problems.append(
+                    f"tolerance #{match['instance']}: magnitude {magnitude}, {read.value} in "
+                    "Open CASCADE"
+                )
+    tally.stepq_only += len(unused)
+    # Dimensions, one to one: Open CASCADE's first shapes are stepq's
+    # target end, its second the related end.
+    ends = [
+        (
+            comparable(dimension["geometry"]),
+            comparable(dimension.get("related_geometry")),
+            dimension["instance"],
+        )
+        for dimension in ours["dimensions"]
+    ]
+    reads = [
+        (set_of(read.first), set_of(read.second), read.type)
+        for read in theirs
+        if read.kind == "dimension"
+        and (read.first or read.second)
+        and not read.type.endswith("DimensionPresentation")
+    ]
+    candidates = [
+        [j for j, (a, b, _) in enumerate(ends) if (a, b) == (first, second)]
+        for first, second, _ in reads
+    ]
+    paired = matching(candidates)
+    used = {j for j in paired if j is not None}
+    for (first, second, type_), j in zip(reads, paired):
+        if j is not None:
+            tally.dimensions += 1
+            continue
+        # Open CASCADE binding the target end only, where stepq reads exactly
+        # the related end allowed.
+        allowed = [
+            (k, instance)
+            for k, (a, b, instance) in enumerate(ends)
+            if k not in used
+            and not second
+            and a == first
+            and PMI_ALLOWED.get((name, f"#{instance}"), (None,))[0] == b
+        ]
+        if allowed:
+            k, instance = allowed[0]
+            used.add(k)
+            tally.allowed += 1
+            tally.notes.append(
+                f"dimension #{instance}: Open CASCADE binds its target end only, as allowed: "
+                f"{PMI_ALLOWED[(name, f'#{instance}')][1]}"
+            )
+            continue
+        problems.append(
+            f"Open CASCADE's {type_} dimension on {sorted(first)} and {sorted(second)} has no "
+            "match in stepq"
+        )
+    tally.dimensions_only_stepq += len(ends) - len(used)
+    # Datums: the union of items per label.
+    ours_labels: dict[str, set[int]] = {}
+    for datum in ours["datums"]:
+        ours_labels.setdefault(datum["label"], set()).update(comparable(datum["geometry"]))
+    theirs_labels: dict[str, set[int]] = {}
+    for read in (g for g in theirs if g.kind == "datum"):
+        items = set_of(read.first) | set_of(read.second)
+        if items:
+            theirs_labels.setdefault(read.label or "", set()).update(items)
+    for label, items in sorted(theirs_labels.items()):
+        mine = ours_labels.get(label, set())
+        if mine == items:
+            tally.datums += 1
+        elif (name, label) in PMI_ALLOWED and items < mine and mine - items == PMI_ALLOWED[(name, label)][0]:
+            tally.allowed += 1
+            tally.notes.append(
+                f"datum {label}: stepq reads {sorted(mine - items)} more, as allowed: "
+                f"{PMI_ALLOWED[(name, label)][1]}"
+            )
+        else:
+            problems.append(
+                f"datum {label}: stepq reads {sorted(mine)}, Open CASCADE {sorted(items)}"
+            )
+    tally.items += len(ours["tolerances"]) + len(ours["dimensions"]) + len(ours["datums"])
+    tally.agreeing += not problems
+    return problems
+
+
 CHECKS = {
     # check: (the example that prints stepq's side, the comparison, its tally)
     "units": ("units", check_units, Tally),
@@ -1083,6 +1345,8 @@ CHECKS = {
     "occurrences": ("occurrences", check_occurrences, OccurrenceTally),
     "topology": ("topology", check_topology, TopologyTally),
     "shapes": ("shapes", check_shapes, ShapeTally),
+    # stepq's side is `stepq pmi --geometry --format json`, not an example.
+    "pmi": ("stepq", check_pmi, PmiTally),
 }
 
 
@@ -1108,14 +1372,11 @@ def main() -> int:
             healing = tuple(int(c) for c in counts)
         elif arg.startswith("--expect="):
             counts = arg.split("=", 1)[1].split(",")
-            if (
-                name not in ("occurrences", "shapes")
-                or len(counts) != 2
-                or not all(c.isdigit() for c in counts)
-            ):
+            wanted = {"occurrences": 2, "shapes": 2, "pmi": 4}.get(name)
+            if len(counts) != wanted or not all(c.isdigit() for c in counts):
                 print(
-                    f"{arg}: only occurrences takes --expect=MATCHED,DIVERGENT, and shapes "
-                    "--expect=BY_NAME,BY_FILE",
+                    f"{arg}: only occurrences takes --expect=MATCHED,DIVERGENT, shapes "
+                    "--expect=BY_NAME,BY_FILE, and pmi --expect=TOLERANCES,DIMENSIONS,DATUMS,ALLOWED",
                     file=sys.stderr,
                 )
                 return 2
@@ -1130,11 +1391,8 @@ def main() -> int:
     if not files:
         print("no STEP files (run tools/fetch-fixtures.sh)", file=sys.stderr)
         return 2
-    subprocess.run(
-        ["cargo", "build", "--release", "--quiet", "--features", "serde", "--example", example],
-        cwd=ROOT,
-        check=True,
-    )
+    target = ["--bin", "stepq"] if example == "stepq" else ["--features", "serde", "--example", example]
+    subprocess.run(["cargo", "build", "--release", "--quiet", *target], cwd=ROOT, check=True)
 
     occt.quiet()
     tally, failed, unreadable = tally_type(), 0, 0
@@ -1157,7 +1415,7 @@ def main() -> int:
             print(f"OK   {label}", flush=True)
         for note in getattr(tally, "notes", []):
             print(f"     {note}", flush=True)
-        if isinstance(tally, (GeometryTally, OccurrenceTally, TopologyTally, ShapeTally)):
+        if isinstance(tally, (GeometryTally, OccurrenceTally, TopologyTally, ShapeTally, PmiTally)):
             tally.notes.clear()
 
     print()
@@ -1192,6 +1450,15 @@ def main() -> int:
             f"{ROTATION_TOL:g}, {TRANSLATION_TOL:g} x max(1 mm, |t|)); {tally.expansions} of "
             "Open CASCADE's labels for the solids, shells and compounds of a shape dropped"
         )
+    elif isinstance(tally, PmiTally):
+        print(
+            f"{name}: {tally.agreeing} of {tally.files} files agree; stepq reads {tally.items} "
+            f"datums, tolerances and dimensions; {tally.tolerances} of Open CASCADE's tolerances "
+            f"pair one to one with stepq's, {tally.dimensions} of its dimensions and "
+            f"{tally.datums} of its datum labels match; {tally.allowed} datum labels and "
+            f"dimensions where stepq reads more, as allowed; {tally.stepq_only} tolerances and "
+            f"{tally.dimensions_only_stepq} dimensions only stepq reads"
+        )
     elif isinstance(tally, ShapeTally):
         print(
             f"{name}: {tally.agreeing} of {tally.files} files agree; stepq reads {tally.items} "
@@ -1223,7 +1490,17 @@ def main() -> int:
     if failed:
         print(f"{failed} of {len(files)} files differ", file=sys.stderr)
         return 1
-    if expect is not None and isinstance(tally, ShapeTally):
+    if expect is not None and isinstance(tally, PmiTally):
+        found = (tally.tolerances, tally.dimensions, tally.datums, tally.allowed)
+        if found != expect:
+            print(
+                f"{found} tolerances, dimensions, datum labels and allowed differences, "
+                f"pinned at {expect}: "
+                "an item may be missing, or the files or Open CASCADE changed",
+                file=sys.stderr,
+            )
+            return 1
+    elif expect is not None and isinstance(tally, ShapeTally):
         found = (tally.definitions, tally.by_file)
         if found != expect:
             print(

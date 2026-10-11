@@ -667,6 +667,61 @@ named like one of its expansion labels is still compared by name. CI runs
 it on the core fixtures and the generated parts and pins how many
 definitions match by name (154) and by the whole file (20).
 
+### PMI to faces
+
+`pmi::AspectItems` reads, once per file, every
+`item_identified_representation_usage` and every `shape_aspect_relationship`,
+and `resolve` answers what a datum's, tolerance's or dimension's shape aspect
+stands for: the representation items the file names for it, each once, with
+one shortest route and the kinds of step its routes take. `naming` answers
+the reverse, which definitions list an item, by one walk back from it.
+Only links whose meaning the schema fixes are followed: a simple
+`geometric_item_specific_usage` or plain `item_identified_representation_usage`
+to its item, or the members of a typed set or list of them; a composite's
+plain relationships to its components (except a datum feature's to its
+datum, its basis, and a `between_shape_aspect`'s to its start and end
+features, which bound its region rather than belong to it; a
+`common_datum`'s components are its datums); a derived aspect's deriving
+relationships; a datum back to its datum features and targets
+(`datum_feature`'s WR1); and a datum target's
+`feature_for_datum_target_relationship`. Presentation usages are
+listed and never followed. Anything else that could lead to items is
+reported with its reason, never guessed: a plain relationship from an
+aspect no rule gives a meaning (one writer ties datum features to their
+aspects this way, described only as 'datum feature'), a relationship of
+another subtype or a complex one, a usage of another subtype (chain-based,
+requirement), a relationship whose related aspect is not a reference, a
+dimension or relationship as a tolerance target, a component path, a whole
+shape, a cycle, and an aspect 64 steps away. Each
+aspect is expanded once per resolution, and the kinds of route (five
+kinds, so at most 32 sets) propagate as bits, so a resolution is linear in
+the file however aspects share components: 22 layers of a two-way diamond,
+four million routes, resolve in milliseconds. A caller resolving many
+definitions pays again for what they share: `stepq pmi --geometry`
+resolves each target once, but 4,000 composites sharing one 4,000-member
+group take seconds. `naming` is the inverse of `resolve`, kinds of route
+included, on every fixture; both stop at 64 steps, counted from the
+definition and from the item, so beyond that the kinds can differ. Not
+done: which face of a
+group a value measures (a dimension on a counterbore group applies to the
+group), whether items lie in `used_representation` (510 of the NIST files'
+2,587 do not), and aspect shapes given through `property_definition`.
+
+On the 17 NIST AP242 files, 637 of the 683 tolerance targets and dimension
+ends reach a face, 42 only edges, curves or points, and 4 nothing, for
+stated reasons (two whole shapes, two aspects nothing names); of 114
+datums, 83 reach faces, 7 only points, 22 stop at the 'datum feature'
+convention and 2 at targets without a feature. `tools/verify-read.py pmi`
+pairs Open CASCADE 8.0.1's GD&T reading with `stepq pmi --geometry`, after
+leaving out links only stepq makes (derived aspects' sources, a set's
+members after the first): all 328 of its tolerances pair one to one with
+stepq's, 250 of its 251 dimensions pair one to one with stepq's, ends in
+order, and 54 of its 56 datum labels match exactly; the rest are named
+exceptions with exactly the items stepq reads beyond it, each a link Open
+CASCADE does not bind (ftc 10's datums K and L name surface-model faces; a
+ctc 04 location's related end is supplemental geometry). CI pins the four
+counts.
+
 ### What is not read
 
 Three forms, never a silent default. An entity stepq does not interpret is

@@ -239,13 +239,25 @@ pub(crate) fn subject(exchange: &Exchange<'_>, definitions: &HashSet<u64>, targe
         let Some(instance) = exchange.get(current) else {
             break;
         };
-        let record = exchange.records(instance).find(|record| {
-            let name = upper(record.name());
-            name == "PRODUCT_DEFINITION_SHAPE"
-                || name == "PROPERTY_DEFINITION"
-                || name.contains("SHAPE_ASPECT")
-                || name.starts_with("DATUM")
-        });
+        // A complex instance keeps of_shape in its SHAPE_ASPECT partial (a
+        // COMPOSITE_SHAPE_ASPECT partial holds nothing); a simple one is a
+        // shape aspect subtype that keeps it third.
+        let record = if instance.is_complex() {
+            [
+                "SHAPE_ASPECT",
+                "PRODUCT_DEFINITION_SHAPE",
+                "PROPERTY_DEFINITION",
+            ]
+            .iter()
+            .find_map(|name| crate::record::partial(exchange, instance, name))
+        } else {
+            exchange.records(instance).next().filter(|record| {
+                let name = upper(record.name());
+                name == "PRODUCT_DEFINITION_SHAPE"
+                    || name == "PROPERTY_DEFINITION"
+                    || crate::record::SHAPE_ASPECTS.contains(&name.as_str())
+            })
+        };
         let Some(next) = record.and_then(|r| r.param(2)).and_then(|p| p.reference()) else {
             break;
         };

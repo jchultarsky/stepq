@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use stepq::geometry::Reader;
 use stepq::model::{Graph, Placements, ProductStructure};
 use stepq::p21::parse;
+use stepq::pmi::AspectItems;
 use stepq::topology::Solid;
 use stepq::units::{ContextUnits, representation_context, unit};
 
@@ -51,7 +52,7 @@ impl Reached {
 }
 
 /// The readers the seeds must reach, in the order counted below.
-const READERS: [&str; 18] = [
+const READERS: [&str; 19] = [
     "unit",
     "representation_context",
     "ContextUnits::of_context",
@@ -70,6 +71,7 @@ const READERS: [&str; 18] = [
     "Placements::occurrences",
     "Solid::read",
     "ProductStructure::shape (complete or not)",
+    "AspectItems::resolve (complete or not)",
 ];
 
 /// Counts each definition's shape: complete as an answer, incomplete as a
@@ -88,7 +90,7 @@ fn read_seeds_reach_every_reader() {
         eprintln!("skipping: fuzz/seeds/read is not here (a packaged crate)");
         return;
     };
-    let mut readers: [(&str, Reached); 18] = READERS.map(|name| (name, Reached::default()));
+    let mut readers: [(&str, Reached); 19] = READERS.map(|name| (name, Reached::default()));
     for path in &seeds {
         let src = fs::read(path).expect("seed is readable");
         let exchange = parse(&src).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -147,6 +149,15 @@ fn read_seeds_reach_every_reader() {
         // root and under the first definition.
         let structure = ProductStructure::new(&graph);
         count_shapes(&graph, &structure, &mut readers[17].1);
+        let index = AspectItems::new(&graph);
+        for instance in graph.exchange().instances() {
+            let complete: Result<(), ()> = if index.resolve(&graph, instance.id).is_complete() {
+                Ok(())
+            } else {
+                Err(())
+            };
+            readers[18].1.count(&complete);
+        }
         let placements = Placements::new(&graph, &structure);
         for usage in 0..structure.usages().len() {
             readers[14].1.count(&placements.usage(usage));

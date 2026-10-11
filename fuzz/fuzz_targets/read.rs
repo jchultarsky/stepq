@@ -10,8 +10,9 @@
 //! faces, edges and vertices, its loops close and each use of an edge is
 //! by a loop that holds it, every definition's shape items start from one
 //! of its shape representations by a path within the depth limit and are
-//! placed by a finite transform, and every error formats. Each later
-//! reader is added here.
+//! placed by a finite transform, every instance's PMI items are defined,
+//! listed once, reached within the depth limit and named back by `naming`,
+//! and every error formats. Each later reader is added here.
 
 #![no_main]
 
@@ -19,6 +20,7 @@ use libfuzzer_sys::fuzz_target;
 use stepq::geometry::{Axis2Placement3d, Curve, GeometryError, Reader, Rigid, Surface};
 use stepq::model::{Graph, PlacementError, Placements, ProductStructure, ShapeItem};
 use stepq::p21::parse;
+use stepq::pmi::AspectItems;
 use stepq::topology::{Loop, Solid};
 use stepq::units::{ContextUnits, Unit, UnitError, representation_context, unit};
 
@@ -63,6 +65,7 @@ fuzz_target!(|data: &[u8]| {
         }
     }
     check_placements(&graph);
+    check_aspect_items(&graph, &ids);
     for &id in &ids {
         match Solid::read(&graph, id) {
             Ok(solid) => check_solid(&solid),
@@ -399,4 +402,33 @@ fn check_solid(solid: &Solid) {
         })
         .sum();
     assert_eq!(uses, held, "#{id}: every oriented edge is one use");
+}
+
+/// The deepest PMI route: 64 relationships.
+const MAX_ROUTE: usize = 64;
+
+fn check_aspect_items(graph: &Graph<'_>, ids: &[u64]) {
+    let index = AspectItems::new(graph);
+    for usage in index.usages() {
+        let _ = format!("{usage:?}");
+    }
+    for &id in ids {
+        let resolution = index.resolve(graph, id);
+        let mut seen = std::collections::HashSet::new();
+        for item in &resolution.items {
+            assert!(graph.exchange().get(item.item).is_some(), "#{id}: #{} undefined", item.item);
+            assert!(seen.insert(item.item), "#{id}: #{} listed twice", item.item);
+            assert!(item.via.len() <= MAX_ROUTE);
+            assert!(!item.route_kinds.is_empty());
+            assert!(
+                index.naming(item.item).iter().any(|n| n.definition == id),
+                "#{id} lists #{}, naming does not",
+                item.item
+            );
+        }
+        for unresolved in &resolution.unresolved {
+            assert!(unresolved.via.len() <= MAX_ROUTE);
+            let _ = unresolved.reason.to_string();
+        }
+    }
 }

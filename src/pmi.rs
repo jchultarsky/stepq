@@ -10,6 +10,13 @@
 
 use std::collections::HashSet;
 
+mod items;
+
+pub use items::{
+    AspectItems, ItemUsage, ItemUsageKind, Naming, Resolution, ResolvedItem, Step, StepKind,
+    StepKinds, Unresolved, UnresolvedReason,
+};
+
 use crate::model::{Graph, ProductStructure};
 use crate::p21::{Exchange, Literal, Param, Record};
 use crate::props::{Subject, Value, representation_items, subject, value};
@@ -111,10 +118,13 @@ pub struct Dimension {
     pub values: Vec<Value>,
     /// A plus-minus tolerance's bounds, if it has one.
     pub tolerance: Option<Bounds>,
-    /// The feature a size applies to, or the feature a location is measured
-    /// from.
+    /// The feature a size applies to (for a size with a datum feature, the
+    /// dimension itself), or a location's relating feature: the one it is
+    /// measured from for a `directed_dimensional_location`; for any other
+    /// location, only the first written.
     pub target: Subject,
-    /// For a location, the feature it is measured to.
+    /// For a location, its related feature: the one a directed location is
+    /// measured to.
     pub related: Option<Subject>,
 }
 
@@ -162,16 +172,41 @@ const WITH_DATUMS: &[&str] = &[
     "TOTAL_RUNOUT_TOLERANCE",
 ];
 
-const SIZES: &[&str] = &[
-    "DIMENSIONAL_SIZE",
-    "ANGULAR_SIZE",
-    "DIMENSIONAL_SIZE_WITH_PATH",
+/// Size dimensions read, with the positions of `name` and `applies_to`.
+/// One with a datum feature is a shape aspect first, and applies to itself.
+const SIZES: &[(&str, usize, usize)] = &[
+    ("DIMENSIONAL_SIZE", 1, 0),
+    ("ANGULAR_SIZE", 1, 0),
+    ("DIMENSIONAL_SIZE_WITH_PATH", 1, 0),
+    ("DIMENSIONAL_SIZE_WITH_DATUM_FEATURE", 5, 4),
 ];
-const LOCATIONS: &[&str] = &[
-    "DIMENSIONAL_LOCATION",
-    "ANGULAR_LOCATION",
-    "DIMENSIONAL_LOCATION_WITH_PATH",
+
+/// Location dimensions read, with the positions of `name`,
+/// `relating_shape_aspect` and `related_shape_aspect`. One with a datum
+/// feature is a shape aspect first.
+const LOCATIONS: &[(&str, usize, usize, usize)] = &[
+    ("DIMENSIONAL_LOCATION", 0, 2, 3),
+    ("ANGULAR_LOCATION", 0, 2, 3),
+    ("DIMENSIONAL_LOCATION_WITH_PATH", 0, 2, 3),
+    ("DIRECTED_DIMENSIONAL_LOCATION", 0, 2, 3),
+    ("DIMENSIONAL_LOCATION_WITH_DATUM_FEATURE", 4, 6, 7),
 ];
+
+/// Whether a dimension entity is a size, and the positions of its `name`,
+/// its target (`applies_to`, or `relating_shape_aspect`) and a location's
+/// `related_shape_aspect`; `None` if it is not one read.
+fn dimension_layout(entity: &str) -> Option<(bool, usize, usize, Option<usize>)> {
+    SIZES
+        .iter()
+        .find(|(size, ..)| *size == entity)
+        .map(|&(_, name, applies_to)| (true, name, applies_to, None))
+        .or_else(|| {
+            LOCATIONS
+                .iter()
+                .find(|(location, ..)| *location == entity)
+                .map(|&(_, name, relating, related)| (false, name, relating, Some(related)))
+        })
+}
 
 /// Reads the semantic PMI of the file behind `graph`. `structure` must be
 /// built from the same graph.
@@ -248,13 +283,14 @@ pub fn pmi(graph: &Graph<'_>, structure: &ProductStructure) -> Pmi {
                     .and_then(|id| value(exchange, id)),
                 target: subject(exchange, &definitions, target),
             });
-        } else if let Some(record) = simple.filter(|_| simple_is(SIZES) || simple_is(LOCATIONS)) {
-            let size = simple_is(SIZES);
-            let (name, target, related) = if size {
-                (record.param(1), record.param(0), None)
-            } else {
-                (record.param(0), record.param(2), record.param(3))
-            };
+        } else if let Some((record, (size, name, target, related))) =
+            simple.zip(simple_name.as_deref().and_then(dimension_layout))
+        {
+            let (name, target, related) = (
+                record.param(name),
+                record.param(target),
+                related.and_then(|related| record.param(related)),
+            );
             let Some(target) = target.and_then(|p| p.reference()) else {
                 continue;
             };
@@ -549,5 +585,59 @@ ENDSEC;END-ISO-10303-21;";
             ]
         );
         assert!(!found.is_empty());
+    }
+
+    /// A directed location, and a size and a location with a datum feature,
+    /// which are shape aspects first: their names and features come after
+    /// the shape aspect's attributes, and a size with a datum feature
+    /// applies to itself. Each target, complex and derived ones too, has its
+    /// product definition.
+    #[test]
+    fn dimensions_with_datum_features_directions_and_subjects() {
+        let src = SAMPLE.replace(
+            "ENDSEC;END-ISO-10303-21;",
+            "#100=DIRECTED_DIMENSIONAL_LOCATION('linear distance',$,#61,#60);
+#101=DIMENSIONAL_SIZE_WITH_DATUM_FEATURE('','',#20,.T.,#101,'diameter');
+#102=DIMENSIONAL_LOCATION_WITH_DATUM_FEATURE('','',#20,.T.,'linear distance',$,#60,#61);
+#103=(COMPOSITE_SHAPE_ASPECT()DATUM_FEATURE()SHAPE_ASPECT('','',#20,.T.));
+#104=CENTRE_OF_SYMMETRY('','',#20,.T.);
+#105=FLATNESS_TOLERANCE('','',#82,#103);
+#106=POSITION_TOLERANCE('','',#82,#104);
+#107=FLATNESS_TOLERANCE('','',#82,#101);
+ENDSEC;END-ISO-10303-21;",
+        );
+        let graph = Graph::new(parse(src.as_bytes()).unwrap()).unwrap();
+        let structure = ProductStructure::new(&graph);
+        let found = pmi(&graph, &structure);
+        let dimension = |id: u64| found.dimensions.iter().find(|d| d.instance == id).unwrap();
+        let directed = dimension(100);
+        assert_eq!(directed.kind, DimensionKind::Location);
+        assert_eq!(
+            (
+                directed.target.instance,
+                directed.related.as_ref().unwrap().instance
+            ),
+            (61, 60)
+        );
+        let size = dimension(101);
+        assert_eq!(size.kind, DimensionKind::Size);
+        assert_eq!(size.name.as_deref(), Some("diameter"));
+        assert_eq!(size.target, on(101, "DIMENSIONAL_SIZE_WITH_DATUM_FEATURE"));
+        let location = dimension(102);
+        assert_eq!(location.name.as_deref(), Some("linear distance"));
+        assert_eq!(
+            (
+                location.target.instance,
+                location.related.as_ref().unwrap().instance
+            ),
+            (60, 61)
+        );
+        for tolerance in &found.tolerances {
+            assert_eq!(
+                tolerance.target.product_definition,
+                Some(12),
+                "{tolerance:?}"
+            );
+        }
     }
 }
