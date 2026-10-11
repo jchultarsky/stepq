@@ -31,6 +31,11 @@ required-features = ["cli"]
 name = "units"
 required-features = ["serde"]
 
+# Prints face surfaces and edge curves as JSON for tools/verify-read.py.
+[[example]]
+name = "geometry"
+required-features = ["serde"]
+
 [features]
 default = ["cli"]
 cli = ["dep:clap", "dep:anyhow", "serde"]

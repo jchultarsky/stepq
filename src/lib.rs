@@ -74,6 +74,7 @@
 //! | `strip` | [`strip::strip`], applied by [`p21::Writer::replacements`] |
 //! | `pmi` | [`pmi::pmi`] |
 //! | none; `examples/units.rs` | [`units::ContextUnits`], [`units::unit`]: unit factors per representation context |
+//! | none; `examples/geometry.rs` | [`geometry::Reader`]: points, directions, placements, elementary surfaces, lines, circles and surface curves, in mm and rad; [`geometry::Rigid`] |
 //!
 //! `docs/COMMANDS.md` in the repository documents every command and option.
 //!
@@ -95,6 +96,7 @@ pub mod assemble;
 pub mod diff;
 pub mod error;
 pub mod express;
+pub mod geometry;
 pub mod info;
 pub mod lint;
 pub mod model;
@@ -104,6 +106,8 @@ mod policy;
 pub mod props;
 mod record;
 pub mod strip;
+#[cfg(test)]
+mod testing;
 pub mod units;
 
 pub use error::{Error, Result};

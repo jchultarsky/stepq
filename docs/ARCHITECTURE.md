@@ -386,12 +386,81 @@ one of 24,362 representations, 1,348 solids and surface models and 342,733
 faces resolves its units. Open CASCADE 8.0.1 reads every factor and
 uncertainty bit for bit the same, but one.
 
+### Geometry values
+
+`stepq::geometry` reads the points, directions, axis placements, elementary
+surfaces, lines, circles and surface curves a file states (ISO 10303-42),
+through a `Reader` tied to a representation, or to a solid, shell or face
+whose holding representations must agree. There is no reader built from bare
+factors and no unscaled path: a cone's semi-angle of 59 is 59 degrees in a
+degree context, 1.0297 is 59 degrees in a radian one, and the 442 conical
+surfaces that the 55 fixtures state as 0.57, 1 or 2 degrees stay degrees (28
+in the core set, the weldment's 8 and NIST FTC-07 (rd)'s 20; the rest are
+Creo's). A length is converted when it is read, and a zero length needs no
+unit; a plane angle is needed only by a cone. A direction is normalised,
+dividing by its largest ratio before squaring so that ratios of 1e-200 or
+1e200 stay in range, and never scaled: NIST FTC-08 (rc) writes 1,159
+directions of length 1/25.4, as if a converter had converted them as inches.
+
+Axes are the schema's `build_axes`, with `first_proj_axis` as AP203 edition
+2, AP214 edition 3 and AP242 edition 4 define it: z is the stated axis or
+(0, 0, 1); x is the stated `ref_direction` projected off z, or by default
+(1, 0, 0) projected off z, or (0, 1, 0) when z is exactly ±(1, 0, 0); y is
+z × x. A defaulted x is reported as such (`ref_direction_stated`), and is
+computed so that an axis just off ±X still gives a square frame: the
+projection's component along the default, 1 − z_k², is written as the sum of
+the other two squares. AP203 edition 1 (`CONFIG_CONTROL_DESIGN`) tests only
+z ≠ (1, 0, 0), so for z = (−1, 0, 0) without a `ref_direction` its own
+schema leaves x undefined. stepq reads the later editions' default and
+reports `ref_direction_stated = false`: five plane positions in gear,
+clevis21 and valve, where x sets only the surface's parameterisation.
+Placements refuse a defaulted x where it matters.
+
+Read as stated: the five elementary surfaces, `line`, `circle` in a 3D
+placement, and `surface_curve`, `seam_curve` and `intersection_curve`, whose
+`curve_3d` is read one level deep and whose `master_representation` is
+reported. ST-ACIS writes intersection curves whose 3D curve is the master,
+Matra's AS1 surface curves whose second pcurve is, and Open CASCADE every
+edge as a surface or seam curve whose first pcurve is; under a pcurve master
+the schema prefers the pcurve, which stepq does not read, so trusting
+`curve_3d` there is the caller's decision. Every other entity, and every
+complex instance (in the fixtures only rational B-splines are complex), is
+`Other` with its type. Of the 342,733 face surfaces and 979,505 edge curves
+that the representations of the 55 fixtures reach, all read; 10,915 surfaces
+are `Other` (B-spline surfaces, 1,581 of them complex, and surfaces of
+linear extrusion and of revolution), and 73,581 curves are or wrap one
+(B-splines, 128 of them complex, and 224 ellipses). Every record read must
+have its schema's attribute count, an INTEGER token is a number, and a typed
+measure such as `LENGTH_MEASURE(5.)` where the schema has a plain number is
+refused. A
+radius must be positive both as written and in millimetres, where a tiny
+unit can take it to zero (a cone's may be zero); every length must stay
+finite once converted; a vector's magnitude must not be negative, a
+direction not all zero, and the policies below bound a stated
+`ref_direction` and a cone's semi-angle. Errors name the innermost
+instance: a zero direction under a cylinder's placement is reported at the
+direction, and a reference to an undefined `#id` at the instance holding it.
+
+`tools/verify-read.py surfaces` and `curves` hold this to Open CASCADE.
+Open CASCADE does not bind faces or edges to the entities it reads them
+from, so each file's surfaces and curves are compared as multisets, one to
+one, by keys that x does not enter (a plane's signed normal and offset, a
+cylinder's axis line and radius, a cone's apex, signed axis and semi-angle,
+a circle's centre, signed normal and radius, a line's direction and where it
+runs). On CI's set, the 45 core fixtures and the seven generated files,
+every one of 9,961 faces and 23,910 edges reads, the face kinds agree in
+count, and all 9,751 elementary surfaces and 21,701 lines and circles match
+Open CASCADE's to 4.2e-16. On all 55 fixtures with the generated files, the
+342,788 faces and 979,612 edges of shape representations read, and all
+331,873 elementary surfaces and 906,031 lines and circles match to 5.6e-16.
+
 ### What is not read
 
 Three forms, never a silent default. An entity stepq does not interpret is
 an `Other` value naming its type, for the caller to treat as unknown. A value
 asked for that cannot be read as stated is a typed error, one type per
-module (`units::UnitError`, …), naming the innermost `#id` and why:
+module (`units::UnitError`, `geometry::GeometryError`, …), naming the
+innermost `#id` and why:
 `Unsupported` for valid STEP stepq does not read (a mass unit, a
 context-dependent unit), `Malformed` for what contradicts the schema.
 `stepq::Error` wraps each transparently, but the per-module errors are what
@@ -408,6 +477,32 @@ Walks that return many things list what they did not follow.
 * An inch defined as 2.54 centimetres is 2.54 × 10 = 25.4 mm in stepq and
   25.400000000000002 in Open CASCADE (NIST FTC-07), one unit in the last
   place; the oracle compares at 1e-12.
+* The default x axis. Where `ref_direction` is omitted, Open CASCADE 8.0.1
+  builds x with `gp_Ax2`'s own rule, not the schema's `first_proj_axis`, and
+  the two differ for most axes other than (0, 0, 1). Measured through Open
+  CASCADE's STEP reader: (0, 0, −1) gives x = (−1, 0, 0) where the schema
+  gives (1, 0, 0); ±(1, 0, 0) gives ±(0, 0, 1) where the schema gives
+  (0, 1, 0); ±(0, 1, 0) gives ±(0, 0, 1) where the schema gives (1, 0, 0);
+  and (1, 1, 1)/√3 gives (0.707, 0, −0.707) where the schema gives
+  (0.816, −0.408, −0.408). They agree for (0, 0, 1) and, for example,
+  (0.6, 0, 0.8). stepq follows the schema and says x was not stated. In the
+  fixtures only plane and circle positions, and frames that omit the axis
+  too, omit it; 903 of the 1,328 that state an axis get a different x in
+  Open CASCADE, all 360 on (0, 0, −1) among them.
+* Cone semi-angles. Open CASCADE clamps a semi-angle at or below 1e-12 to
+  1e-12, a negative one included, and drops a cone at or above π/2; stepq
+  refuses any outside [1e-6, π/2 − 1e-6] rad. No fixture has one, so the
+  oracle cannot see them and unit tests cover them.
+* Healing. Open CASCADE adds a seam to a periodic face that the file bounds
+  only by closed loops (a cylinder between two circles) and splits the
+  closed edges there; it reads a wireframe's curves as edges too. Neither
+  is stated, so `curves` accounts for them instead of matching them: what
+  Open CASCADE holds beyond stepq is excused if it is a seam of its face
+  (one the file states included) or equal to an edge stepq reads. An edge
+  stepq failed to read that is a seam, or equal to another edge, is
+  therefore caught only by the tallies, which CI pins (`--healing`): on its
+  set, 5 lines and circles that are seams, 267 pieces of split circles, and
+  770 B-spline seams and pieces.
 
 ### Policies
 
@@ -417,6 +512,8 @@ fixtures:
 
 | Policy | Value | Used by | Evidence |
 | --- | --- | --- | --- |
+| Axis nearly parallel to a stated `ref_direction` | refused when the sine is below 1e-6 (the schema refuses only exactly 0) | geometry, placements | smallest sine in the fixtures: 0.99999999999 |
+| Cone semi-angle | refused outside [1e-6, π/2 − 1e-6] rad once converted | geometry | 90 × 0.0174532925 is π/2 − 1.79e-9, which would otherwise read as a valid cone |
 | Conversion-unit chain | 8 deep | units | deepest in the fixtures: inch → centimetre → SI |
 | Assembly depth | 1024 | product structure | deepest fixture assembly: 7 levels |
 

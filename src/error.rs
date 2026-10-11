@@ -49,6 +49,11 @@ pub enum Error {
     /// A unit, or the units of a context or item, cannot be read as stated.
     #[error(transparent)]
     Unit(#[from] crate::units::UnitError),
+
+    /// A point, direction, placement, surface or curve cannot be read as
+    /// stated.
+    #[error(transparent)]
+    Geometry(#[from] crate::geometry::GeometryError),
 }
 
 impl Error {

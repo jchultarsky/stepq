@@ -20,6 +20,8 @@ tools/verify-read.py, which imports one function per check from here; each
 is also a subcommand that prints Open CASCADE's side as tab-separated lines:
 
     tools/verify-occt.py units FILE...
+    tools/verify-occt.py surfaces FILE...
+    tools/verify-occt.py curves FILE...
 
 Exit status: 0 if every comparison holds, 1 if one fails, 2 if a file cannot
 be read. Needs uv (https://docs.astral.sh/uv/), which installs cadquery-ocp
@@ -243,6 +245,191 @@ def units(path: Path) -> list[UnitContext]:
     return contexts
 
 
+def prototypes(path: Path) -> list:
+    """The shape of every part in a file, unplaced and each once.
+
+    These are XCAF's part prototypes: every shape label that is not an
+    assembly, as read() takes them for its per-part volumes. A part placed
+    many times is here once, in its own frame.
+    """
+    from OCP.collections import Sequence_TDF_Label
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPCAFControl import STEPCAFControl_Reader
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+
+    document = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    reader = STEPCAFControl_Reader()
+    if reader.ReadFile(str(path)) != IFSelect_RetDone or not reader.Transfer(document):
+        raise OSError(f"Open CASCADE could not read {path}")
+    shapes = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
+    labels = Sequence_TDF_Label()
+    shapes.GetShapes(labels)
+    return [
+        shapes.GetShape_s(labels.Value(i))
+        for i in range(1, labels.Length() + 1)
+        if not shapes.IsAssembly_s(labels.Value(i))
+    ]
+
+
+def _distinct(shapes: list, kind) -> list:
+    """Every distinct sub-shape of `kind` in `shapes`, each once however many
+    faces, shells or parts share it (orientation ignored)."""
+    from OCP.collections import IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as Map
+    from OCP.TopExp import TopExp
+
+    found = Map()
+    for shape in shapes:
+        TopExp.MapShapes_s(shape, kind, found)
+    return [found.FindKey(i) for i in range(1, found.Extent() + 1)]
+
+
+def _xyz(point) -> tuple[float, float, float]:
+    return (point.X(), point.Y(), point.Z())
+
+
+@dataclass
+class Geometry:
+    """Open CASCADE's reading of one face's surface or one edge's curve."""
+
+    # plane, cylinder, cone, sphere, torus, line or circle; for anything
+    # else, Open CASCADE's type, such as GeomAbs_BSplineSurface.
+    kind: str
+    # The position's location (a line's point), in mm.
+    location: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # The position's z axis (a line's direction), as Open CASCADE keeps it.
+    axis: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # Radius (a torus's major radius, a cone's reference radius), in mm.
+    a: float = 0.0
+    # A cone's semi-angle in radians, a torus's minor radius in mm.
+    b: float = 0.0
+    # An edge only: True if it is a seam of one of its faces (that face
+    # uses it twice, with two curves on its surface).
+    seam: bool = False
+
+    def line(self) -> str:
+        values = (*self.location, *self.axis, self.a, self.b)
+        return "\t".join([self.kind, *(repr(v) for v in values), "seam" if self.seam else "-"])
+
+
+def surfaces(path: Path) -> list[Geometry]:
+    """The surface of every distinct face of every part prototype, as
+    BRepAdaptor_Surface gives it, in mm and rad. Tessellated faces, which
+    have no surface, are left out."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType as Type
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS
+
+    found = []
+    for shape in _distinct(prototypes(path), TopAbs_FACE):
+        face = TopoDS.Face(shape)
+        if not BRep_Tool.IsGeometric_s(face):
+            # A tessellated face: a triangulation, no surface.
+            continue
+        surface = BRepAdaptor_Surface(face, False)
+        kind = surface.GetType()
+        if kind == Type.GeomAbs_Plane:
+            g = surface.Plane()
+            found.append(Geometry("plane", _xyz(g.Location()), _xyz(g.Axis().Direction())))
+        elif kind == Type.GeomAbs_Cylinder:
+            g = surface.Cylinder()
+            found.append(
+                Geometry("cylinder", _xyz(g.Location()), _xyz(g.Axis().Direction()), g.Radius())
+            )
+        elif kind == Type.GeomAbs_Cone:
+            g = surface.Cone()
+            found.append(
+                Geometry(
+                    "cone",
+                    _xyz(g.Location()),
+                    _xyz(g.Axis().Direction()),
+                    g.RefRadius(),
+                    g.SemiAngle(),
+                )
+            )
+        elif kind == Type.GeomAbs_Sphere:
+            g = surface.Sphere()
+            found.append(
+                Geometry("sphere", _xyz(g.Location()), _xyz(g.Position().Direction()), g.Radius())
+            )
+        elif kind == Type.GeomAbs_Torus:
+            g = surface.Torus()
+            found.append(
+                Geometry(
+                    "torus",
+                    _xyz(g.Location()),
+                    _xyz(g.Axis().Direction()),
+                    g.MajorRadius(),
+                    g.MinorRadius(),
+                )
+            )
+        else:
+            found.append(Geometry(kind.name))
+    return found
+
+
+def curves(path: Path) -> list[Geometry]:
+    """The 3D curve of every distinct edge of a face of every part
+    prototype, as BRepAdaptor_Curve gives it, in mm, and whether it is a
+    seam. Edges that bound no face (the curves of a wireframe or curve set,
+    which Open CASCADE also reads as edges), degenerated edges, which have
+    no 3D curve and which STEP states as no edge_curve, and the edges of
+    tessellated faces, which have no curve at all, are left out.
+
+    Open CASCADE heals while it reads, so its edges are not only the file's:
+    a periodic face that the file bounds only by closed loops (a cylinder
+    between two circles, with no seam edge) gets a seam, and the closed
+    edges are split where the seam meets them.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAbs import GeomAbs_CurveType as Type
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.collections import IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as Map
+
+    edges, seams = Map(), set()
+    for shape in _distinct(prototypes(path), TopAbs_FACE):
+        face = TopoDS.Face(shape)
+        explorer = TopExp_Explorer(face, TopAbs_EDGE)
+        while explorer.More():
+            edge = TopoDS.Edge(explorer.Current())
+            index = edges.Add(edge)
+            if BRep_Tool.IsClosed_s(edge, face):
+                seams.add(index)
+            explorer.Next()
+
+    found = []
+    for index in range(1, edges.Extent() + 1):
+        edge = TopoDS.Edge(edges.FindKey(index))
+        if BRep_Tool.Degenerated_s(edge) or not BRep_Tool.IsGeometric_s(edge):
+            continue
+        curve = BRepAdaptor_Curve(edge)
+        kind = curve.GetType()
+        seam = index in seams
+        if kind == Type.GeomAbs_Line:
+            g = curve.Line()
+            found.append(Geometry("line", _xyz(g.Location()), _xyz(g.Direction()), seam=seam))
+        elif kind == Type.GeomAbs_Circle:
+            g = curve.Circle()
+            found.append(
+                Geometry(
+                    "circle",
+                    _xyz(g.Location()),
+                    _xyz(g.Axis().Direction()),
+                    g.Radius(),
+                    seam=seam,
+                )
+            )
+        else:
+            found.append(Geometry(kind.name, seam=seam))
+    return found
+
+
 def compare(
     source: Summary, outputs: list[Summary], ignore_names: frozenset[str] = frozenset()
 ) -> list[str]:
@@ -285,6 +472,17 @@ def main() -> int:
         "file, rank, entity, length, plane angle, solid angle, uncertainty (mm); '-' if none",
     )
     unit_contexts.add_argument("files", nargs="+", type=Path)
+    for name, function, what in (
+        ("surfaces", surfaces, "face"),
+        ("curves", curves, "edge"),
+    ):
+        command = commands.add_parser(
+            name,
+            help=f"print the geometry of each distinct {what} of each part, unplaced: file, kind, "
+            "location (3), axis (3), radius, semi-angle or minor radius, 'seam' or '-'; mm and rad",
+        )
+        command.add_argument("files", nargs="+", type=Path)
+        command.set_defaults(function=function)
     args = parser.parse_args()
 
     try:
@@ -292,6 +490,11 @@ def main() -> int:
             for path in args.files:
                 for context in units(path):
                     print(f"{path}\t{context.line()}")
+            return 0
+        if args.command in ("surfaces", "curves"):
+            for path in args.files:
+                for geometry in args.function(path):
+                    print(f"{path}\t{geometry.line()}")
             return 0
         if args.command == "summary":
             for path in args.files:
