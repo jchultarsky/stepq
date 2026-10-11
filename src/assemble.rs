@@ -18,7 +18,7 @@ use std::io;
 use crate::error::{Error, Result};
 use crate::model::{Graph, ProductStructure};
 use crate::p21::{Exchange, Numbering, Replacements, TokenKind, Writer, parse};
-use crate::props::text;
+use crate::record::text;
 
 /// The result of [`assemble`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -490,7 +490,7 @@ ENDSEC;END-ISO-10303-21;";
     fn a_file_without_references_comes_back_unchanged() {
         let assembled = assemble(PART.as_bytes(), &mut loader).unwrap();
         assert_eq!(assembled.text, PART.as_bytes());
-        assert!(assembled.files.is_empty());
+        assert!(assembled.files.is_empty(), "{:?}", assembled.files);
     }
 
     #[test]

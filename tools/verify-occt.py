@@ -5,8 +5,8 @@
 # ///
 """Geometric oracle for stepq: read STEP files through Open CASCADE and compare.
 
-stepq never evaluates geometry, and a structurally broken STEP file can read
-"successfully" with zero solids and no warning (docs/ARCHITECTURE.md,
+stepq reads only what files state, and a structurally broken STEP file can
+read "successfully" with zero solids and no warning (docs/ARCHITECTURE.md,
 "Failure is silent"). So stepq's outputs are checked here, at development
 time only: read the input and every output through Open CASCADE and require
 that the outputs together have the same number of solids, the same total
@@ -14,6 +14,12 @@ volume (to a relative 1e-9), and every product name and colour of the input.
 
     tools/verify-occt.py summary FILE...
     tools/verify-occt.py compare INPUT OUTPUT...
+
+What stepq reads from a file is checked against Open CASCADE's reading by
+tools/verify-read.py, which imports one function per check from here; each
+is also a subcommand that prints Open CASCADE's side as tab-separated lines:
+
+    tools/verify-occt.py units FILE...
 
 Exit status: 0 if every comparison holds, 1 if one fails, 2 if a file cannot
 be read. Needs uv (https://docs.astral.sh/uv/), which installs cadquery-ocp
@@ -151,6 +157,92 @@ def read(path: Path) -> Summary:
     return summary
 
 
+def quiet() -> None:
+    """Stops Open CASCADE printing its own messages (transfer statistics,
+    reader warnings) between the lines a check prints."""
+    from OCP.Message import Message
+
+    messenger = Message.DefaultMessenger_s()
+    printers = messenger.Printers()
+    for index in range(printers.Length(), 0, -1):
+        messenger.RemovePrinter(printers.Value(index))
+
+
+@dataclass
+class UnitContext:
+    """Open CASCADE's reading of one representation context that assigns units."""
+
+    # 1-based position of the context in the file: Open CASCADE's entity
+    # number, which is stepq's node + 1.
+    rank: int
+    # Open CASCADE's class for the entity, such as
+    # StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.
+    entity: str
+    # Factors to the millimetre, radian and steradian; None where Open
+    # CASCADE finds no unit of that kind (LengthDone() and so on false).
+    length: float | None
+    plane_angle: float | None
+    solid_angle: float | None
+    # The smallest length uncertainty in millimetres; None if the context
+    # states none Open CASCADE reads. Open CASCADE keeps the stated value, in
+    # the uncertainty's own unit, and this multiplies it by the context's
+    # length factor, which is right while the two units are the same (they
+    # are in every fixture).
+    uncertainty: float | None
+
+    def line(self) -> str:
+        values = (self.length, self.plane_angle, self.solid_angle, self.uncertainty)
+        return "\t".join(
+            [str(self.rank), self.entity, *("-" if v is None else repr(v) for v in values)]
+        )
+
+
+def units(path: Path) -> list[UnitContext]:
+    """Every context of a file that assigns units, as Open CASCADE reads it.
+
+    Open CASCADE's STEPConstruct_UnitContext is what its STEP reader uses to
+    scale geometry: ComputeFactors over the context's units and
+    ComputeTolerance over its uncertainties.
+    """
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPConstruct import STEPConstruct_UnitContext
+    from OCP.STEPControl import STEPControl_Reader
+    from OCP.StepData import StepData_Factors
+
+    reader = STEPControl_Reader()
+    if reader.ReadFile(str(path)) != IFSelect_RetDone:
+        raise OSError(f"Open CASCADE could not read {path}")
+    model = reader.StepModel()
+    contexts = []
+    for rank in range(1, model.NbEntities() + 1):
+        entity = model.Value(rank)
+        if hasattr(entity, "GlobalUnitAssignedContext"):
+            assigned = entity.GlobalUnitAssignedContext()
+        elif hasattr(entity, "Units"):
+            # A simple GLOBAL_UNIT_ASSIGNED_CONTEXT.
+            assigned = entity
+        else:
+            continue
+        context = STEPConstruct_UnitContext()
+        context.ComputeFactors(assigned, StepData_Factors())
+        uncertainty = None
+        if hasattr(entity, "GlobalUncertaintyAssignedContext"):
+            context.ComputeTolerance(entity.GlobalUncertaintyAssignedContext())
+            if context.HasUncertainty():
+                uncertainty = context.Uncertainty() * context.LengthFactor()
+        contexts.append(
+            UnitContext(
+                rank=rank,
+                entity=type(entity).__name__,
+                length=context.LengthFactor() if context.LengthDone() else None,
+                plane_angle=context.PlaneAngleFactor() if context.PlaneAngleDone() else None,
+                solid_angle=context.SolidAngleFactor() if context.SolidAngleDone() else None,
+                uncertainty=uncertainty,
+            )
+        )
+    return contexts
+
+
 def compare(
     source: Summary, outputs: list[Summary], ignore_names: frozenset[str] = frozenset()
 ) -> list[str]:
@@ -187,9 +279,20 @@ def main() -> int:
     check = commands.add_parser("compare", help="check outputs against an input")
     check.add_argument("input", type=Path)
     check.add_argument("outputs", nargs="+", type=Path)
+    unit_contexts = commands.add_parser(
+        "units",
+        help="print each context's unit factors and uncertainty: "
+        "file, rank, entity, length, plane angle, solid angle, uncertainty (mm); '-' if none",
+    )
+    unit_contexts.add_argument("files", nargs="+", type=Path)
     args = parser.parse_args()
 
     try:
+        if args.command == "units":
+            for path in args.files:
+                for context in units(path):
+                    print(f"{path}\t{context.line()}")
+            return 0
         if args.command == "summary":
             for path in args.files:
                 result = read(path)

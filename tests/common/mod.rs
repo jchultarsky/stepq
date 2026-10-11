@@ -5,6 +5,11 @@
 //! 200 MB, and checking all of them in a debug build takes minutes and
 //! gigabytes. The smaller Open Rack files still exercise the same Creo
 //! exporter by default.
+//!
+//! A test that finds no fixture skips, so a fresh clone passes. With
+//! `STEPQ_REQUIRE_FIXTURES=1`, as CI's geometry job sets after fetching the
+//! core set, a missing core fixture fails instead ([`fixture`],
+//! [`require_core_set`]); Open Compute files still skip when absent.
 
 // Each test crate compiles this module and uses a different part of it.
 #![allow(dead_code)]
@@ -64,4 +69,61 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+/// The fixtures `tools/fetch-fixtures.sh core` fetches: the STEP Tools AS1
+/// assembly from five exporters, the NIST PMI files and the NIST EDM files.
+pub const CORE_FILES: usize = 45;
+
+/// True if `STEPQ_REQUIRE_FIXTURES` asks for missing core fixtures to fail.
+pub fn require_fixtures() -> bool {
+    env::var_os("STEPQ_REQUIRE_FIXTURES").is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+/// True if `path`, under `tests/fixtures`, belongs to the core set.
+pub fn is_core(path: &Path) -> bool {
+    let relative = path.strip_prefix(fixtures_root()).unwrap_or(path);
+    ["steptools", "nist", "nist-edm"]
+        .iter()
+        .any(|set| relative.starts_with(set))
+}
+
+/// Reads the fixture at `relative` (to `tests/fixtures`). `None`, with a
+/// note, if it is missing or over the size limit, unless it is a core
+/// fixture and [`require_fixtures`] holds: then the test fails.
+pub fn fixture(relative: &str) -> Option<Vec<u8>> {
+    let path = fixtures_root().join(relative);
+    let required = require_fixtures() && is_core(&path);
+    if !path.exists() {
+        assert!(
+            !required,
+            "{} is missing and STEPQ_REQUIRE_FIXTURES is set (run tools/fetch-fixtures.sh core)",
+            path.display()
+        );
+        eprintln!(
+            "skipping: {} not fetched (run tools/fetch-fixtures.sh)",
+            path.display()
+        );
+        return None;
+    }
+    if !is_selected(&path) {
+        eprintln!(
+            "skipping: {} is over {} MB (set STEPQ_LARGE_FIXTURES=1 to include it)",
+            path.display(),
+            LARGE_FIXTURE_BYTES / (1024 * 1024)
+        );
+        return None;
+    }
+    Some(fs::read(&path).expect("fixture is readable"))
+}
+
+/// Fails if [`require_fixtures`] holds and `files` (from [`step_files`])
+/// lack any of the core set.
+pub fn require_core_set(files: &[PathBuf]) {
+    let core = files.iter().filter(|path| is_core(path)).count();
+    assert!(
+        !require_fixtures() || core == CORE_FILES,
+        "{core} of the {CORE_FILES} core fixtures found and STEPQ_REQUIRE_FIXTURES is set \
+         (run tools/fetch-fixtures.sh core)"
+    );
 }

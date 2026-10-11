@@ -45,6 +45,10 @@ pub enum Error {
     /// An I/O failure while reading or writing a file.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    /// A unit, or the units of a context or item, cannot be read as stated.
+    #[error(transparent)]
+    Unit(#[from] crate::units::UnitError),
 }
 
 impl Error {

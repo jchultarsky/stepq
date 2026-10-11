@@ -15,8 +15,9 @@ foundation this document builds on. Its source lives in the
 
 A STEP file is a graph of entity instances. Everything `stepq` does is a
 graph operation: pick a root, compute a closure, filter shared
-aggregates, renumber, write. No entity that describes geometry is ever
-interpreted; it is copied verbatim. The single hardest problem is that
+aggregates, renumber, write. Writing never interprets an entity: geometry
+is copied verbatim. Reading may interpret what a file states, never what it
+does not (see "Reading stated geometry"). The single hardest problem is that
 the closure cannot be computed by following references forward.
 
 ## The back-reference problem
@@ -293,10 +294,137 @@ exporter's precision (for example 108452.2 declared, 108453 computed for
 the L-bracket sub-assembly). `stepq props --kind validation` reads the
 declared values.
 
+## Reading stated geometry
+
+> stepq reads what a file states and never computes what it does not. A
+> point, a direction, a radius, an axis, a placement and a unit factor are
+> stated. Reading them may normalise a direction, apply the stated unit
+> factor of the value's own context, and compose stated placements.
+> Intersections, projections, trimmed areas, arc lengths, volumes, bounding
+> boxes, tessellation and healing are computed, and they stay out: use a
+> kernel. A value stepq cannot read with certainty is reported, as an
+> "other" variant or an error with a reason. It is never guessed, never
+> defaulted beyond the schema's own defaults, and never skipped. Reading
+> never changes output: unchanged entities are still written byte for byte.
+
+Reading is as silent as writing when it goes wrong: a length read in the
+wrong unit is a number like any other. So every reader is checked against
+Open CASCADE's reading of the same files (`tools/verify-read.py`, one check
+per reader, on the core fixtures in CI and on files only Open CASCADE writes,
+generated there by `tools/gen-occt-cases.py`), and every reader shares one
+way of reading records (`src/record.rs`): which partial of a complex
+instance holds an attribute, the exact attribute count of every record it
+reads, INTEGER tokens accepted where REALs are expected, non-finite numbers
+refused, a complex instance that repeats a partial entity (and so states its
+attributes twice) refused rather than read from either, and one table of
+which face, shell, solid or model holds what.
+
+### Units
+
+A length is read in millimetres, a plane angle in radians and a solid angle
+in steradians, converted with the factor of the unit that the value's own
+representation context states (`stepq::units`). A context's three kinds are
+read, or refused with a reason, each on its own, so that a broken angle unit
+blocks only what needs an angle:
+
+* An SI unit's factor comes from an exact table of the 16 prefixes: a
+  millimetre is exactly 1, a centimetre exactly 10.
+* A conversion-based unit's factor is its stated value times its base
+  unit's factor, through chains up to 8 deep. Nothing is snapped to 25.4 or
+  π/180: the fixtures state the degree with several factors, down to
+  `0.0174532925`, and each is used as written, as Open CASCADE does. The
+  unit's name is reported, never interpreted.
+* Every statement of a unit's kind must agree — its kind record, its SI
+  name, its base unit, its factor's measure type and value type, and its
+  dimensional exponents — or the unit is refused. Every unit a fixture
+  context lists agrees.
+* A context that states no unit of a kind has none (`Missing`); several of
+  one kind must have bit-equal factors (`Ambiguous`); a listed unit that
+  cannot be read refuses its kind, or every kind if its kind cannot be told,
+  even when a readable unit of that kind is listed too (`Unreadable`). Only
+  a valid unit of another quantity (a kilogram, a second) is ignored;
+  anything else listed whose kind cannot be told — a measure with unit, an
+  SI name outside the schema's `si_unit_name`, a mass unit over a metre —
+  refuses every kind. A unit or uncertainty set that is `$`, empty or lists
+  anything but references is malformed, never empty.
+
+Uncertainties are per context, not per file, and each is converted with its
+own unit, which its measure type and value type must agree with:
+Pro/ENGINEER's AS1 states a 'closure' of 0.115, 0.363 or 0.672 mm
+in its seven contexts. Exporters name them differently
+(`distance_accuracy_value`, `closure`, `MODEL_ACCURACY`, …), and stepq
+reports names and values without choosing between them.
+
+A solid, shell or face takes the context of every representation that lists
+it, directly or through the faces, shells, solids and surface models that
+contain it (an `oriented_face` and a `connected_face_sub_set` among them).
+Every such representation must be readable and their contexts must agree
+kind by kind and in dimension. What the walk cannot follow is refused, not
+stepped over: a shell or solid written as a complex instance, or an instance
+that lists the item next to a reference that is not a context, could hold it
+in another context, so the item is `NotFollowed` even when its other holders
+agree. Each instance on the way is read once, so the walk stays linear in
+the file however many shells, representations or contexts share an item.
+
+A placement frame is scaled in the context its position assigns (ISO
+10303-43): `transform_item_k` in `rep_k`'s context, a `mapping_origin` in its
+`mapped_representation`'s, a `mapping_target` in the context of the
+representation that lists the mapped item. Not in the context of whichever
+representation lists the frame: real files list a frame in neither or both
+(in the fixtures other than Project Olympus, `transform_item_1` is listed in
+both representations in 39 of 1,915 placements, and only 7 of 188 mapped
+items list their target in the representation that holds them).
+Transforms are composed in millimetres, and a zero length needs no unit, so
+an origin frame reads even where no length unit can be read. This matters:
+the Open Rack and Project Olympus assemblies place inch or foot components
+in millimetre assemblies 42 times.
+
+On all 55 fixtures, the 1,670 contexts that assign units read 1,551 lengths
+in millimetres, 99 in inches and 20 in feet, 36 plane angles in radians and
+1,634 in degrees; 13 state no solid angle unit and 9 no uncertainty. Every
+one of 24,362 representations, 1,348 solids and surface models and 342,733
+faces resolves its units. Open CASCADE 8.0.1 reads every factor and
+uncertainty bit for bit the same, but one.
+
+### What is not read
+
+Three forms, never a silent default. An entity stepq does not interpret is
+an `Other` value naming its type, for the caller to treat as unknown. A value
+asked for that cannot be read as stated is a typed error, one type per
+module (`units::UnitError`, …), naming the innermost `#id` and why:
+`Unsupported` for valid STEP stepq does not read (a mass unit, a
+context-dependent unit), `Malformed` for what contradicts the schema.
+`stepq::Error` wraps each transparently, but the per-module errors are what
+results stored per item hold, because they are `Clone` and `PartialEq`.
+Walks that return many things list what they did not follow.
+
+### Known differences from Open CASCADE
+
+* Open CASCADE reads one uncertainty per context, the smallest length one,
+  and takes its stated value as if it were in the context's length unit;
+  stepq reads every stated uncertainty, each in its own unit. They agree on
+  every fixture, where each uncertainty is stated in its context's length
+  unit.
+* An inch defined as 2.54 centimetres is 2.54 × 10 = 25.4 mm in stepq and
+  25.400000000000002 in Open CASCADE (NIST FTC-07), one unit in the last
+  place; the oracle compares at 1e-12.
+
+### Policies
+
+Limits stepq applies beyond what the schemas state are kept in
+`src/policy.rs`, each with its evidence, and none refuses anything in the 55
+fixtures:
+
+| Policy | Value | Used by | Evidence |
+| --- | --- | --- | --- |
+| Conversion-unit chain | 8 deep | units | deepest in the fixtures: inch → centimetre → SI |
+| Assembly depth | 1024 | product structure | deepest fixture assembly: 7 levels |
+
 ## Non-goals, and why
 
-Tessellation, mass properties, bounding boxes, healing and unit
-conversion all require evaluating curves and surfaces. Open CASCADE's
-STEP translator is ~300k lines on top of ~90k lines of healing and
-~80k of intersection/projection. That is not a module of this project;
-it is a different project.
+Tessellation, intersections, trimmed areas, mass properties, bounding
+boxes and healing all require evaluating curves and surfaces. Open
+CASCADE's STEP translator is ~300k lines on top of ~90k lines of healing
+and ~80k of intersection/projection. That is not a module of this project;
+it is a different project. Applying a unit factor the file states is
+reading, not conversion, and is in scope from 0.5.0.
