@@ -64,8 +64,16 @@ jobs:
         id: msrv
         run: echo "version=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
+        id: toolchain
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
+      # rust-toolchain.toml pins stable, and it outranks the toolchain the step
+      # above installs unless RUSTUP_TOOLCHAIN is set. Without this, the job
+      # checks with stable and passes vacuously.
+      - name: Use the MSRV toolchain over rust-toolchain.toml
+        run: echo "RUSTUP_TOOLCHAIN=${{ steps.toolchain.outputs.name }}" >> "$GITHUB_ENV"
+      - name: Assert the MSRV toolchain is active
+        run: rustc --version | grep -q "^rustc ${{ steps.msrv.outputs.version }}\." || { rustc --version; exit 1; }
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
 
@@ -162,6 +170,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: dtolnay/rust-toolchain@stable
+      # A prebuilt binary rather than EmbarkStudios/cargo-deny-action, which
+      # builds a Docker image on every run and fails when Docker Hub
+      # rate-limits the pull. Pinned to the version the action shipped.
+      - uses: taiki-e/install-action@v2
         with:
-          command: check
+          tool: cargo-deny@0.20.2
+      - run: cargo deny check
