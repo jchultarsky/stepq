@@ -536,15 +536,78 @@ moon buggy's 29, which Open CASCADE leaves unnamed. Open CASCADE also lists
 the solids, shells and compounds of a part's shape as labels of their own;
 unmatched, they are dropped. A rotation entry must agree to 1e-12 and a
 translation to 1e-9 of max(1 mm, |t|), and an occurrence left unmatched on
-either side, or refused, fails. On CI's set, the 45 core fixtures and the ten
+either side, or refused, fails. On CI's set, the 45 core fixtures and the eleven
 generated files (`tools/gen-occt-cases.py`: the parts, a nested assembly
 Open CASCADE writes, whose 8 occurrences match, and two divergence cases made
-from it), the 375 occurrences not refused match to 1.1e-16 and 3.2e-14 mm,
+from it), the 376 occurrences not refused match to 1.1e-16 and 3.2e-14 mm,
 and the divergence cases refuse their 4. Those counts are pinned
 (`--expect`): an occurrence stepq dropped from the moon buggy would leave
 only an unnamed label behind, and every file would still agree. On all 55
 fixtures, every one of the 4,359 occurrences matches Open CASCADE's, to
 2.2e-16 and 1.3e-13 mm.
+
+### Topology
+
+`topology::Solid::read` reads one `manifold_solid_brep` or
+`brep_with_voids` and all it holds, as stated: its `closed_shell`s (an
+`oriented_closed_shell` as the outer shell or a void), their
+`advanced_face`s, each face's `face_bound`s and `face_outer_bound`s, their
+`edge_loop`s and `vertex_loop`s, each loop's `oriented_edge`s, and the
+`edge_curve`s and `vertex_point`s they name. It holds references and flags,
+no numbers: a face's surface, an edge's curve and a vertex's point are read
+with a `geometry::Reader`. Every flag is exposed as written. Four values are
+read beyond the attributes, each as the schema defines it: the vertices an
+oriented edge derives (`edge_start`, `edge_end`); the uses of each edge;
+`face_sense`, a face's `same_sense` composed with its shell's orientation
+(the `conditional_reverse` through which an `oriented_closed_shell` derives
+its faces); and each use's `forward`, the oriented edge's orientation
+composed with its bound's and with that shell's, since reversing a face
+reverses its bounds. Both describe the solid as it holds the face, so a
+cylinder that is a hole reads as one in a void as in the outer shell, where
+`same_sense` alone would read the hole in a void as a shaft.
+
+A solid is read whole or refused, naming the innermost instance at fault.
+Each attribute read has a table of what may stand there: the types read,
+valid subtypes that are not (`Unsupported`: a `face_surface`, an
+`oriented_face`, a `subface`, AP214's `seam_edge`, a tessellated or
+kinematic subtype, any complex instance; and any root that is not one of
+the two solids, such as a `faceted_brep`, a surface model or a
+`tessellated_solid`), and types a rule forbids there (`Malformed`: a
+`poly_loop` or `subedge` in an `advanced_face`, which its WR7 and WR1 rule
+out, a vertex that is not a `vertex_point`, which its WR3 and WR6 rule out,
+an oriented shell or edge whose element is oriented, a void that is not an
+`oriented_closed_shell`). Anything else in the wrong place is malformed as
+the wrong type. So is a wrong attribute count (checked against all four
+schemas by a unit test), an empty set, a flag other than `.T.` or `.F.`, a
+derived attribute written as a value, an `edge_list` that repeats an
+oriented edge, a loop that does not close by vertex instance, a face with
+two outer bounds or that lists one bound twice, and a face that the solid
+holds twice. Faces that share a bound or a loop are valid STEP, but each
+bound and loop is read once, as each oriented edge, edge and vertex is, so
+such a solid is unsupported; no fixture has one. Reading one solid therefore
+takes time linear in the size of the file, however it is crafted, though a
+caller that reads every solid of a file pays again for what solids share.
+Not checked, and left to the caller: that the solid is manifold, that its
+geometry agrees with its topology, and which bound is the outer one when no
+`face_outer_bound` says so.
+
+On all 55 fixtures, 1,260 solids read (257,358 faces, 715,015 edges, 463,162
+vertices, 33 seams), every edge used twice in opposite directions; the 87
+surface models are refused as unsupported, and one Creo part of the Project
+Olympus chassis is refused as malformed, its loop #1200882 not closing.
+`tools/verify-read.py topology` joins each solid with Open CASCADE's on entity
+numbers: the same faces, each REVERSED in Open CASCADE exactly where
+`face_sense` is false; each edge Open CASCADE keeps used by the same faces,
+its first vertex by parameter the edge's start where `same_sense` holds and
+its end otherwise, each use FORWARD in its face exactly where `forward`
+equals `same_sense`; and each seam closed in its face. The solid must be
+of the same type in both, and an edge Open CASCADE binds that stepq does
+not list fails. Open CASCADE heals as it reads, replacing or splitting some
+edges; those are counted, not compared, so CI pins their count
+(`--healing`): an edge stepq invented would otherwise pass. On CI's set (the
+core fixtures and the generated parts, a cube with a cubic void among them,
+so that edge uses in a reversed shell are compared) all 132 solids match,
+278 edges replaced by healing.
 
 ### What is not read
 

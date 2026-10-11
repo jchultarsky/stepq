@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use stepq::geometry::Reader;
 use stepq::model::{Graph, Placements, ProductStructure};
 use stepq::p21::parse;
+use stepq::topology::Solid;
 use stepq::units::{ContextUnits, representation_context, unit};
 
 fn seeds() -> Option<Vec<PathBuf>> {
@@ -55,7 +56,7 @@ fn read_seeds_reach_every_reader() {
         eprintln!("skipping: fuzz/seeds/read is not here (a packaged crate)");
         return;
     };
-    let mut readers: [(&str, Reached); 16] = [
+    let mut readers: [(&str, Reached); 17] = [
         ("unit", Reached::default()),
         ("representation_context", Reached::default()),
         ("ContextUnits::of_context", Reached::default()),
@@ -72,6 +73,7 @@ fn read_seeds_reach_every_reader() {
         ("Reader::curve", Reached::default()),
         ("Placements::usage", Reached::default()),
         ("Placements::occurrences", Reached::default()),
+        ("Solid::read", Reached::default()),
     ];
     for path in &seeds {
         let src = fs::read(path).expect("seed is readable");
@@ -98,6 +100,7 @@ fn read_seeds_reach_every_reader() {
             readers[6]
                 .1
                 .count(&Reader::for_item(&graph, id).map(|_| ()));
+            readers[16].1.count(&Solid::read(&graph, id));
         }
         // As the target does: the first readers the file yields, over every
         // instance.

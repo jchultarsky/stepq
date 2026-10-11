@@ -11,7 +11,7 @@ Until 1.0, minor versions may contain breaking changes.
 The read milestone begins, under a reworded rule: stepq reads what a file
 states and never computes what it does not. First, unit factors; then the
 geometry values they scale; then the placements that put components into
-assemblies.
+assemblies; then the topology of a solid.
 
 ### Added
 
@@ -84,6 +84,34 @@ assemblies.
   nested assembly Open CASCADE writes, with two divergence cases made from
   it that must be refused (`tools/gen-occt-cases.py`), and pins the counts.
   `examples/occurrences.rs` prints stepq's side.
+- `stepq::topology`: the B-rep topology of one solid as stated.
+  `topology::Solid::read` reads a `manifold_solid_brep` or `brep_with_voids`
+  whole: its shells (an `oriented_closed_shell` as outer shell or void),
+  `advanced_face`s, bounds, edge and vertex loops, oriented edges, edge
+  curves and vertex points, by index with each `#id` kept, every flag as
+  written. It also reads the vertices each oriented edge derives, every use
+  of each edge, each face's sense in the solid (`face_sense`) and each use's
+  direction (`forward`), both composed through an `oriented_closed_shell` as
+  the schema derives its faces, so a hole reads as a hole in a void as in
+  the outer shell. Valid STEP it does not read (a `faceted_brep`, a surface
+  model, a `face_surface`, AP214's `seam_edge`, any complex instance) is
+  `TopologyError::Unsupported`, as are faces that share a bound or loop,
+  since each instance is read once and a read stays linear in the file;
+  what contradicts the schema (a wrong type or attribute count, an empty
+  set, a loop that does not close, a repeated oriented edge, two outer
+  bounds, a face held twice) is `Malformed`; each names the innermost
+  instance, and `stepq::Error` gains a `Topology` variant. On all 55 fixtures 1,260 solids read (257,358 faces,
+  715,015 edges, each used twice in opposite directions), the 87 surface
+  models are refused as unsupported, and one Creo part whose loop does not
+  close is refused as malformed. `tools/verify-read.py topology` joins every
+  solid with Open CASCADE 8.0.1's on entity numbers and compares faces and
+  their senses, the faces using each edge, each edge's first vertex, the
+  direction of every use and that seams are closed; CI runs it on the core
+  fixtures and the generated parts, where all 132 solids match. Open
+  CASCADE replaces some edges while healing, which are counted, not
+  compared; CI pins their count (`--healing=278`). `tools/gen-occt-cases.py` adds a cube with a cubic void, so that
+  uses in a reversed shell are compared, and CI's occurrence pin moves to
+  376. `examples/topology.rs` prints stepq's side.
 
 ### Changed
 
