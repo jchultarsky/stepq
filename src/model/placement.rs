@@ -459,7 +459,7 @@ fn compose(
     }
 }
 
-fn is_finite(transform: &Rigid) -> bool {
+pub(super) fn is_finite(transform: &Rigid) -> bool {
     transform
         .rotation
         .iter()
@@ -896,33 +896,64 @@ impl<'g, 'a> Reading<'_, 'g, 'a> {
         assembly: &Axis2Placement3d,
         component: &Axis2Placement3d,
     ) -> Result<Placed, PlacementError> {
-        let inverse = component.to_rigid().inverse();
-        if !is_finite(&inverse) {
-            return Err(self.not_finite(component.instance));
-        }
-        let transform = assembly.to_rigid() * inverse;
-        if !is_finite(&transform) {
-            return Err(self.not_finite(assembly.instance));
-        }
-        Ok(Placed {
-            transform,
-            overflow: self.not_finite(assembly.instance),
-        })
+        placed(self.exchange(), self.usage, assembly, component)
     }
+}
 
-    /// A transform that leaves the range of an `f64`, reported at the frame
-    /// whose location takes it there.
-    fn not_finite(&self, frame: u64) -> PlacementError {
-        PlacementError::Frame {
-            usage: self.usage,
-            error: GeometryError {
-                instance: frame,
-                entity: entity(self.exchange(), frame),
-                attribute: Some("location"),
-                kind: GeometryErrorKind::NotFinite,
-            },
-        }
+/// `M(assembly) · M(component)⁻¹` for usage `#usage`, which must be finite.
+fn placed(
+    exchange: &Exchange<'_>,
+    usage: u64,
+    assembly: &Axis2Placement3d,
+    component: &Axis2Placement3d,
+) -> Result<Placed, PlacementError> {
+    let inverse = component.to_rigid().inverse();
+    if !is_finite(&inverse) {
+        return Err(not_finite(exchange, usage, component.instance));
     }
+    let transform = assembly.to_rigid() * inverse;
+    if !is_finite(&transform) {
+        return Err(not_finite(exchange, usage, assembly.instance));
+    }
+    Ok(Placed {
+        transform,
+        overflow: not_finite(exchange, usage, assembly.instance),
+    })
+}
+
+/// A transform that leaves the range of an `f64`, reported at the frame
+/// whose location takes it there.
+pub(super) fn not_finite(exchange: &Exchange<'_>, usage: u64, frame: u64) -> PlacementError {
+    PlacementError::Frame {
+        usage,
+        error: GeometryError {
+            instance: frame,
+            entity: entity(exchange, frame),
+            attribute: Some("location"),
+            kind: GeometryErrorKind::NotFinite,
+        },
+    }
+}
+
+/// The transform a mapped item `#mapped_item` states, as for a usage placed
+/// through one: `M(target) · M(origin)⁻¹`, the frame `#origin` read in the
+/// context of `#origin_representation` (the map's), `#target` in that of
+/// `#target_representation` (the one listing the mapped item). Errors name
+/// `#mapped_item` where they name a usage.
+pub(super) fn mapped_item_transform(
+    graph: &Graph<'_>,
+    mapped_item: u64,
+    (origin, origin_representation): (u64, u64),
+    (target, target_representation): (u64, u64),
+) -> Result<Rigid, PlacementError> {
+    let mut frames = Frames {
+        graph,
+        readers: HashMap::new(),
+        items: HashMap::new(),
+    };
+    let origin = frames.read(mapped_item, origin, origin_representation)?;
+    let target = frames.read(mapped_item, target, target_representation)?;
+    placed(graph.exchange(), mapped_item, &target, &origin).map(|placed| placed.transform)
 }
 
 fn entity(exchange: &Exchange<'_>, id: u64) -> String {
@@ -945,7 +976,9 @@ fn unsupported(exchange: &Exchange<'_>, usage: u64, instance: u64) -> PlacementE
 /// Each variant names the usage concerned by the `#id` of its
 /// `next_assembly_usage_occurrence` (or other assembly usage), and, where
 /// one instance is at fault, that instance. An occurrence carries the first
-/// refusal on its path from the root.
+/// refusal on its path from the root. From
+/// [`ShapeItem::transform`](super::ShapeItem::transform), `usage` is the
+/// `#id` of the mapped item that could not be read.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "snake_case"))]

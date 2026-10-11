@@ -35,3 +35,17 @@ pub(crate) const SEMI_ANGLE_MARGIN: f64 = 1e-6;
 /// input cannot exhaust the stack. The deepest fixture assembly has 7
 /// levels (Project Olympus 1U).
 pub(crate) const MAX_ASSEMBLY_DEPTH: usize = 1024;
+
+/// A definition's shape is not followed more than this many links deep
+/// ([`NotFollowedReason::TooLarge`](crate::model::NotFollowedReason::TooLarge)).
+/// No fixture shape goes beyond one link: a plain
+/// `shape_representation_relationship` from the definition's representation
+/// to the one holding its solids.
+pub(crate) const MAX_SHAPE_DEPTH: usize = 16;
+
+/// A definition's shape walk visits at most this many representations,
+/// items and references to representations
+/// ([`NotFollowedReason::TooLarge`](crate::model::NotFollowedReason::TooLarge)),
+/// so that mapped items fanning out by crafted levels cannot run it
+/// exponentially long. The largest fixture definition lists 119 items.
+pub(crate) const MAX_SHAPE_VISITS: usize = 1 << 16;
