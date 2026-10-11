@@ -50,45 +50,31 @@ impl Reached {
     }
 }
 
-/// The readers the seeds must reach, in the order counted below.
-const READERS: [&str; 18] = [
-    "unit",
-    "representation_context",
-    "ContextUnits::of_context",
-    "ContextUnits::of_representation",
-    "ContextUnits::of_item",
-    "Reader::for_representation",
-    "Reader::for_item",
-    "Reader::point",
-    "Reader::direction",
-    "Reader::vector",
-    "Reader::axis1_placement",
-    "Reader::axis2_placement_3d",
-    "Reader::surface",
-    "Reader::curve",
-    "Placements::usage",
-    "Placements::occurrences",
-    "Solid::read",
-    "ProductStructure::shape (complete or not)",
-];
-
-/// Counts each definition's shape: complete as an answer, incomplete as a
-/// refusal.
-fn count_shapes(graph: &Graph<'_>, structure: &ProductStructure, reached: &mut Reached) {
-    for definition in 0..structure.definitions().len() {
-        let shape = structure.shape(graph, definition);
-        let complete: Result<(), ()> = if shape.is_complete() { Ok(()) } else { Err(()) };
-        reached.count(&complete);
-    }
-}
-
 #[test]
 fn read_seeds_reach_every_reader() {
     let Some(seeds) = seeds() else {
         eprintln!("skipping: fuzz/seeds/read is not here (a packaged crate)");
         return;
     };
-    let mut readers: [(&str, Reached); 18] = READERS.map(|name| (name, Reached::default()));
+    let mut readers: [(&str, Reached); 17] = [
+        ("unit", Reached::default()),
+        ("representation_context", Reached::default()),
+        ("ContextUnits::of_context", Reached::default()),
+        ("ContextUnits::of_representation", Reached::default()),
+        ("ContextUnits::of_item", Reached::default()),
+        ("Reader::for_representation", Reached::default()),
+        ("Reader::for_item", Reached::default()),
+        ("Reader::point", Reached::default()),
+        ("Reader::direction", Reached::default()),
+        ("Reader::vector", Reached::default()),
+        ("Reader::axis1_placement", Reached::default()),
+        ("Reader::axis2_placement_3d", Reached::default()),
+        ("Reader::surface", Reached::default()),
+        ("Reader::curve", Reached::default()),
+        ("Placements::usage", Reached::default()),
+        ("Placements::occurrences", Reached::default()),
+        ("Solid::read", Reached::default()),
+    ];
     for path in &seeds {
         let src = fs::read(path).expect("seed is readable");
         let exchange = parse(&src).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -146,7 +132,6 @@ fn read_seeds_reach_every_reader() {
         // As the target does: every usage, and the occurrences under every
         // root and under the first definition.
         let structure = ProductStructure::new(&graph);
-        count_shapes(&graph, &structure, &mut readers[17].1);
         let placements = Placements::new(&graph, &structure);
         for usage in 0..structure.usages().len() {
             readers[14].1.count(&placements.usage(usage));

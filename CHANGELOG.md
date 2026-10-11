@@ -11,8 +11,7 @@ Until 1.0, minor versions may contain breaking changes.
 The read milestone begins, under a reworded rule: stepq reads what a file
 states and never computes what it does not. First, unit factors; then the
 geometry values they scale; then the placements that put components into
-assemblies; then the topology of a solid; then the solids of a
-definition.
+assemblies; then the topology of a solid.
 
 ### Added
 
@@ -113,31 +112,6 @@ definition.
   compared; CI pins their count (`--healing=278`). `tools/gen-occt-cases.py` adds a cube with a cubic void, so that
   uses in a reversed shell are compared, and CI's occurrence pin moves to
   376. `examples/topology.rs` prints stepq's side.
-- `ProductStructure::shape`: a product definition's own shape, read from its
-  shape representations: its solids (`manifold_solid_brep`,
-  `brep_with_voids` and `faceted_brep` items), its other items with their
-  types, and every link not followed with the reason, so that an empty,
-  complete shape states no geometry and `DefinitionShape::is_complete`
-  says when stepq cannot tell. It follows a plain
-  `shape_representation_relationship` that no usage names between two
-  representations of one context, either way round, and a mapped item that
-  is not a component placement; it skips frames, usages' relationships,
-  component mapped items and supplemental geometry, each only when the far
-  side is what the rule expects. A transformed relationship no usage names,
-  any other relationship, one across contexts, a representation another
-  definition reaches too, a mapped item that is more than one (an
-  annotation, a camera image), a cycle, a walk too large, a malformed
-  reference and a shape in another file (an `applied_document_reference`,
-  an AP203 definition's associated documents, an 'external definition', as
-  `split --master` writes stubs) are reported. Each relationship, mapped
-  item and representation is read once, so the index `ProductStructure::new`
-  builds for it and each call are linear in the file.
-  Each item keeps its path, and `ShapeItem::transform` composes the mapped
-  items on it in millimetres. On all 55 fixtures the 1,660 definitions are
-  complete and their 1,261 solids are each reached once;
-  `tools/verify-read.py shapes` matches every definition's subtree solids
-  with Open CASCADE 8.0.1's shape labels, and CI runs it on the core
-  fixtures and pins its counts. `examples/shapes.rs` prints stepq's side.
 
 ### Changed
 

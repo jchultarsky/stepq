@@ -47,9 +47,6 @@ pub struct ProductStructure {
     roots: Vec<usize>,
     #[cfg_attr(feature = "serde", serde(skip))]
     children: Vec<Vec<usize>>,
-    /// Which definitions reach each representation, for `shape`.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    shape_index: super::shape::ShapeIndex,
 }
 
 /// A product definition: one view (usually the design view) of a product
@@ -347,19 +344,13 @@ impl ProductStructure {
             is_child[usage.child] = true;
         }
         let roots = (0..definitions.len()).filter(|&d| !is_child[d]).collect();
-        let shape_index = super::shape::index(graph, &definitions, &usages);
 
         Self {
             definitions,
             usages,
             roots,
             children,
-            shape_index,
         }
-    }
-
-    pub(super) fn shape_index(&self) -> &super::shape::ShapeIndex {
-        &self.shape_index
     }
 
     /// Every product definition, in file order of first appearance.

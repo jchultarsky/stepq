@@ -45,10 +45,6 @@ required-features = ["serde"]
 name = "topology"
 required-features = ["serde"]
 
-[[example]]
-name = "shapes"
-required-features = ["serde"]
-
 [features]
 default = ["cli"]
 cli = ["dep:clap", "dep:anyhow", "serde"]

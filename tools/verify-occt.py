@@ -24,7 +24,6 @@ is also a subcommand that prints Open CASCADE's side as tab-separated lines:
     tools/verify-occt.py curves FILE...
     tools/verify-occt.py occurrences FILE...
     tools/verify-occt.py topology FILE...
-    tools/verify-occt.py shapes FILE...
 
 Exit status: 0 if every comparison holds, 1 if one fails, 2 if a file cannot
 be read. Needs uv (https://docs.astral.sh/uv/), which installs cadquery-ocp
@@ -673,60 +672,6 @@ def topology(path: Path) -> list[Topology]:
     return solids
 
 
-@dataclass
-class LabelShape:
-    """One shape label of Open CASCADE's XCAF document."""
-
-    # Its name: the product's name, else its id; None if it has none.
-    name: str | None
-    # The solids of its shape, a component placed n times counted n times.
-    solids: int
-
-    def line(self) -> str:
-        """Tab-separated: name ('?' if none), solids."""
-        return f"{self.name if self.name is not None else '?'}\t{self.solids}"
-
-
-def shapes(path: Path) -> list[LabelShape]:
-    """Every shape label of a file, assemblies included, with the solids of
-    its shape (TopExp_Explorer over GetShape)."""
-    from OCP.collections import Sequence_TDF_Label
-    from OCP.IFSelect import IFSelect_RetDone
-    from OCP.STEPCAFControl import STEPCAFControl_Reader
-    from OCP.TCollection import TCollection_ExtendedString
-    from OCP.TDataStd import TDataStd_Name
-    from OCP.TDocStd import TDocStd_Document
-    from OCP.TopAbs import TopAbs_SOLID
-    from OCP.TopExp import TopExp_Explorer
-    from OCP.XCAFDoc import XCAFDoc_DocumentTool
-
-    document = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
-    reader = STEPCAFControl_Reader()
-    reader.SetNameMode(True)
-    if reader.ReadFile(str(path)) != IFSelect_RetDone or not reader.Transfer(document):
-        raise OSError(f"Open CASCADE could not read {path}")
-    tool = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
-    labels = Sequence_TDF_Label()
-    tool.GetShapes(labels)
-    found = []
-    for index in range(1, labels.Length() + 1):
-        label = labels.Value(index)
-        name = None
-        # Asked first: FindAttribute on a label without a name segfaults in
-        # cadquery-ocp 8.0.1 (see read()).
-        if label.IsAttribute(TDataStd_Name.GetID_s()):
-            attribute = TDataStd_Name()
-            label.FindAttribute(TDataStd_Name.GetID_s(), attribute)
-            name = attribute.Get().ToExtString()
-        explorer = TopExp_Explorer(tool.GetShape_s(label), TopAbs_SOLID)
-        solids = 0
-        while explorer.More():
-            solids += 1
-            explorer.Next()
-        found.append(LabelShape(name=name, solids=solids))
-    return found
-
-
 def compare(
     source: Summary, outputs: list[Summary], ignore_names: frozenset[str] = frozenset()
 ) -> list[str]:
@@ -781,11 +726,6 @@ def main() -> int:
         "edges, seams, and faces and edges bound to no entity",
     )
     solid_list.add_argument("files", nargs="+", type=Path)
-    label_list = commands.add_parser(
-        "shapes",
-        help="print each shape label, assemblies included: file, name, solids of its shape",
-    )
-    label_list.add_argument("files", nargs="+", type=Path)
     for name, function, what in (
         ("surfaces", surfaces, "face"),
         ("curves", curves, "edge"),
@@ -809,11 +749,6 @@ def main() -> int:
             for path in args.files:
                 for occurrence in occurrences(path):
                     print(f"{path}\t{occurrence.line()}")
-            return 0
-        if args.command == "shapes":
-            for path in args.files:
-                for label in shapes(path):
-                    print(f"{path}\t{label.line()}")
             return 0
         if args.command == "topology":
             for path in args.files:
