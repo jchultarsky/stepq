@@ -67,8 +67,14 @@ $ cargo clippy --no-default-features -- -D warnings
 $ cargo test --all-features
 $ cargo test --no-default-features --lib
 $ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+$ RUSTUP_TOOLCHAIN=1.85 cargo check --all-features
 $ cargo deny check
 ```
+
+The MSRV check needs the toolchain installed
+(`rustup toolchain install 1.85`). `rust-toolchain.toml` pins stable, and
+only `RUSTUP_TOOLCHAIN` or `cargo +1.85` outrank it: after
+`rustup default 1.85`, a plain `cargo check` still runs on stable.
 
 Changes to closure or extraction logic must also keep the OCCT volume
 invariant (`tools/verify-occt.py`, see `docs/ARCHITECTURE.md`) green on the

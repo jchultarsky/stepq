@@ -64,8 +64,16 @@ jobs:
         id: msrv
         run: echo "version=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
+        id: toolchain
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
+      # rust-toolchain.toml pins stable, and it outranks the toolchain the step
+      # above installs unless RUSTUP_TOOLCHAIN is set. Without this, the job
+      # checks with stable and passes vacuously.
+      - name: Use the MSRV toolchain over rust-toolchain.toml
+        run: echo "RUSTUP_TOOLCHAIN=${{ steps.toolchain.outputs.name }}" >> "$GITHUB_ENV"
+      - name: Assert the MSRV toolchain is active
+        run: rustc --version | grep -q "^rustc ${{ steps.msrv.outputs.version }}\." || { rustc --version; exit 1; }
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
 
