@@ -121,9 +121,16 @@ shapes (`shape_representation` linked by
 → `item_defined_transformation` → two `axis2_placement_3d`). A second
 placement mechanism, `mapped_item` / `representation_map`, also occurs.
 
-* `transform_item_1` is the child frame, `transform_item_2` the parent
-  frame. The transform is `M(item_2) · M(item_1)⁻¹`; every exporter we
-  have seen writes `item_1` as the identity.
+* `transform_item_k` is an item of `rep_k` (AP242 WR2 of
+  `representation_relationship_with_transformation`), and the NAUO, not the
+  relationship's order, decides which of `rep_1`/`rep_2` is the component's.
+  The transform carries the component's frame onto the assembly's:
+  `M(assembly-side item) · M(component-side item)⁻¹` — `M(item_2)·M(item_1)⁻¹`
+  in the usual order, `M(item_1)·M(item_2)⁻¹` in the 131 reversed
+  Pro/ENGINEER usages of the fixtures. The component-side item is the
+  identity in all 3,458 fixture usages. Where neither item is the identity,
+  Open CASCADE 8.0.1 composes the other way round, so stepq refuses such a
+  usage (`PlacementError::Divergent`).
 * Real files reverse `rep_1`/`rep_2`. OCCT carries a
   `CheckSRRReversesNAUO` workaround dated 1998. **The NAUO wins.**
 * In AP242, NAUO `related`/`relating` became a SELECT. Part 21 does not
@@ -454,6 +461,91 @@ Open CASCADE's to 4.2e-16. On all 55 fixtures with the generated files, the
 342,788 faces and 979,612 edges of shape representations read, and all
 331,873 elementary surfaces and 906,031 lines and circles match to 5.6e-16.
 
+### Placements and occurrences
+
+`model::Placements` reads the transform each assembly usage states, from the
+component's coordinates to the assembly's, in millimetres, and composes them
+into occurrences: every place a definition occurs under a root, depth first
+in file order, each with its path of usages, the representation its
+transform maps from and its transform to the root. A sub-assembly used twice
+occurs twice; separate roots are unrelated frames. The iterator is lazy and
+holds only the current path, so a crafted file that reaches a sub-assembly by
+exponentially many paths costs only what a caller takes from it.
+
+Each frame is read through `geometry::Reader` in the context its position
+assigns (above). An `item_defined_transformation` gives `M(assembly-side
+item) · M(component-side item)⁻¹`, the usage deciding the sides ("Assembly
+structure"). A `mapped_item` gives `M(mapping_target) · M(mapping_origin)⁻¹`;
+Open CASCADE agrees there. Mapped items name a component but not a usage, so
+`ProductStructure` pairs them with that component's usages in file order:
+the set of transforms is exact, and which usage gets which follows the file.
+It reads a mapped item written as a complex instance, whose `MAPPED_ITEM`
+partial holds the source and target at its first two positions (before
+0.5.0 it read them one position on and left such usages unplaced), and the
+items of a complex representation; no fixture has either.
+
+What cannot be read as stated is a `PlacementError` for that usage and for
+every occurrence below it, and for nothing else:
+
+* `Unplaced` (no `context_dependent_shape_representation`, and not as many
+  mapped items as usages), `Quantified` (a quantity other than 1, or one that
+  cannot be read: one placement cannot place several occurrences) and
+  `NoTransformation` (a plain `shape_representation_relationship`).
+* `Unsupported`: every `cartesian_transformation_operator`, which can scale
+  and mirror, a `functionally_defined_transformation`, complex
+  transformations and maps, a simple relationship that is not a
+  `representation_relationship`, a complex mapped item with more
+  than a representation item's partials (Creo's scaled camera images), and a
+  frame that is not an `axis2_placement_3d`. None occurs in the fixtures.
+* `Inconsistent`, read strictly: `rep_1` and `rep_2` must be exactly one of
+  the component's and one of the assembly's shape representations,
+  `transform_item_k` must be listed directly in `rep_k` (WR2 asks only that
+  `rep_k` use it, perhaps through another item; no fixture needs that), a
+  usage must have one `context_dependent_shape_representation`
+  (`ProductStructure` identifies the first), one of the assembly's shape
+  representations must list a mapped item, which must place only one usage
+  (an assembly whose shape is defined twice, or a representation two
+  components share, lets one mapped item meet the count of two usages), and
+  a path must place each
+  definition through the representation that holds its components, a root's
+  usages agreeing on it. In the fixtures `transform_item_1` is listed in both
+  representations 39 times (the AS1 files by AutoCAD, Matra and Unigraphics
+  share one identity frame, as Open CASCADE's writer does), and never only
+  in `rep_2`.
+* `Divergent`, where ISO 10303 and Open CASCADE place a component
+  differently (below); `Frame`, a frame that cannot be read, a non-zero
+  location whose unit cannot be read among them, or a transform no longer
+  finite once composed; `Cycle`; and `TooDeep`, past 1,024 levels.
+
+On all 55 fixtures the 3,481 usages read: 3,327 through relationships in the
+usual order, 131 reversed (as1_pe 9, vaccase 14 and weldment 108, all
+Pro/ENGINEER files in inches) and 23 through mapped items (the moon buggy).
+So do all 4,359 occurrences, up to 7 levels deep (Project Olympus 1U), and
+nothing is refused. 42 of the usages place an inch (38) or foot (4)
+component in a millimetre assembly.
+
+`tools/verify-read.py occurrences` holds this to Open CASCADE's XCAF reading
+of the same files: free shapes, their component labels, and locations
+composed from the root down. Open CASCADE binds no label to the entity it
+reads it from, so occurrences are joined by the names on their paths — the
+name Open CASCADE gives each component label from its NAUO (description,
+else name, else id) and the product's — one to one, which tells apart the
+AS1 assembly's three nut-and-bolt instances NBA1, NBA2 and NBA3; by value
+among occurrences sharing a name; and by value at the same depth for the
+moon buggy's 29, which Open CASCADE leaves unnamed. Open CASCADE also lists
+the solids, shells and compounds of a part's shape as labels of their own;
+unmatched, they are dropped. A rotation entry must agree to 1e-12 and a
+translation to 1e-9 of max(1 mm, |t|), and an occurrence left unmatched on
+either side, or refused, fails. On CI's set, the 45 core fixtures and the ten
+generated files (`tools/gen-occt-cases.py`: the parts, a nested assembly
+Open CASCADE writes, whose 8 occurrences match, and two divergence cases made
+from it), the 375 occurrences not refused match to 1.1e-16 and 3.2e-14 mm,
+and the divergence cases refuse their 4. Those counts are pinned
+(`--expect`): an occurrence stepq dropped from the moon buggy would leave
+only an unnamed label behind, and every file would still agree. On all 55
+fixtures, every one of the 4,359 occurrences matches Open CASCADE's, to
+2.2e-16 and 1.3e-13 mm.
+
 ### What is not read
 
 Three forms, never a silent default. An entity stepq does not interpret is
@@ -488,7 +580,22 @@ Walks that return many things list what they did not follow.
   (0.6, 0, 0.8). stepq follows the schema and says x was not stated. In the
   fixtures only plane and circle positions, and frames that omit the axis
   too, omit it; 903 of the 1,328 that state an axis get a different x in
-  Open CASCADE, all 360 on (0, 0, −1) among them.
+  Open CASCADE, all 360 on (0, 0, −1) among them. In a placement x turns
+  the component about its axis, so `Placements` refuses a frame that omits
+  `ref_direction` unless its axis is exactly +Z (`Divergent`,
+  `DefaultedRefDirection`); no fixture placement omits it. On a generated
+  case, a sub-assembly on (0, 0, −1) with no `ref_direction`, Open CASCADE
+  places it with x = (−1, 0, 0).
+* An `item_defined_transformation` neither of whose items is the identity.
+  ISO 10303 carries the component's frame onto the assembly's,
+  `M(assembly side) · M(component side)⁻¹`; Open CASCADE 8.0.1 composes
+  `M(item_1)⁻¹ · M(item_2)`. They agree when either item is the identity, as
+  the component-side item is in every fixture usage. On a generated case, a
+  plate whose component-side item is a frame at (10, 0, 0) on axis x,
+  placed by a translation of (0, 0, −10), Open CASCADE puts the plate's
+  origin at (0, −10, −10) and ISO at (0, 0, −20). stepq refuses such a usage
+  (`Divergent`, `BothFramesPlaced`). Mapped items do not differ: Open
+  CASCADE takes the mapping origin off first, as ISO does.
 * Cone semi-angles. Open CASCADE clamps a semi-angle at or below 1e-12 to
   1e-12, a negative one included, and drops a cone at or above π/2; stepq
   refuses any outside [1e-6, π/2 − 1e-6] rad. No fixture has one, so the
@@ -515,7 +622,7 @@ fixtures:
 | Axis nearly parallel to a stated `ref_direction` | refused when the sine is below 1e-6 (the schema refuses only exactly 0) | geometry, placements | smallest sine in the fixtures: 0.99999999999 |
 | Cone semi-angle | refused outside [1e-6, π/2 − 1e-6] rad once converted | geometry | 90 × 0.0174532925 is π/2 − 1.79e-9, which would otherwise read as a valid cone |
 | Conversion-unit chain | 8 deep | units | deepest in the fixtures: inch → centimetre → SI |
-| Assembly depth | 1024 | product structure | deepest fixture assembly: 7 levels |
+| Assembly depth | 1024 | product structure, placements | deepest fixture assembly: 7 levels |
 
 ## Non-goals, and why
 

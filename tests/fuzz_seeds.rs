@@ -15,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use stepq::geometry::Reader;
-use stepq::model::Graph;
+use stepq::model::{Graph, Placements, ProductStructure};
 use stepq::p21::parse;
 use stepq::units::{ContextUnits, representation_context, unit};
 
@@ -55,7 +55,7 @@ fn read_seeds_reach_every_reader() {
         eprintln!("skipping: fuzz/seeds/read is not here (a packaged crate)");
         return;
     };
-    let mut readers: [(&str, Reached); 14] = [
+    let mut readers: [(&str, Reached); 16] = [
         ("unit", Reached::default()),
         ("representation_context", Reached::default()),
         ("ContextUnits::of_context", Reached::default()),
@@ -70,6 +70,8 @@ fn read_seeds_reach_every_reader() {
         ("Reader::axis2_placement_3d", Reached::default()),
         ("Reader::surface", Reached::default()),
         ("Reader::curve", Reached::default()),
+        ("Placements::usage", Reached::default()),
+        ("Placements::occurrences", Reached::default()),
     ];
     for path in &seeds {
         let src = fs::read(path).expect("seed is readable");
@@ -122,6 +124,23 @@ fn read_seeds_reach_every_reader() {
                 readers[11].1.count(&reader.axis2_placement_3d(id));
                 readers[12].1.count(&reader.surface(id));
                 readers[13].1.count(&reader.curve(id));
+            }
+        }
+        // As the target does: every usage, and the occurrences under every
+        // root and under the first definition.
+        let structure = ProductStructure::new(&graph);
+        let placements = Placements::new(&graph, &structure);
+        for usage in 0..structure.usages().len() {
+            readers[14].1.count(&placements.usage(usage));
+        }
+        let starts = structure
+            .roots()
+            .iter()
+            .copied()
+            .chain((!structure.definitions().is_empty()).then_some(0));
+        for root in starts {
+            for occurrence in placements.occurrences(root).take(4096) {
+                readers[15].1.count(&occurrence.transform);
             }
         }
     }

@@ -10,7 +10,8 @@ Until 1.0, minor versions may contain breaking changes.
 
 The read milestone begins, under a reworded rule: stepq reads what a file
 states and never computes what it does not. First, unit factors; then the
-geometry values they scale.
+geometry values they scale; then the placements that put components into
+assemblies.
 
 ### Added
 
@@ -61,6 +62,28 @@ geometry values they scale.
   CASCADE adds while it reads, so an edge stepq misses that is a seam or
   equals another edge shows only in its healing tallies, which CI pins
   (`--healing`).
+- `model::Placements`: the transform each assembly usage states, in
+  millimetres, and every occurrence under a root, with its path of usages,
+  the representation it maps from and its transform to the root, composed
+  from the root down by a lazy iterator that holds only the current path.
+  Each frame is read in the context its position assigns (ISO 10303-43). An
+  `item_defined_transformation` is `M(assembly-side item) ·
+  M(component-side item)⁻¹`, the usage deciding which side is the
+  component's, so the 131 reversed Pro/ENGINEER usages of the fixtures are
+  placed right; a mapped item is `M(target) · M(origin)⁻¹`. Nothing is
+  assumed: a usage that is unplaced, quantified other than once, placed by a
+  relationship with no transformation, a transformation operator or a frame
+  that is not an `axis2_placement_3d`, structurally inconsistent, or one that
+  ISO 10303 and Open CASCADE place differently (both transform items not the
+  identity, or a frame without `ref_direction` off +Z) is a
+  `model::PlacementError` for it and every occurrence below it, and
+  `stepq::Error` gains a `Placement` variant. On all 55 fixtures the 3,481
+  usages and 4,359 occurrences read, and `tools/verify-read.py occurrences`
+  matches every occurrence with Open CASCADE 8.0.1's to 2.2e-16 in rotation
+  and 1.3e-13 mm in translation. CI runs it on the core fixtures and on a
+  nested assembly Open CASCADE writes, with two divergence cases made from
+  it that must be refused (`tools/gen-occt-cases.py`), and pins the counts.
+  `examples/occurrences.rs` prints stepq's side.
 
 ### Changed
 
@@ -73,6 +96,18 @@ geometry values they scale.
   healing stay out. A value that cannot be read with certainty is reported,
   never guessed. Output does not change: unchanged entities are still
   written byte for byte.
+- `docs/ARCHITECTURE.md`, "Assembly structure": `transform_item_k` is an
+  item of `rep_k`, and the transform carries the component-side item onto
+  the assembly-side one. It said `transform_item_1` is the child frame,
+  which misplaces 131 of the 139 occurrences in the Pro/ENGINEER fixtures.
+
+### Fixed
+
+- `ProductStructure` places a usage through a mapped item written as a
+  complex instance: it read the item's `mapping_source` and
+  `mapping_target` where a simple instance holds them, one position too
+  far, and left such usages unplaced. It also reads the items of a complex
+  representation. No fixture has either, and no output changes on them.
 
 ## [0.4.1] - 2026-09-17
 

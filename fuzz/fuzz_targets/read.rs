@@ -3,20 +3,31 @@
 //! Invariants: no reader panics, whatever the instance; what a reader
 //! returns is finite (every unit factor and uncertainty is positive and
 //! finite, every coordinate, length and angle finite), every direction is
-//! of unit length and every placement's axes are square to each other, and
-//! every error formats. Each later reader is added here.
+//! of unit length and every placement's axes are square to each other,
+//! every usage's and occurrence's transform is finite with a rotation that
+//! is square and of unit scale, each occurrence's path ends at its
+//! definition, and every error formats. Each later reader is added here.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use stepq::geometry::{Axis2Placement3d, Curve, GeometryError, Reader, Surface};
-use stepq::model::Graph;
+use stepq::geometry::{Axis2Placement3d, Curve, GeometryError, Reader, Rigid, Surface};
+use stepq::model::{Graph, PlacementError, Placements, ProductStructure};
 use stepq::p21::parse;
 use stepq::units::{ContextUnits, Unit, UnitError, representation_context, unit};
 
 /// Geometry readers built per input: enough to read in a few contexts
 /// without running every reader over every instance once per instance.
 const READERS: usize = 4;
+
+/// The deepest occurrence path: 1,024 levels, and one more for a usage
+/// refused as too deep (`PlacementError::TooDeep`).
+const MAX_PATH: usize = 1025;
+
+/// Occurrences read per input, over every root: a crafted assembly can
+/// reach a sub-assembly by exponentially many paths, which the iterator
+/// produces lazily, and the target needs only some of them.
+const OCCURRENCES: usize = 4096;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(exchange) = parse(data) else {
@@ -45,6 +56,7 @@ fuzz_target!(|data: &[u8]| {
             check_geometry(reader, id);
         }
     }
+    check_placements(&graph);
     for &id in &ids {
         check_unit(unit(&graph, id));
         if let Err(error) = representation_context(&graph, id) {
@@ -219,5 +231,62 @@ fn check_geometry(reader: &Reader<'_, '_>, id: u64) {
     match reader.curve(id) {
         Ok(curve) => check_curve(&curve),
         Err(error) => refused(&error),
+    }
+}
+
+/// A transform stepq returns: finite, and a rotation that is square and of
+/// unit scale. A frame whose `ref_direction` is just within the 1e-6 sine
+/// policy is square only to about 1e-10, and each usage composes two
+/// frames, so even 1,025 levels stay well within 1e-6.
+fn check_transform(transform: &Rigid) {
+    finite(&transform.translation, "translation");
+    let rows = transform.rotation;
+    for row in rows {
+        finite(&row, "rotation");
+    }
+    for (i, a) in rows.iter().enumerate() {
+        for (j, b) in rows.iter().enumerate() {
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (dot(*a, *b) - expected).abs() <= 1e-6,
+                "rotation is not orthonormal: {rows:?}"
+            );
+        }
+    }
+}
+
+fn check_placement_result(result: &Result<Rigid, PlacementError>) {
+    match result {
+        Ok(transform) => check_transform(transform),
+        Err(error) => {
+            let _ = error.to_string();
+        }
+    }
+}
+
+fn check_placements(graph: &Graph<'_>) {
+    let structure = ProductStructure::new(graph);
+    let placements = Placements::new(graph, &structure);
+    for usage in 0..structure.usages().len() {
+        check_placement_result(&placements.usage(usage));
+    }
+    let mut budget = OCCURRENCES;
+    // Every root, and the first definition, which in a file where every
+    // definition is a component (a cycle) is no root.
+    let starts = structure
+        .roots()
+        .iter()
+        .copied()
+        .chain((!structure.definitions().is_empty()).then_some(0));
+    for root in starts {
+        for occurrence in placements.occurrences(root).take(budget) {
+            budget -= 1;
+            check_placement_result(&occurrence.transform);
+            assert!(occurrence.path.len() <= MAX_PATH);
+            match occurrence.path.last() {
+                Some(&usage) => assert_eq!(structure.usages()[usage].child, occurrence.definition),
+                None => assert_eq!(occurrence.definition, root),
+            }
+        }
     }
 }
