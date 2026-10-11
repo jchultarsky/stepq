@@ -5,8 +5,8 @@ kernel: stepq reads what a file states and never computes what it does
 not. That constraint keeps the project finishable.
 
 0.1.0 contains the parser, structure and split milestones below; 0.2.0
-adds the inspect milestone, 0.3.0 the reshape milestone and 0.5.0 the
-read milestone, which 0.6.0 completes with PMI to faces. A few items
+adds the inspect milestone, 0.3.0 the reshape milestone and 0.6.0 the
+read milestone, with PMI to faces (0.5.0 was not released). A few items
 in the earlier milestones shipped later — the multi-level `bom` and
 persistent identifiers in 0.2.0, `split --bodies` in 0.3.0, and the grown
 rule table, which completes the split milestone, in 0.4.0; see
@@ -87,7 +87,7 @@ rule table, which completes the split milestone, in 0.4.0; see
       external references themselves rather than a separate manifest.
 - [x] Part 21 edition 3 anchors/references.
 
-## Read (0.5.0)
+## Read (0.6.0)
 
 Values the file states, read in millimetres and radians and never computed
 (`docs/ARCHITECTURE.md`, "Reading stated geometry"). Each reader is checked
