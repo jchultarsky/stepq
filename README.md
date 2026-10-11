@@ -16,10 +16,13 @@ what the file does not: it never tessellates, never computes a volume, never
 your geometry comes out exactly as it went in, byte for byte, with its
 original names, colours, layers, properties and PMI attached.
 
-> **Status: 0.4, early.** The Part 21 parser, reference graph, writer and
+> **Status: 0.6, early.** The Part 21 parser, reference graph, writer and
 > EXPRESS schema reader are in place, and `stepq info`, `tree`, `bom`,
 > `split` (with `--bodies` and `--master`), `assemble`, `lint`, `refs`,
-> `query`, `props`, `diff`, `strip` and `pmi` work. The
+> `query`, `props`, `diff`, `strip` and `pmi` work. The library reads
+> what a file states — units, geometry, placements, a solid's topology, a
+> definition's solids and the faces PMI applies to — in millimetres and
+> radians, and refuses what it cannot read with certainty. The
 > library API and the CLI output will still change before 1.0; see
 > [ROADMAP.md](ROADMAP.md).
 
@@ -142,7 +145,7 @@ As a library, without the CLI dependencies:
 
 ```toml
 [dependencies]
-stepq = { version = "0.4", default-features = false }
+stepq = { version = "0.6", default-features = false }
 ```
 
 ## Supported input

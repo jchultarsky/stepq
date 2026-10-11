@@ -8,11 +8,14 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
-The read milestone begins, under a reworded rule: stepq reads what a file
+## [0.6.0] - 2026-10-11
+
+The read milestone, under a reworded rule: stepq reads what a file
 states and never computes what it does not. First, unit factors; then the
 geometry values they scale; then the placements that put components into
 assemblies; then the topology of a solid; then the solids of a
-definition; then the faces PMI applies to.
+definition; then the faces PMI applies to. 0.5.0, planned for the first
+five, was not released: they ship here with PMI to faces.
 
 ### Added
 
@@ -442,7 +445,8 @@ First release.
 
 - License is now MIT only (previously MIT OR Apache-2.0).
 
-[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/jchultarsky/stepq/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/jchultarsky/stepq/compare/v0.4.1...v0.6.0
 [0.4.1]: https://github.com/jchultarsky/stepq/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/jchultarsky/stepq/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jchultarsky/stepq/compare/v0.2.0...v0.3.0
