@@ -8,14 +8,16 @@
 //! is square and of unit scale, each occurrence's path ends at its
 //! definition, every solid's topology refers only to its own shells,
 //! faces, edges and vertices, its loops close and each use of an edge is
-//! by a loop that holds it, and every error formats. Each later reader is
-//! added here.
+//! by a loop that holds it, every definition's shape items start from one
+//! of its shape representations by a path within the depth limit and are
+//! placed by a finite transform, and every error formats. Each later
+//! reader is added here.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use stepq::geometry::{Axis2Placement3d, Curve, GeometryError, Reader, Rigid, Surface};
-use stepq::model::{Graph, PlacementError, Placements, ProductStructure};
+use stepq::model::{Graph, PlacementError, Placements, ProductStructure, ShapeItem};
 use stepq::p21::parse;
 use stepq::topology::{Loop, Solid};
 use stepq::units::{ContextUnits, Unit, UnitError, representation_context, unit};
@@ -276,8 +278,36 @@ fn check_placement_result(result: &Result<Rigid, PlacementError>) {
     }
 }
 
+/// The deepest shape path: 64 links.
+const MAX_SHAPE_PATH: usize = 64;
+
+/// Shape items whose transform is read per input.
+const TRANSFORMS: usize = 256;
+
+fn check_shapes(graph: &Graph<'_>, structure: &ProductStructure) {
+    let mut budget = TRANSFORMS;
+    for definition in 0..structure.definitions().len() {
+        let shape = structure.shape(graph, definition);
+        let roots = &structure.definitions()[definition].shape_representations;
+        let items: Vec<&ShapeItem> = shape.solids.iter().chain(&shape.other).collect();
+        for item in items {
+            assert!(roots.contains(&item.shape_representation));
+            assert!(item.path.len() <= MAX_SHAPE_PATH);
+            assert_eq!(item.path.is_empty(), item.representation == item.shape_representation);
+            if budget > 0 {
+                budget -= 1;
+                check_placement_result(&item.transform(graph));
+            }
+        }
+        for not_followed in &shape.not_followed {
+            let _ = format!("{not_followed:?}");
+        }
+    }
+}
+
 fn check_placements(graph: &Graph<'_>) {
     let structure = ProductStructure::new(graph);
+    check_shapes(graph, &structure);
     let placements = Placements::new(graph, &structure);
     for usage in 0..structure.usages().len() {
         check_placement_result(&placements.usage(usage));

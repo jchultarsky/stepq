@@ -24,6 +24,7 @@ mod assembly;
 mod extract;
 mod graph;
 mod placement;
+mod shape;
 
 pub use assembly::{
     BomLine, BomNode, BomTreeOptions, Definition, Placement, Product, ProductStructure, Usage,
@@ -34,3 +35,4 @@ pub use extract::{
 };
 pub use graph::Graph;
 pub use placement::{DivergentReason, Occurrence, Occurrences, PlacementError, Placements};
+pub use shape::{DefinitionShape, NotFollowed, NotFollowedReason, ShapeItem, ShapeLink};
